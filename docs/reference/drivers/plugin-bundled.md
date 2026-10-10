@@ -103,10 +103,10 @@ selections and still requires the Agent's projected credentials and provider
 access. Unknown configuration options, arbitrary sources or versions, and
 external PluginDriver packages are rejected.
 
-| Driver ID      | Implementation        | Agent Harness     | Catalog source                                                                                               |
-| -------------- | --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------ |
-| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw | Bundled catalog: `occ-plugin:diffs` (`@openclaw/diffs`), pinned to `2026.8.2` and npm integrity.             |
-| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`. |
+| Driver ID      | Implementation        | Agent Harness     | Catalog source                                                                                                                  |
+| -------------- | --------------------- | ----------------- | ------------------------------------------------------------------------------------------------------------------------------- |
+| `occ-plugin`   | `occ/openclaw-plugin` | Embedded OpenClaw | Bundled `occ-plugin:diffs` (`@openclaw/diffs` `2026.8.2`, npm integrity) plus [approved releases](plugin-approved-releases.md). |
+| `codex-plugin` | `occ/codex-plugin`    | Dedicated Codex   | Native `openai-curated-remote` marketplace; selection IDs are `codex-plugin:<plugin>@openai-curated-remote`.                    |
 
 Codex startup resolves current identity, release metadata, and concrete apps from
 `plugin/read`'s `detail.apps` and `detail.skills`. Hosted discovery supports skills
@@ -254,8 +254,8 @@ including tool denies and profiles, is retained.
 
 ## Preparation and security
 
-Revision plugin state carries only requested IDs/policies and selected Driver
-identity. Compute resolves current native metadata and applies the resulting
+Revision plugin state carries requested IDs/policies, selected Driver identity,
+and any [approved release](plugin-approved-releases.md) the Driver bound. Compute resolves current native metadata and applies the resulting
 nonsecret configuration inside the exact revision workload before readiness. Codex installation is verified through native API metadata and effective configuration. Codex owns its private cache layout and integrity; Enterprise does not parse its cache records or version directories.
 Package files/configuration are revision-private. In Kubernetes, the native
 installation registry remains in the persistent Agent-owned OpenClaw state

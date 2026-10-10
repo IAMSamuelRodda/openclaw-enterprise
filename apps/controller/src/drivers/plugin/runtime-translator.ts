@@ -15,6 +15,7 @@ export type OpenClawRuntimeResolvedArtifacts = {
     readonly packageName: string;
     readonly version: string;
     readonly integrity?: string;
+    readonly source?: "clawhub";
   }[];
 };
 
@@ -47,6 +48,8 @@ export type CodexPluginCatalogReader = {
 type OpenClawPluginDescriptor = {
   readonly nativeId: string;
   readonly name: string;
+  // Omitted for npm. Operator-approved entries may name a ClawHub package instead.
+  readonly source?: "npm" | "clawhub";
   readonly packageName: string;
   readonly version: string;
   readonly integrity: string;
@@ -73,7 +76,10 @@ const OPENCLAW_PLUGIN_CATALOG: readonly OpenClawPluginDescriptor[] = [
   },
 ];
 
-export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPluginDescriptor[]) {
+export function createPluginRuntimeTranslator(
+  bundledCatalog: readonly OpenClawPluginDescriptor[],
+  approvedCatalog: unknown = [],
+) {
   const OCC_DRIVER_ID = "occ-plugin";
   const CODEX_DRIVER_ID = "codex-plugin";
   const CODEX_MARKETPLACE = "openai-curated-remote";
@@ -89,10 +95,98 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     "/run/oce/repository-credentials",
   ];
 
+  // The Installation administrator approves exact releases: one package, one
+  // version and its integrity, never a range or an unpinned source. The same
+  // check runs at controller startup and again in the Pod on admitted releases.
+  function approvedOpenClawPlugins(value: unknown): readonly OpenClawPluginDescriptor[] {
+    const invalid = (path: string): never => {
+      throw new Error("OpenClaw approved plugin " + path + " is invalid.");
+    };
+    if (!Array.isArray(value) || value.length > 64) {
+      return invalid("list");
+    }
+    return value.map((entry: unknown, index: number) => {
+      const path = "[" + index + "]";
+      if (entry === null || typeof entry !== "object" || Array.isArray(entry)) {
+        return invalid(path);
+      }
+      const record = entry as Record<string, unknown>;
+      const keys = [
+        "nativeId",
+        "name",
+        "source",
+        "packageName",
+        "version",
+        "integrity",
+        "toolNames",
+      ];
+      if (Object.keys(record).some((key) => !keys.includes(key))) {
+        return invalid(path);
+      }
+      const { nativeId, name, source, packageName, version, integrity, toolNames } = record;
+      if (typeof nativeId !== "string") {
+        return invalid(path + ".nativeId");
+      }
+      if (typeof name !== "string" || name.trim().length === 0 || name.length > 128) {
+        return invalid(path + ".name");
+      }
+      if (source !== "npm" && source !== "clawhub") {
+        return invalid(path + ".source");
+      }
+      if (
+        typeof packageName !== "string" ||
+        packageName.length > 214 ||
+        !/^(?:@[a-z0-9][a-z0-9._-]*\/)?[a-z0-9][a-z0-9._-]*$/.test(packageName)
+      ) {
+        return invalid(path + ".packageName");
+      }
+      if (
+        typeof version !== "string" ||
+        !/^(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)\.(?:0|[1-9][0-9]*)(?:-[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/.test(
+          version,
+        )
+      ) {
+        return invalid(path + ".version");
+      }
+      // npm records the tarball's sha512; ClawHub records its archive's sha256.
+      const integrityPattern =
+        source === "npm" ? /^sha512-[A-Za-z0-9+/]{86}==$/ : /^sha256-[A-Za-z0-9+/]{43}=$/;
+      if (typeof integrity !== "string" || !integrityPattern.test(integrity)) {
+        return invalid(path + ".integrity");
+      }
+      if (
+        !Array.isArray(toolNames) ||
+        toolNames.length === 0 ||
+        toolNames.length > 64 ||
+        toolNames.some((tool) => typeof tool !== "string")
+      ) {
+        return invalid(path + ".toolNames");
+      }
+      return {
+        nativeId,
+        name,
+        ...(source === "clawhub" ? { source } : {}),
+        packageName,
+        version,
+        integrity,
+        toolNames: [...(toolNames as string[])],
+      };
+    });
+  }
+
+  const approvedPlugins = approvedOpenClawPlugins(approvedCatalog);
+  const nativeCatalog: readonly OpenClawPluginDescriptor[] = [
+    ...bundledCatalog,
+    ...approvedPlugins,
+  ];
+
   // Native policy names are global: aliases/families can target core tools,
   // and another plugin's ID targets its entire tool inventory.
   const reservedPolicyNames = new Set(["bash", "apply-patch", "cron", "canvas", "update_plan"]);
   const toolNames = new Set<string>();
+  if (new Set(nativeCatalog.map((entry) => entry.nativeId)).size !== nativeCatalog.length) {
+    throw new Error("OpenClaw catalog plugin identities must be unique.");
+  }
   for (const descriptor of nativeCatalog) {
     for (const name of [descriptor.nativeId, ...descriptor.toolNames]) {
       if (!/^[a-z][a-z0-9_-]*$/.test(name) || reservedPolicyNames.has(name)) {
@@ -1000,6 +1094,7 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
         packageName: descriptor.packageName,
         version: descriptor.version,
         integrity: descriptor.integrity,
+        ...(descriptor.source === "clawhub" ? { source: descriptor.source } : {}),
       });
       if (pluginEnabled) {
         alsoAllow.push(nativeId);
@@ -1042,6 +1137,20 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     }));
   }
 
+  // Operator-approved releases selected by these plugins, keyed by selection ID.
+  // Admission records them so a revision keeps its release after the Installation
+  // list changes. Bundled entries are compiled into every Pod and need no record.
+  function openClawReleases(selections: unknown): Record<string, OpenClawPluginDescriptor> {
+    const releases: Record<string, OpenClawPluginDescriptor> = {};
+    for (const [pluginId] of selectionEntries(selections)) {
+      const descriptor = openClawCatalogDescriptor(pluginId);
+      if (approvedPlugins.includes(descriptor)) {
+        releases[pluginId] = descriptor;
+      }
+    }
+    return releases;
+  }
+
   return {
     codexCatalogEntry,
     codexCatalogEntries,
@@ -1054,16 +1163,41 @@ export function createPluginRuntimeTranslator(nativeCatalog: readonly OpenClawPl
     codexRuntimeArtifact,
     openClawCatalogEntries,
     openClawManagedEntryConfig,
+    openClawReleases,
     openClawRuntimeArtifact,
   };
 }
 
-export const PLUGIN_RUNTIME_TRANSLATOR_SOURCE = `() => (${createPluginRuntimeTranslator.toString()})(${JSON.stringify(OPENCLAW_PLUGIN_CATALOG)})`;
+// The Pod calls this with no argument for the bundled catalog, or with the
+// approved releases its admitted revision recorded.
+export const PLUGIN_RUNTIME_TRANSLATOR_SOURCE = `(approved) => (${createPluginRuntimeTranslator.toString()})(${JSON.stringify(OPENCLAW_PLUGIN_CATALOG)}, approved)`;
 
 type Translator = ReturnType<typeof createPluginRuntimeTranslator>;
 
 export const pluginRuntimeTranslator: Translator =
   createPluginRuntimeTranslator(OPENCLAW_PLUGIN_CATALOG);
+
+/** The embedded OpenClaw catalog: bundled entries plus the Installation's approved releases. */
+export interface OpenClawPluginTranslator {
+  catalogEntries(): readonly PluginCatalogEntry[];
+  validatePolicies(selections: PluginDesiredState, defaultApprovers?: PluginApprovers): void;
+  hasAliasedSelections(selections: PluginDesiredState): boolean;
+  releases(
+    selections: PluginDesiredState,
+  ): Readonly<Record<string, Readonly<Record<string, unknown>>>>;
+}
+
+export function openClawPluginTranslator(approvedPlugins: unknown): OpenClawPluginTranslator {
+  const translator = createPluginRuntimeTranslator(OPENCLAW_PLUGIN_CATALOG, approvedPlugins);
+  return {
+    catalogEntries: () =>
+      translator.openClawCatalogEntries() as unknown as readonly PluginCatalogEntry[],
+    validatePolicies: (selections, defaultApprovers) =>
+      translator.validatePolicies("openclaw", selections, defaultApprovers),
+    hasAliasedSelections: (selections) => translator.hasAliasedSelections("openclaw", selections),
+    releases: (selections) => translator.openClawReleases(selections),
+  };
+}
 
 export function codexRuntimeArtifact(
   selections: PluginDesiredState,

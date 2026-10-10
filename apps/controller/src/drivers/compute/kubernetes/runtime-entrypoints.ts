@@ -95,7 +95,8 @@ function startRuntimeReadinessServer(readiness) {
 `;
 
 export const PLUGIN_RUNTIME_HELPERS = String.raw`
-const pluginRuntimeTranslator = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE})();
+const pluginRuntimeTranslatorFor = (${PLUGIN_RUNTIME_TRANSLATOR_SOURCE});
+const pluginRuntimeTranslator = pluginRuntimeTranslatorFor();
 const {
   dirname: pluginDirname,
   resolve: pluginResolve,
@@ -1082,9 +1083,20 @@ function samePluginFailures(left, right) {
     JSON.stringify([...(right ?? [])].sort((a, b) => a.pluginId.localeCompare(b.pluginId)));
 }
 
+// Operator-approved releases travel with the admitted revision, so a Pod
+// installs what was admitted even after the Installation list changes.
+function openClawRuntimeTranslator(runtime) {
+  const releases = runtime.manifest?.releases;
+  if (releases === undefined) return pluginRuntimeTranslator;
+  if (!isPlainObject(releases)) {
+    throw new Error("OpenClaw plugin releases are invalid.");
+  }
+  return pluginRuntimeTranslatorFor(Object.values(releases));
+}
+
 function openClawPluginConfiguration(runtime, failures = [], base) {
   if (runtime.manifest?.kind === "openclaw") {
-    return pluginRuntimeTranslator.openClawRuntimeArtifact(
+    return openClawRuntimeTranslator(runtime).openClawRuntimeArtifact(
       runtime.manifest.selections ?? {},
       failures,
       runtime.manifest.pluginApprovers,
@@ -1217,7 +1229,7 @@ function requireNonEmptyString(value, description) {
 function openClawPluginPackageSpec(plugin) {
   const packageName = requireNonEmptyString(plugin.packageName, "OpenClaw plugin package name");
   const version = requireNonEmptyString(plugin.version, "OpenClaw plugin version");
-  return packageName + "@" + version;
+  return (plugin.source === "clawhub" ? "clawhub:" : "") + packageName + "@" + version;
 }
 
 function runOpenClaw(args, description, diagnostic) {
@@ -1270,10 +1282,12 @@ function verifyOpenClawPluginInstall(plugin) {
     throw new Error("OpenClaw plugin runtime version does not match the admitted release.");
   }
   const record = report.install;
-  if (record?.source !== "npm") {
+  const source = plugin.source ?? "npm";
+  if (record?.source !== source) {
     throw new Error("OpenClaw plugin install record source does not match the admitted release.");
   }
-  if (record.resolvedName !== packageName) {
+  // ClawHub records its package separately from npm's resolved name.
+  if ((source === "clawhub" ? record.clawhubPackage : record.resolvedName) !== packageName) {
     throw new Error("OpenClaw plugin installed package does not match the admitted release.");
   }
   if ((record.resolvedVersion ?? record.version) !== version) {
@@ -1293,7 +1307,7 @@ function verifyOpenClawPluginInstall(plugin) {
 function installOpenClawPlugins(runtime, failures = []) {
   const artifact =
     runtime.manifest?.kind === "openclaw"
-      ? pluginRuntimeTranslator.openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
+      ? openClawRuntimeTranslator(runtime).openClawRuntimeArtifact(runtime.manifest.selections ?? {}, failures, runtime.manifest.pluginApprovers)
       : { installs: [] };
   const installs = artifact.installs ?? [];
   const failed = [...failures];

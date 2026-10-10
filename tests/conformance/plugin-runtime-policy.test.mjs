@@ -85,6 +85,107 @@ test("OpenClaw runtime helper installs exact admitted package pins and verifies 
   assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "diffs"]);
 });
 
+const ACME_RELEASE = Object.freeze({
+  nativeId: "acme-search",
+  name: "Acme Search",
+  source: "clawhub",
+  packageName: "@acme/openclaw-search",
+  version: "1.4.2",
+  integrity: `sha256-${Buffer.alloc(32, 7).toString("base64")}`,
+  toolNames: ["acme_search"],
+});
+
+function approvedClawHubRuntime(release = ACME_RELEASE) {
+  return {
+    manifest: {
+      kind: "openclaw",
+      selections: { "occ-plugin:acme-search": { enabled: true } },
+      releases: { "occ-plugin:acme-search": release },
+    },
+  };
+}
+
+function clawHubInstallResponses(install = {}) {
+  return [
+    { status: 0, stdout: "", stderr: "" },
+    { status: 0, stdout: JSON.stringify({ refreshed: true }), stderr: "" },
+    {
+      status: 0,
+      stdout: JSON.stringify({
+        plugin: {
+          id: "acme-search",
+          version: "1.4.2",
+          rootDir: "/home/node/.openclaw/plugins/acme-search",
+        },
+        // The shape OpenClaw records for a ClawHub install: no npm resolvedName.
+        install: {
+          source: "clawhub",
+          clawhubPackage: "@acme/openclaw-search",
+          clawhubFamily: "code-plugin",
+          version: "1.4.2",
+          integrity: ACME_RELEASE.integrity,
+          installPath: "/home/node/.openclaw/plugins/acme-search",
+          ...install,
+        },
+      }),
+      stderr: "",
+    },
+  ];
+}
+
+test("OpenClaw runtime helper installs an admitted ClawHub release and verifies its install record", () => {
+  const { calls, files } = runOpenClawRuntimeHelper(
+    approvedClawHubRuntime(),
+    clawHubInstallResponses(),
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => call.args))), [
+    [
+      "/app/openclaw.mjs",
+      "plugins",
+      "install",
+      "clawhub:@acme/openclaw-search@1.4.2",
+      "--pin",
+      "--force",
+      "--no-enable",
+    ],
+    ["/app/openclaw.mjs", "plugins", "registry", "--refresh", "--json"],
+    ["/app/openclaw.mjs", "plugins", "inspect", "acme-search", "--json"],
+  ]);
+  const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
+  assert.deepEqual(effective.plugins.entries, { "acme-search": { enabled: true } });
+  assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "acme-search"]);
+});
+
+test("OpenClaw runtime helper keeps a ClawHub release unready when its install record drifts", () => {
+  for (const [install, message] of [
+    // A different archive under the same version must not become ready.
+    [{ integrity: `sha256-${Buffer.alloc(32, 8).toString("base64")}` }, /installed integrity/],
+    [{ version: "1.4.3" }, /installed version/],
+    [{ clawhubPackage: "@other/openclaw-search" }, /installed package/],
+    // An npm install of the same name is a different source than the one admitted.
+    [{ source: "npm", resolvedName: "@acme/openclaw-search" }, /install record source/],
+  ]) {
+    assert.throws(
+      () => runOpenClawRuntimeHelper(approvedClawHubRuntime(), clawHubInstallResponses(install)),
+      message,
+    );
+  }
+});
+
+test("OpenClaw runtime helper refuses admitted releases that are not exact pins", () => {
+  for (const release of [
+    { ...ACME_RELEASE, version: "^1.4.2" },
+    { ...ACME_RELEASE, integrity: undefined },
+    { ...ACME_RELEASE, nativeId: "diffs" },
+  ]) {
+    assert.throws(
+      () => runOpenClawRuntimeHelper(approvedClawHubRuntime(release), clawHubInstallResponses()),
+      /OpenClaw approved plugin|identities must be unique/,
+    );
+  }
+});
+
 test("OpenClaw runtime helper opens Diffs viewer links only through the native admin origin", () => {
   const origin = "https://agent-0123456789abcdef.agents.example.test";
   const nativeAdminGateway = {

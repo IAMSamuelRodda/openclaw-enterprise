@@ -6757,9 +6757,11 @@ export class OpenClawController {
                 lockedAgent.pluginApprovers,
                 "stored",
               );
+              const releases = driver.bindReleases?.(lockedAgent.plugins);
               return immutableCopy({
                 driver: { id: driver.id, implementation: driver.implementation },
                 plugins: lockedAgent.plugins,
+                ...(releases === undefined ? {} : { releases }),
               } satisfies PluginRevisionState);
             })();
       // Agent saves check the plugins against the Configuration they name, but a later
