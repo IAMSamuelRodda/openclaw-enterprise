@@ -1034,6 +1034,24 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     ],
   },
   {
+    name: "preflight rejects repository resource names Kubernetes refuses",
+    profile: "codex",
+    input: () => codexInput({ repository: repositoryConfiguration() }),
+    cases: [
+      ...[
+        "registryConfigMapName",
+        "serviceConfigSecretName",
+        "appKeySecretName",
+        "tlsSecretName",
+        "publicCaSecretName",
+      ].map((field) => [
+        `repository.${field}`,
+        ["Bad_Name", "bad name", `-${field.toLowerCase()}`, "a".repeat(254)],
+        "must be a Kubernetes resource name of at most 253 characters",
+      ]),
+    ],
+  },
+  {
     name: "preflight rejects invalid CIDRs before rendering",
     profile: "codex",
     input: codexInput,
