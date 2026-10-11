@@ -2107,6 +2107,22 @@ test(
       ],
       [{ "repositoryCredentials.backendId": "" }, /backendId is required/],
       [{ "repositoryCredentials.registryConfigMapName": "" }, /registryConfigMapName is required/],
+      [
+        { "repositoryCredentials.registryKey": "bad/key" },
+        /registryKey must be a Kubernetes Secret key/,
+      ],
+      [
+        { "repositoryCredentials.serviceConfigKey": "." },
+        /serviceConfigKey must be a Kubernetes Secret key/,
+      ],
+      [
+        { "repositoryCredentials.appKeyKey": "bad/key" },
+        /appKeyKey must be a Kubernetes Secret key/,
+      ],
+      [
+        { "repositoryCredentials.publicCaKey": "..ca" },
+        /publicCaKey must be a Kubernetes Secret key/,
+      ],
       [{ "repositoryCredentials.publicCaSecretName": "repository-tls" }, /dedicated Secret/],
       [{ "repositoryCredentials.appKeySecretName": "occ-auth" }, /dedicated Secret/],
       [{ "repositoryCredentials.tlsSecretName": "repository-config" }, /dedicated Secret/],
@@ -3484,6 +3500,7 @@ for (const [field, enable = {}] of [
   ["gatewayRouting.apiKeySecretName", gatewayRoutingValues],
   ["gatewayRouting.tlsSecretName", gatewayRoutingValues],
   ["gatewayRouting.gatewayClassName", gatewayRoutingValues],
+  ["gatewayRouting.issuerRef.name", externalGatewayRoutingValues],
   [
     "gatewayRouting.caSecretName",
     { ...externalGatewayRoutingValues, "gatewayRouting.caSecretKey": "ca.crt" },
@@ -3864,6 +3881,21 @@ test(
       ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
       ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
       [
+        "invalid Better Auth signing Secret key",
+        { "auth.secretKey": "bad/key" },
+        /auth\.secretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved Better Auth signing Secret key",
+        { "auth.secretKey": "." },
+        /auth\.secretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "overlong Better Auth signing Secret key",
+        { "auth.secretKey": "a".repeat(254) },
+        /auth\.secretKey must be a Kubernetes Secret key/,
+      ],
+      [
         "invalid GitHub client ID Secret key",
         { ...githubLoginValues, "auth.github.clientIdKey": "bad/key" },
         /auth\.github\.clientIdKey must be a Kubernetes Secret key/,
@@ -4010,6 +4042,15 @@ test(
       [
         "private Envoy Gateway with an incomplete private CA Secret",
         { ...externalGatewayRoutingValues, "gatewayRouting.caSecretName": "occ-private-ca" },
+      ],
+      [
+        "private Envoy Gateway with an invalid external CA Secret key",
+        {
+          ...externalGatewayRoutingValues,
+          "gatewayRouting.caSecretName": "occ-private-ca",
+          "gatewayRouting.caSecretKey": "bad/key",
+        },
+        /gatewayRouting\.caSecretKey must be a Kubernetes Secret key/,
       ],
       [
         "private Envoy Gateway with leaf TLS colliding with installation Secret",
