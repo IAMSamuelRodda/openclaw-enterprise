@@ -28,12 +28,15 @@ async function appendSource(root, file, source, check) {
 
 test("credential source boundary rejects new raw capabilities in the real source tree", async (t) => {
   // Each check re-parses every credential source, but a case changes one file. The verifier
-  // never mutates the AST, so this test reuses parses by source text.
-  const parse = parsers.typescript.parse;
+  // never mutates the AST, so this test reuses the real parser's output by source text.
+  const parse = parsers.typescript.parse.bind(parsers.typescript);
   const parsed = new Map();
-  t.mock.method(parsers.typescript, "parse", (text, ...rest) => {
+  t.mock.method(parsers.typescript, "parse", (text, ...options) => {
+    if (options.length) {
+      return parse(text, ...options);
+    }
     if (!parsed.has(text)) {
-      parsed.set(text, parse.call(parsers.typescript, text, ...rest));
+      parsed.set(text, parse(text));
     }
     return parsed.get(text);
   });
