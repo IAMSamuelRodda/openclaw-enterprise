@@ -334,6 +334,7 @@ test(
       },
       executionMode: "embedded",
     });
+    // The method is the Agent's own setting, so deployment names it (a 400 over HTTP).
     await expectBackendConflict(
       () =>
         controller.deployAgent(
@@ -341,8 +342,8 @@ test(
           { namespaceId: exactNamespace.id, agentId: embedded.id },
           resolveApprovedHarness,
         ),
-      /configured model and topology/,
-      "ResourceStateConflictError",
+      /^Agent setting harnessAuth\.method must be api_key for embedded OpenClaw on Kubernetes Compute/,
+      "ConfigurationHarnessError",
     );
     await assertNoRevision(
       fixture.pool,
