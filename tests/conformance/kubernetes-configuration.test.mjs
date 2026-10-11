@@ -904,6 +904,10 @@ test("Kubernetes Configuration accepts only whole credential references", async 
       /security boundaries/,
     );
   }
+  // Other headers are not credential slots and may hold literals.
+  await assert.doesNotReject(
+    driver.validate({ ...configuration, values: provider({ headers: { "x-api-key-id": "a" } }) }),
+  );
 });
 
 // The API server's write preconditions, and another writer that changes the ConfigMap right
@@ -950,40 +954,59 @@ test("Kubernetes Configuration changes only the exact ConfigMap it read", async 
   };
 
   // Update moves the generation by exactly one, either way, and keeps the creation time.
-  let { client, driver, stored } = await setup();
-  await assert.rejects(driver.update({ ...configuration }), /generation/);
-  await assert.rejects(
-    driver.update({ ...nextGeneration, createdAt: "2026-08-20T00:00:00.000Z" }),
-    /creation time cannot be changed/,
-  );
-  assert.equal(client.calls.replaceNamespacedConfigMap, 0);
-  await driver.update(nextGeneration);
-  assert.deepEqual(await driver.update(configuration), configuration);
+  {
+    const { client, driver } = await setup();
+    await assert.rejects(driver.update({ ...configuration }), /generation/);
+    await assert.rejects(
+      driver.update({ ...nextGeneration, createdAt: "2026-08-20T00:00:00.000Z" }),
+      /creation time cannot be changed/,
+    );
+    assert.equal(client.calls.replaceNamespacedConfigMap, 0);
+    await driver.update(nextGeneration);
+    assert.deepEqual(await driver.update(configuration), configuration);
+  }
 
   // A write another writer made after the read conflicts instead of being overwritten.
-  ({ client, driver, stored } = await setup());
-  client.raceAfterRead = (current) => {
-    current.metadata.resourceVersion = "5";
-    current.data["openclaw.json"] = JSON.stringify({ written: "elsewhere" });
-  };
-  await assert.rejects(driver.update(nextGeneration), (error) => error.code === 409);
-  assert.equal(stored().data["openclaw.json"], JSON.stringify({ written: "elsewhere" }));
+  {
+    const { client, driver, stored } = await setup();
+    client.raceAfterRead = (current) => {
+      current.metadata.resourceVersion = "5";
+      current.data["openclaw.json"] = JSON.stringify({ written: "elsewhere" });
+    };
+    await assert.rejects(driver.update(nextGeneration), (error) => error.code === 409);
+    assert.equal(stored().data["openclaw.json"], JSON.stringify({ written: "elsewhere" }));
+  }
+
+  // A stored document that breaks the value rules is never written over.
+  {
+    const { client, driver, stored } = await setup();
+    stored().data["openclaw.json"] = JSON.stringify({ env: { OPENAI_API_KEY: "literal-key" } });
+    await assert.rejects(driver.update(nextGeneration), /security boundaries/);
+    assert.equal(client.calls.replaceNamespacedConfigMap, 0);
+  }
 
   // A ConfigMap deleted and recreated after the read survives the delete.
-  ({ client, driver, stored } = await setup());
-  client.raceAfterRead = (current) => (current.metadata.uid = "uid-recreated");
-  await assert.rejects(driver.delete(configuration), (error) => error.code === 409);
-  assert.equal(stored().metadata.uid, "uid-recreated");
+  {
+    const { client, driver, stored } = await setup();
+    client.raceAfterRead = (current) => (current.metadata.uid = "uid-recreated");
+    await assert.rejects(driver.delete(configuration), (error) => error.code === 409);
+    assert.equal(stored().metadata.uid, "uid-recreated");
+  }
 
-  // A same-named ConfigMap with another manager is never deleted, and an exact inspection of
-  // one recreated at another time reports a conflict.
-  ({ client, driver, stored } = await setup());
-  stored().metadata.labels["app.kubernetes.io/managed-by"] = "helm";
-  await assert.rejects(driver.delete(configuration), /exact requested Namespace configuration/);
-  assert.equal(client.calls.deleteNamespacedConfigMap, 0);
-  assert.notEqual(stored(), undefined);
-  ({ client, driver, stored } = await setup());
-  stored().metadata.annotations["openclaw.dev/configuration-created-at"] =
-    "2026-08-20T00:00:00.000Z";
-  await assert.rejects(driver.inspectExact(configuration), ConfigurationConflictError);
+  // A same-named ConfigMap with another manager is never deleted.
+  {
+    const { client, driver, stored } = await setup();
+    stored().metadata.labels["app.kubernetes.io/managed-by"] = "helm";
+    await assert.rejects(driver.delete(configuration), /exact requested Namespace configuration/);
+    assert.equal(client.calls.deleteNamespacedConfigMap, 0);
+    assert.notEqual(stored(), undefined);
+  }
+
+  // An exact inspection of one recreated at another time reports a conflict.
+  {
+    const { driver, stored } = await setup();
+    stored().metadata.annotations["openclaw.dev/configuration-created-at"] =
+      "2026-08-20T00:00:00.000Z";
+    await assert.rejects(driver.inspectExact(configuration), ConfigurationConflictError);
+  }
 });
