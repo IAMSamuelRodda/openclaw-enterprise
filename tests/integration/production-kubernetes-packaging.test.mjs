@@ -2845,6 +2845,10 @@ test(
       render(slackProxyValues, { strings: { "slackProxy.port": "9223372036854775808" } }),
       /slackProxy\.port must be an integer TCP port/,
     );
+    await assert.rejects(
+      render({ ...slackProxyValues, "slackProxy.resources.requests.memory": "10MiB" }),
+      /slackProxy\.resources\.requests\.memory must be a Kubernetes quantity/,
+    );
   },
 );
 

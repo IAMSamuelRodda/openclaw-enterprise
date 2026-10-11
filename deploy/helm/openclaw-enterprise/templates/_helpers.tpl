@@ -373,6 +373,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $proxy.port))) (lt (int $proxy.port) 1) (gt (int $proxy.port) 65535) -}}
 {{- fail "slackProxy.port must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
+{{- include "openclaw.resourceRequirements" (dict "name" "slackProxy.resources" "requirements" $proxy.resources) -}}
 {{- end -}}
 {{- if .Values.repositoryCredentials.enabled -}}
 {{- $credentials := .Values.repositoryCredentials -}}
