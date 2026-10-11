@@ -2105,6 +2105,12 @@ test(
         { "repositoryCredentials.image": `repository-credentials@sha256:${"B".repeat(64)}` },
         /immutable SHA-256/,
       ],
+      [
+        {
+          "repositoryCredentials.image": `registry.example.invalid/foo\u00a0bar@sha256:${"c".repeat(64)}`,
+        },
+        /immutable SHA-256/,
+      ],
       [{ "repositoryCredentials.backendId": "" }, /backendId is required/],
       [{ "repositoryCredentials.registryConfigMapName": "" }, /registryConfigMapName is required/],
       [
