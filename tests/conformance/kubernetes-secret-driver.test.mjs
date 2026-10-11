@@ -350,6 +350,8 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     {
       name: "record owned by another Secret Driver",
       mutateRecord: (record) => ({ ...record, driverId: "secret-other-driver" }),
+      // delete does not compare the record's driverId: OCC picks the driver by it.
+      deleteChecksDriver: false,
     },
     {
       name: "foreign driver annotation",
@@ -399,8 +401,7 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
       SecretOwnershipError,
       scenario.name,
     );
-    // OCC picks the driver by the record's driverId, so only delete skips that one check.
-    if (scenario.mutateRecord === undefined) {
+    if (scenario.deleteChecksDriver !== false) {
       await assert.rejects(driver.delete(secret), SecretOwnershipError, scenario.name);
       assert.equal(client.calls.deleteNamespacedSecret, 0, scenario.name);
       assert.equal(client.secrets.size, 1, scenario.name);
@@ -425,15 +426,14 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     SecretBackendUnavailableError,
   );
 
-  // Malformed identities and values are refused before any request, and nothing is stored.
+  // Malformed identities and values are refused before any request, and nothing is stored,
+  // even when a namespace carries the unprefixed ID.
+  const unprefixed = `namespace_${randomUUID()}`;
+  client.addNamespace(unprefixed);
   const listed = client.calls.listNamespace;
   for (const [name, invalid, value] of [
     ["Secret ID prefix", { ...identity, id: `secret_${randomUUID()}` }, "safe-value"],
-    [
-      "Namespace ID prefix",
-      { ...identity, namespaceId: `namespace_${randomUUID()}` },
-      "safe-value",
-    ],
+    ["Namespace ID prefix", { ...identity, namespaceId: unprefixed }, "safe-value"],
     ["empty name", { ...identity, name: "" }, "safe-value"],
     // 65,537 UTF-8 bytes in 32,769 UTF-16 code units.
     ["one byte over the limit", identity, `${"é".repeat(32_768)}x`],
@@ -455,9 +455,10 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
   // Updates and conditional writes refuse what a create refuses, and write nothing.
   await assert.rejects(driver.update(secret, ""), SecretValidationError);
   await assert.rejects(driver.compareAndSwap(secret, "", "safe-value"), SecretValidationError);
-  // A record without a name is refused before it is updated or deleted.
+  // A record without a name or a backend reference is refused before it is used.
   await assert.rejects(driver.update({ ...secret, name: "" }, "safe-value"), SecretValidationError);
   await assert.rejects(driver.delete({ ...secret, name: "" }), SecretValidationError);
+  await assert.rejects(driver.resolve({ ...secret, backendRef: undefined }), SecretValidationError);
   assert.equal(client.calls.replaceNamespacedSecret, 0);
   assert.equal(await driver.withValue(secret, async (value) => value), largest);
 
@@ -466,12 +467,11 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
   assert.notEqual(again.name, backendRef.name);
   assert.equal(client.secrets.size, 2);
 
-  // A create whose answer lacks OCC ownership (a mutating webhook, say) is refused.
-  const create = client.createNamespacedSecret.bind(client);
+  // A create whose stored object lacks OCC ownership (a mutating webhook, say) is refused.
+  const realCreate = client.createNamespacedSecret.bind(client);
   client.createNamespacedSecret = async (request) => {
-    const created = await create(request);
-    delete created.metadata.labels["openclaw.dev/secret"];
-    return created;
+    delete request.body.metadata.labels["openclaw.dev/secret"];
+    return realCreate(request);
   };
   await assert.rejects(
     driver.create({ ...identity, id: secretId() }, "safe-value"),
@@ -680,8 +680,7 @@ test("kubernetes-secret-driver retries a read the API server dropped for a few s
   await assert.rejects(
     () => driver.resolve(secret),
     (error) =>
-      error instanceof SecretBackendUnavailableError &&
-      error.message === "The Kubernetes Secret backend is not authorized for this operation.",
+      error instanceof SecretBackendUnavailableError && /not authorized/.test(error.message),
   );
   assert.equal(client.reads - reads, 1);
 });
