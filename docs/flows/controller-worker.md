@@ -163,7 +163,7 @@ When Compute requires stopped predecessors, a newer admission supersedes older
 active maintenance before Compute effects, even after candidate failure.
 Recovery uses a new revision.
 
-Agent-stop work rechecks current exact-Agent `operate`. Superseded desired state
+Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
 completes without shutdown.
 
 Agent-deletion work requires the Agent to remain `deleting` and stopped, then
@@ -196,14 +196,15 @@ against the immutable revision; the
 defines when warnings permit deployment.
 
 Agent-stop dispatch captures and validates the Agent's revisions owned by the
-current Compute. It stops the active revision first, then the rest, even without
-an active pointer, including terminal candidates and predecessors whose retirement
-failed. Revisions pinned to another Compute are excluded, but an active one fails
-closed. Before each shutdown, the worker rechecks the Agent
-owner and stopped desired state; later admissions are not added. Partial failure retries
-idempotent shutdowns without clearing the active pointer or deleting retained
-workspace data. Before the convergence deadline, its Gateway drain yields to due work
-(`withYieldingGatewayDrain`), deferring as `AGENT_STOP_YIELDED` without spending an attempt.
+current Compute. It stops the active revision first, then the rest, even without an
+active pointer, including terminal candidates and predecessors whose retirement
+failed. Other Computes' revisions are excluded, but an active one fails closed.
+Before each shutdown, the worker rechecks the Agent owner and stopped desired state;
+later admissions are not added. Partial failure retries idempotent shutdowns,
+keeping the active pointer and retained workspace data. Before the convergence
+deadline, this or revision work's Gateway drain yields to due work
+(`withYieldingGatewayDrain`), deferring as `AGENT_STOP_YIELDED` without spending an
+attempt.
 
 Before shutdown or retirement, including stopped-revision recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.

@@ -147,7 +147,8 @@ type Outcome = "success" | "pending" | "retry" | "permanent";
 const REVISION_READINESS_RECHECK_MS = 500;
 const REVISION_READINESS_RECHECK_MAX_MS = 5_000;
 const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
-// An Agent stop that yielded during its Gateway drain runs again after the Work that was due.
+// Work whose stop yielded during its Gateway drain runs again after the Work that was due, at
+// least this long after, on the readiness cadence once older (finding 1088).
 const AGENT_STOP_YIELD_RECHECK_MS = 1_000;
 
 // Pending reason codes for an unready revision. Compute may say why it waits.
@@ -1892,6 +1893,7 @@ export class ControllerWorker {
 
   private async processAgentStop(claim: ClaimedWork): Promise<void> {
     let result: AgentStopDispatchResult;
+    let stopping: Readonly<AgentRevision> | undefined;
     try {
       if (
         claim.agentId === undefined ||
@@ -2032,14 +2034,8 @@ export class ControllerWorker {
           });
           return;
         }
-        // While the stop is younger than the convergence deadline its Gateway drain wait ends
-        // once other Work is due, and the work is deferred to repeat the stop. Older stops keep
-        // their full bounded wait, so a drain that never ends cannot defer forever (finding 1088).
-        await this.withClaimHeartbeat(claim, () =>
-          Date.now() - claim.createdAt.getTime() < this.convergenceTimeoutMs
-            ? withYieldingGatewayDrain(() => this.compute.stopRevision(revision))
-            : this.compute.stopRevision(revision),
-        );
+        stopping = revision;
+        await this.stopForStoppedAgent(claim, revision);
       }
       result = {
         outcome: "success",
@@ -2053,10 +2049,39 @@ export class ControllerWorker {
       }
       result =
         error instanceof ComputeStopYieldedError
-          ? { outcome: "pending", code: "AGENT_STOP_YIELDED" }
+          ? {
+              outcome: "pending",
+              code: "AGENT_STOP_YIELDED",
+              ...(stopping === undefined ? {} : { revision: stopping }),
+            }
           : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentStop(claim, result);
+  }
+
+  /**
+   * Stops a revision because its Agent is stopped. While the work is younger than the convergence
+   * deadline, the Gateway drain wait ends once other Work is due (ComputeStopYieldedError) and
+   * the work is deferred to repeat the stop. Older work keeps the full bounded wait, so a drain
+   * that never ends cannot defer it forever (finding 1088).
+   */
+  private stopForStoppedAgent(
+    claim: ClaimedWork,
+    revision: Readonly<AgentRevision>,
+  ): Promise<void> {
+    return this.withClaimHeartbeat(claim, () =>
+      Date.now() - claim.createdAt.getTime() < this.convergenceTimeoutMs
+        ? withYieldingGatewayDrain(() => this.compute.stopRevision(revision))
+        : this.compute.stopRevision(revision),
+    );
+  }
+
+  /** When work whose stop yielded to other Work runs again: 1 s, growing with its age to 5 s. */
+  private stopYieldRecheckMs(claim: ClaimedWork): number {
+    return Math.max(
+      AGENT_STOP_YIELD_RECHECK_MS,
+      revisionReadinessRecheckMs(Date.now() - claim.createdAt.getTime()),
+    );
   }
 
   private async processAgentDeletion(claim: ClaimedWork): Promise<void> {
@@ -2434,7 +2459,7 @@ export class ControllerWorker {
         await queue.defer(
           claim,
           { code: result.code },
-          { delayMs: AGENT_STOP_YIELD_RECHECK_MS, recordEvidence: false },
+          { delayMs: this.stopYieldRecheckMs(claim), recordEvidence: false },
         );
       } else {
         await queue.retry(claim, { code: result.code });
@@ -3365,7 +3390,7 @@ export class ControllerWorker {
                 await this.compute.bindAgent!({ namespace, agent });
               });
             }
-            await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+            await this.stopForStoppedAgent(claim, revision);
           }
           await this.completeStoppedRevisionWork(
             claim,
@@ -3380,7 +3405,7 @@ export class ControllerWorker {
           });
         }
         await this.closeRevisionCredentials(claim, revision);
-        await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+        await this.stopForStoppedAgent(claim, revision);
         // Once this reconciliation has published its candidate, it owns retiring
         // every predecessor even if stop admission clears the active pointer before
         // a recovery attempt. A different active revision means this candidate was
@@ -3616,6 +3641,9 @@ export class ControllerWorker {
           error instanceof ActivationFailedError
         ) {
           result = { outcome: "permanent", code: error.code };
+        } else if (error instanceof ComputeStopYieldedError) {
+          // A stopped Agent's revision stop yielded to other Work; the next pass repeats it.
+          result = { outcome: "pending", code: "AGENT_STOP_YIELDED" };
         } else if (error instanceof TransientDependencyError) {
           // A dependency that recovers by itself must not spend the attempt budget:
           // five quick retries end long before a Gateway route or an API server
@@ -4219,9 +4247,11 @@ export class ControllerWorker {
       result.outcome === "pending"
         ? safeRuntimeFailureEvidence(result.data?.runtimeFailure)
         : undefined;
+    // A yielded stop is not convergence: it yields only before the deadline and then waits.
     const expired =
       result.outcome === "pending" &&
       result.refusedCandidate === undefined &&
+      result.code !== "AGENT_STOP_YIELDED" &&
       Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
     // end, and then hold the container unready until an explicit restart that
@@ -4373,9 +4403,12 @@ export class ControllerWorker {
           { code: resolved.code },
           // A transient dependency failure is rechecked on the readiness cadence:
           // like an unready runtime, it waits for convergence, not for a fix.
-          resolved.dependencyFailure !== undefined || REVISION_READINESS_CODES.has(resolved.code)
-            ? { delayMs: revisionReadinessRecheckMs(ageMs) }
-            : {},
+          resolved.code === "AGENT_STOP_YIELDED"
+            ? { delayMs: this.stopYieldRecheckMs(claim) }
+            : resolved.dependencyFailure !== undefined ||
+                REVISION_READINESS_CODES.has(resolved.code)
+              ? { delayMs: revisionReadinessRecheckMs(ageMs) }
+              : {},
         );
       } else if (resolved.outcome === "permanent" || claim.attemptCount >= this.maxAttempts) {
         await queue.fail(claim, {
