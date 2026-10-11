@@ -6060,6 +6060,12 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     sandboxDriver,
   });
   const unrouted = new KubernetesComputeDriver(options());
+  // Without node enrollment or runtime storage no Gateway hosts a workspace node.
+  const withoutNode = [
+    unrouted,
+    new KubernetesComputeDriver(routedOptions({ runtime })),
+    new KubernetesComputeDriver(routedOptions(), { nodeEnrollment: {} }),
+  ];
 
   // f1112: the entrypoint exits at every start without the file-transfer plugin.
   const workspaceNode = "the Agent's workspace node requires the file-transfer plugin";
@@ -6087,7 +6093,9 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
       named(setting, requirement),
     );
     // A Gateway without a workspace node does not need the plugin.
-    unrouted.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
+    for (const driver of withoutNode) {
+      driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
+    }
     routed.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins });
   }
   routed.validateHarnessAuth(codex, apiKeyAuth, {
