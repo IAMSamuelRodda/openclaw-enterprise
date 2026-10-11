@@ -3505,11 +3505,19 @@ export class ControllerWorker {
         if (waited !== undefined) {
           await this.stopRefusedCandidate(claim, waited.refusal ?? "UNKNOWN_FAILURE");
         }
-        await this.finalizeRevision(claim, {
-          outcome: "success",
-          code: "REVISION_SUPERSEDED",
-          supersededBy: successor,
-        });
+        // A predecessor stop this work yielded is finished before handing off too: the newer
+        // revision stops every predecessor only if its own pass gets that far, and a refusal
+        // before then would leave the predecessor's Harness running without its Gateway
+        // (finding 1090). It still yields, unless a stored refusal's wait owns the deferral.
+        const predecessorStop = await this.finishYieldedPredecessorStops(
+          claim,
+          this.refusalWait === undefined ? "yield" : "wait",
+        );
+        await this.finalizeRevision(
+          claim,
+          { outcome: "success", code: "REVISION_SUPERSEDED", supersededBy: successor },
+          predecessorStop,
+        );
         return;
       }
       if (this.refusalWait !== undefined) {
@@ -4392,7 +4400,7 @@ export class ControllerWorker {
     if (committedOutcome === "permanent") {
       failureLogFields = {
         ...failureLogFields,
-        ...(await this.finishYieldedPredecessorStops(claim)),
+        ...(await this.finishYieldedPredecessorStops(claim, "wait")),
       };
     }
     await this.state.transactWithQueue(async (unit, queue) => {
@@ -4584,14 +4592,16 @@ export class ControllerWorker {
   /**
    * A deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) already removed the
    * serving revision's Gateway; only its drain and the Harness deletion were left to a later pass.
-   * Before such work ends in failure (a refusal, exhausted attempts, the deadline), it finishes
-   * that stop with the full bounded wait, so the predecessor ends stopped, as when the stop never
-   * yielded, rather than keeping its Harness and workspace with nothing left to stop it
-   * (finding 1090). Work that never yielded its predecessor stop leaves the serving revision alone.
-   * A stop that still fails is logged as `predecessorStop` and the failure is published anyway.
+   * Before such work ends in failure (a refusal, exhausted attempts, the deadline) or superseded,
+   * it finishes that stop, so the predecessor ends stopped, as when the stop never yielded, rather
+   * than keeping its Harness and workspace with nothing left to stop it (finding 1090). A failure
+   * finishes it with the full bounded wait (`drain` "wait"); a superseded pass may still yield.
+   * Work that never yielded its predecessor stop leaves the serving revision alone. A stop that
+   * still fails is logged as `predecessorStop` and the result is published anyway.
    */
   private async finishYieldedPredecessorStops(
     claim: ClaimedWork,
+    drain: "yield" | "wait" = "wait",
   ): Promise<Readonly<Record<string, string | number>>> {
     if (
       claim.agentId === undefined ||
@@ -4614,11 +4624,11 @@ export class ControllerWorker {
       await this.stopPredecessors(
         claim,
         revisions.filter((candidate) => candidate.revision < revision.revision),
-        "wait",
+        drain,
       );
       return {};
     } catch (error) {
-      if (error instanceof WorkClaimLostError) {
+      if (error instanceof WorkClaimLostError || error instanceof ComputeStopYieldedError) {
         throw error;
       }
       return { predecessorStop: revisionFailureLogFields(error).cause ?? "Error" };
@@ -5036,6 +5046,7 @@ export class ControllerWorker {
       outcome: "pending",
       code,
       ...failure.failureLogFields,
+      ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
     });
   }
 

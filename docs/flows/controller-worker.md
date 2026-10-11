@@ -186,8 +186,8 @@ When Compute's `requiresStoppedPredecessors` capability is set,
 [exclusive replacement](../reference/drivers/compute.md#production-revision-stages):
 it loads earlier snapshots, including failed candidates, closes their credential
 sessions, and stops them before preparing the candidate; a release failure
-prevents preparation. Their Gateway drains yield like a stopped Agent's
-(`PREDECESSOR_STOP_YIELDED`); failing work first finishes that stop. The dispatch
+prevents preparation. Their drains yield like a stopped Agent's
+(`PREDECESSOR_STOP_YIELDED`); failing or superseded work first finishes that stop. The dispatch
 guard keeps maintenance from recreating a predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys

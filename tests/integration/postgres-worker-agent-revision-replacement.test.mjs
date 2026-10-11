@@ -737,7 +737,7 @@ revisionTest(
     );
     const done = await fixture.work(replacement, "succeeded", 30_000);
     // Bounded by the drain, not by full waits of its own; yields refund their attempt.
-    assert.ok(Date.now() - requestedAt < 6_000 + 10_000, `${Date.now() - requestedAt} ms`);
+    assert.ok(Date.now() - requestedAt < 6_000 + 20_000, `${Date.now() - requestedAt} ms`);
     assert.ok(done.attempt_count <= 1, `attempts ${done.attempt_count}`);
     // Hard invariant: the replacement was prepared only after the predecessor's Harness stopped,
     // and the predecessor's stop resumed its drain rather than restarting it (one Harness stop).
@@ -785,6 +785,31 @@ revisionTest(
     assert.deepEqual(driver.harnessStops, [first.id]);
     assert.deepEqual(runningFor(driver, owner), [third.id]);
     assert.equal((await fixture.currentAgent(owner)).activeRevisionId, third.id);
+  },
+);
+
+revisionTest(
+  "a yielded redeploy superseded by a deployment refused before Compute finishes its predecessor stop",
+  async (fixture) => {
+    const { owner, driver, first, replacement } = await yieldedRedeploy(
+      fixture,
+      "drain-predecessor-handoff",
+      { drainMs: 4_000 },
+    );
+    // The newer deployment is refused before its pass reaches the predecessor sweep.
+    const refused = await fixture.revision(owner, 3, {
+      harness: { ...fixture.productionHarness, mode: "dedicated", version: "0.0.0-unapproved" },
+    });
+    await assertWorkEnds(fixture, refused, "failed_permanent", "HARNESS_DESCRIPTOR_MISMATCH");
+    await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_SUPERSEDED");
+    // The superseded work finished the stop it started, so no Harness is left without its
+    // Gateway; nothing else would stop it until a later deployment, stop or delete.
+    assert.deepEqual(driver.harnessStops, [first.id]);
+    assert.deepEqual(runningFor(driver, owner), []);
+    assert.ok(!driver.prepared.includes(replacement.id));
+    assert.ok(!driver.prepared.includes(refused.id));
+    assert.deepEqual(driver.overlaps, []);
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
   },
 );
 

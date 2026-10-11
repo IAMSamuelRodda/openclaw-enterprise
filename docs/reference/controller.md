@@ -131,8 +131,9 @@ The worker emits fixed operational event classes through the same logger:
   until the stop succeeds. A stopped Agent's stop or revision pass whose Gateway drain
   yielded to other work stays pending with `AGENT_STOP_YIELDED` and runs again after it;
   a deployment whose dedicated predecessor's drain yielded stays pending with
-  `PREDECESSOR_STOP_YIELDED`. Such a deployment that then fails first finishes that stop
-  with its full wait, and adds `predecessorStop`, the error class, if the stop still fails.
+  `PREDECESSOR_STOP_YIELDED`. Such a deployment that then fails (with the full wait) or is
+  superseded first finishes that stop, and adds `predecessorStop`, the stop's `cause`, if it
+  still fails.
   Only the work's first yield, then at most one a minute, is logged; these lines and the
   work's next other line add `stopYields`, the yields this worker counted for it. A provisioning plan that the Compute Driver refuses for a reason the caller
   cannot fix adds that `reason`. A failed Namespace pass adds the Compute Driver's
