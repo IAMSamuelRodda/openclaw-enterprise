@@ -21,11 +21,11 @@ real Installation.
   it got a fixed `409`: at provisioning and deployment, and at Agent create and
   update for `runtime` and Secret bindings. Nothing new is refused.
 - On Docker Compute, Agent create, and update while initial workspace files
-  are pending, answer `400` for an `agents.entries`
-  roster other than `main` alone, a workspace other than
-  `/home/node/.openclaw/workspace` or `/home/node/workspace`, or a true
-  `skipBootstrap` or `skipOptionalBootstrapFiles`. Before, the first
-  deployment's preparation failed. The messages match Kubernetes Compute's.
+  are pending, answer `400` for an `agents.entries` roster other than `main`
+  alone, a workspace other than `/home/node/.openclaw/workspace` or
+  `/home/node/workspace`, or a true `skipBootstrap` or
+  `skipOptionalBootstrapFiles`. Before, the first deployment's preparation
+  failed. The messages match Kubernetes Compute's.
 
 **Who is affected.** Clients that branch on the `409`, and Docker Compute
 users who saved such an Agent. Stored Agents still read.
