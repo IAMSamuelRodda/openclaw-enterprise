@@ -40,8 +40,10 @@ export function createQaReport(path, metadata) {
       } catch (thrown) {
         // A replacement error when the original's text can't be redacted in place.
         const error = redactQaError(thrown);
-        outcome.outcome = /blocked by/.test(error.message) ? "blocked" : "failed";
-        outcome.reason = error.message;
+        // A thrown non-Error (a string, undefined) still gets a reason.
+        const reason = String(error?.message ?? error);
+        outcome.outcome = /blocked by/.test(reason) ? "blocked" : "failed";
+        outcome.reason = reason;
         throw error;
       } finally {
         outcome.durationMs = Math.round(performance.now() - start);

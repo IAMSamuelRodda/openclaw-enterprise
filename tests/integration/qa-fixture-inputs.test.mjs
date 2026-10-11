@@ -52,6 +52,7 @@ test(
           if (i === 7) throw new Error('expected assertion failure');
           // A DOMException's message is getter-only; redaction must keep it.
           if (i === 11) throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
+          if (i === 13) throw undefined;
         }, 'scenario-' + i)
       ));
       await report.save();
@@ -88,7 +89,7 @@ test(
       let expectedOutcome = "passed";
       if (i === 2) {
         expectedOutcome = "blocked";
-      } else if (i === 7 || i === 11) {
+      } else if (i === 7 || i === 11 || i === 13) {
         expectedOutcome = "failed";
       }
       assert.equal(row.outcome, expectedOutcome);
@@ -104,6 +105,7 @@ test(
       report.outcomes.find((row) => row.stage === "stage-11").reason,
       "The operation was aborted due to timeout",
     );
+    assert.equal(report.outcomes.find((row) => row.stage === "stage-13").reason, "undefined");
     assert.equal((await stat(output)).mode & 0o777, 0o600);
     assert.deepEqual(await readdir(directory), ["matrix.json"]);
   },
@@ -830,7 +832,8 @@ test("QA error redaction keeps errors whose message cannot be written", async ()
   assert.match(unfrozen.stack, /^Error: denied \[REDACTED\]\n/);
   assert.ok(!inspect(unfrozen).includes(value), inspect(unfrozen));
 
-  // A thrown non-object passes through.
+  // A thrown string is redacted; other non-objects pass through.
+  assert.equal(redactQaError(`token ${value}`), "token [REDACTED]");
   assert.equal(redactQaError(undefined), undefined);
 });
 

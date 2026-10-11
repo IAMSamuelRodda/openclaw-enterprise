@@ -38,26 +38,27 @@ export function registerQaSecret(value) {
   }
 }
 
-// Redacts registered secrets from an error's message and stack. It returns the
-// error to rethrow: the same one when it could be updated in place, otherwise a
+// Redacts registered secrets from an error's message and stack (or a thrown
+// string). It returns the error to rethrow: the same one when it could be updated in place, otherwise a
 // plain Error carrying the redacted text. Some errors cannot be updated: a
 // DOMException (AbortSignal.timeout's TimeoutError) has a getter-only `message`,
 // and a frozen error has read-only fields. The replacement keeps the name and
 // code but not the original as `cause`, which would print the secret again.
 export function redactQaError(error) {
+  // Longest first, so a value containing another is replaced whole.
+  const secrets = [...protectedValues].sort((a, b) => b.length - a.length);
+  const redact = (text) =>
+    secrets.reduce((value, secret) => value.replaceAll(secret, "[REDACTED]"), text);
+  if (typeof error === "string") {
+    return redact(error);
+  }
   if (error === null || typeof error !== "object") {
     return error;
   }
-  // Longest first, so a value containing another is replaced whole.
-  const secrets = [...protectedValues].sort((a, b) => b.length - a.length);
   const redacted = {};
   for (const field of ["message", "stack"]) {
-    const text = error[field];
-    if (typeof text === "string") {
-      redacted[field] = secrets.reduce(
-        (value, secret) => value.replaceAll(secret, "[REDACTED]"),
-        text,
-      );
+    if (typeof error[field] === "string") {
+      redacted[field] = redact(error[field]);
     }
   }
   const changed = Object.entries(redacted).filter(([field, value]) => error[field] !== value);
