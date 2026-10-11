@@ -254,7 +254,7 @@ test("a deployment whose stopped Agent's drain yielded says so in its progress",
       at: at.toISOString(),
       code: "AGENT_STOP_YIELDED",
       message:
-        "The Agent was stopped; waiting for its gateway to finish its active work before it stops.",
+        "The Agent was stopped; its gateway is finishing active work before the stop completes.",
     },
     nextAttemptAt: availableAt.toISOString(),
   });

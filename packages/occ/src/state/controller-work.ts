@@ -103,7 +103,7 @@ export function deploymentProgressForWork(
       // deployment then ends stopped (finding 1106).
       code = attempt.code;
       message =
-        "The Agent was stopped; waiting for its gateway to finish its active work before it stops.";
+        "The Agent was stopped; its gateway is finishing active work before the stop completes.";
       break;
     case "AGENT_GATEWAY_UNAVAILABLE":
       code = attempt.code;

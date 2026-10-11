@@ -860,7 +860,7 @@ revisionTest(
       fixture,
       "drain-predecessor-stopped",
       {
-        drainMs: 6_000,
+        drainMs: 10_000,
         start: {
           transformDrivers: proxiedIAM(async (iam, request) => {
             const decision = await iam.authorize(request);
