@@ -7528,6 +7528,12 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     },
     (role) => ({ ...held(role), podUid: "replaced-pod-uid" }),
     (role) => ({ ...held(role), runtimeFailure: { ...heldFailure, code: "not a code" } }),
+    // Date.parse accepts this impossible date and normalizes it to March 2. The
+    // private runtime boundary must not turn it into different failure evidence.
+    (role) => ({
+      ...held(role),
+      runtimeFailure: { ...heldFailure, checkedAt: "2026-02-30T11:59:00.000Z" },
+    }),
     // Parseable, but outside the timestamps OCC accepts.
     (role) => ({
       ...held(role),
