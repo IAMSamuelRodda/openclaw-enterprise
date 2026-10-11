@@ -21,13 +21,21 @@ const dnsSubdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-
 // repositoryCredentials.serviceName.
 const dns1035Label = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
 const kubernetesSecretKey = /^[-._A-Za-z0-9]+$/;
+function isKubernetesSecretKey(value) {
+  return (
+    value !== "." &&
+    !value.startsWith("..") &&
+    value.length <= 253 &&
+    kubernetesSecretKey.test(value)
+  );
+}
 // The rule for a Kubernetes resource name field, such as a GatewayClass or Secret name.
 const resourceNameRule = {
   validate: isKubernetesResourceName,
   description: "a Kubernetes resource name of at most 253 characters",
 };
 const secretKeyRule = {
-  validate: (candidate) => candidate.length <= 253 && kubernetesSecretKey.test(candidate),
+  validate: isKubernetesSecretKey,
   description: "a Kubernetes Secret key of at most 253 characters",
 };
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;

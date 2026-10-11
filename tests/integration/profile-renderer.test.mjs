@@ -1753,8 +1753,11 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
   );
   for (const [provider, key, value] of [
     ["github", "clientIdKey", "bad/key"],
+    ["github", "clientSecretKey", "."],
     ["google", "clientSecretKey", "a".repeat(254)],
+    ["google", "clientIdKey", "..client-id"],
     ["oidc", "clientIdKey", "bad/key"],
+    ["oidc", "clientSecretKey", "..client-secret"],
   ]) {
     assertPreflightFailure(
       "openclaw",
@@ -1773,6 +1776,12 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
       }),
       new RegExp(`controlPlane\\.${provider}\\.${key} must be a Kubernetes Secret key`),
     );
+  }
+  for (const signIn of [
+    { github: { clientIdKey: ".hidden" } },
+    { github: undefined, google: { clientSecretKey: "a".repeat(253) } },
+  ]) {
+    assert.equal(render("openclaw", externalSignInInput(signIn)).summary.ok, true);
   }
   const oidc = {
     issuer: "https://tenant.idp.example.test/",

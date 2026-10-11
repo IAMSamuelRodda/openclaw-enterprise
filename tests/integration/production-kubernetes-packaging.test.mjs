@@ -3805,6 +3805,11 @@ test(
         /auth\.github\.clientIdKey must be a Kubernetes Secret key/,
       ],
       [
+        "reserved GitHub client secret Secret key",
+        { ...githubLoginValues, "auth.github.clientSecretKey": "." },
+        /auth\.github\.clientSecretKey must be a Kubernetes Secret key/,
+      ],
+      [
         "overlong Google client secret Secret key",
         {
           "auth.google.enabled": "true",
@@ -3821,6 +3826,15 @@ test(
           "auth.oidc.clientIdKey": "bad/key",
         },
         /auth\.oidc\.clientIdKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved Google client ID Secret key",
+        {
+          "auth.google.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.google.clientIdKey": "..client-id",
+        },
+        /auth\.google\.clientIdKey must be a Kubernetes Secret key/,
       ],
       ["shared migration database credentials", { "database.migrationUrlKey": "application-url" }],
       [
@@ -3966,11 +3980,18 @@ test(
         {
           "auth.oidc.enabled": "true",
           "auth.recoveryUserId": "recovery-admin_1",
+          "auth.oidc.issuer": "https://tenant.idp.example.test/",
+          "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
+          "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
+          "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
           "auth.oidc.clientSecretKey": "a".repeat(253),
         },
       ],
     ]) {
-      assert.match((await render(override)).stdout, new RegExp(`OCC_AUTH_${provider.toUpperCase()}`));
+      assert.match(
+        (await render(override)).stdout,
+        new RegExp(`OCC_AUTH_${provider.toUpperCase()}`),
+      );
     }
     // OCI SHA-256 digests are `sha256` and lowercase hex; containerd refuses other
     // spellings at pull time. The uppercase algorithm was already refused; uppercase hex
