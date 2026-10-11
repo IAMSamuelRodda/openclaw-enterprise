@@ -1394,7 +1394,8 @@ describe("Presets", { concurrency: 2 }, () => {
       (error) =>
         /can create Presets in every Namespace/.test(error.message) &&
         error.cause instanceof AuthorizationDeniedError &&
-        error.cause.authorization?.action === "create",
+        error.cause.authorization?.action === "create" &&
+        error.cause.evidence?.identityId === scoped.id,
     );
     assert.deepEqual(await listPresets(fixture, unseeded.id), []);
 
@@ -1606,10 +1607,10 @@ describe("Presets", { concurrency: 2 }, () => {
   test("startup refreshes a copy only from its own bundled file's history, not another file reusing its name", async (t) => {
     const runtime = await bundledRuntime(t, { includeDefaults: true });
     // standard-codex.json once shipped as "standard-codex"; a later release bundles a
-    // different file under that retired name.
+    // different file, here with the OpenClaw template, under that retired name.
     const retired = await archivedDefault("standard-codex.json", "a07d1e2070d95c99");
     const { template } = runtime.bundledPresetVersions.find(
-      (version) => version.current && version.file === "standard-codex.json",
+      (version) => version.current && version.file === "standard-openclaw.json",
     );
     const reused = { name: retired.name, template };
     const fixture = await createFixture(t, {
