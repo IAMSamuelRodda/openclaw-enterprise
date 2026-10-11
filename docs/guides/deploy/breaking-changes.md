@@ -11,18 +11,21 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
-## 2026-10-11: the chart refuses malformed Secret and ConfigMap names
+## 2026-10-11: the chart refuses malformed Secret, ConfigMap and GatewayClass names
 
 **What breaks.** `helm template`, `install` and `upgrade` fail when a Secret
-name the chart reads, or `repositoryCredentials.registryConfigMapName`, is not
-a Kubernetes resource name: lowercase letters, digits, `-` and `.`, starting
-and ending with a letter or digit, at most 253 characters. Examples are
-`database.caSecretName`, `gatewayRouting.apiKeySecretName`, `auth.*.secretName`
-and `executionCluster.*KubeconfigSecretName`. Kubernetes refused such a name
-later, in the Pod spec; profile preflight refused the same names.
+name the chart reads, `repositoryCredentials.registryConfigMapName` or
+`gatewayRouting.gatewayClassName` is not a Kubernetes resource name: lowercase
+letters, digits, `-` and `.`, starting and ending with a letter or digit, at
+most 253 characters. Examples are `database.caSecretName`,
+`gatewayRouting.apiKeySecretName`, `auth.*.secretName` and
+`executionCluster.*KubeconfigSecretName`. Kubernetes either refused such a Pod
+or left it waiting for a Secret that cannot exist. Profile preflight already
+refused the names it writes.
 
-**Who is affected.** Hand-written values files with such a name. Profile
-output is unchanged. Settings of disabled features are not checked.
+**Who is affected.** Hand-written values files with such a name. No working
+Installation is affected, since Kubernetes cannot create a Secret, ConfigMap or
+GatewayClass with that name. Settings of disabled features are not checked.
 
 **How to tell.** Rendering fails with
 `<setting> must be a Kubernetes resource name of at most 253 characters`.

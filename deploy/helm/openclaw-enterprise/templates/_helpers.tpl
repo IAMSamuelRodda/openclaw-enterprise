@@ -321,6 +321,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if .Values.backend.chatgpt.enabled -}}
 {{- $chatgpt := .Values.backend.chatgpt -}}
+{{- /* Checked here as well as in the dedicated-Secret table below, so this refusal keeps its place before backend.chatgpt.key. */ -}}
 {{- if $chatgpt.secretName -}}{{- include "openclaw.validateResourceName" (dict "label" "backend.chatgpt.secretName" "value" $chatgpt.secretName) -}}{{- end -}}
 {{- if $chatgpt.key -}}{{- include "openclaw.validateSecretKey" (dict "label" "backend.chatgpt.key" "value" $chatgpt.key) -}}{{- end -}}
 {{- end -}}
@@ -441,6 +442,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 
 {{- if not $routing.gatewayClassName -}}{{- fail "gatewayRouting.gatewayClassName must reference an operator-created GatewayClass" -}}{{- end -}}
+{{- include "openclaw.validateResourceName" (dict "label" "gatewayRouting.gatewayClassName" "value" $routing.gatewayClassName) -}}
 {{- /* Compute required() keeps the original string. validateGatewayName then refuses a name that is not DNS-safe, or longer than 63 characters, because Envoy copies it into the owning-gateway-name label. Check the name the Gateway template emits, including surrounding spaces. */ -}}
 {{- $gatewayName := include "openclaw.gatewayRouting.gatewayName" . -}}
 {{- if or (gt (len $gatewayName) 63) (not (regexMatch "^[a-z0-9](?:[a-z0-9-]*[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]*[a-z0-9])?)*$" $gatewayName)) -}}
@@ -483,7 +485,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $cookieDomain (or (eq $routing.sandbox.domain $cookieDomain) (hasSuffix (printf ".%s" $cookieDomain) $routing.sandbox.domain) (hasSuffix (printf ".%s" $routing.sandbox.domain) $cookieDomain)) -}}{{- fail "gatewayRouting.sandbox.domain must be outside the OCE shared session cookie domain" -}}{{- end -}}
 {{- end -}}
 {{- end -}}
-{{- /* Dedicated Secrets (findings 1037, 1044, 1046, 1048, 1054): each Secret an enabled feature reads, or cert-manager writes, needs its own name. A shared Secret mounts other credentials into a component, is overwritten by cert-manager (the Gateway TLS and root CA), or turns its other entries into keys Envoy Gateway's apiKeyAuth accepts (gatewayRouting.apiKeySecretName). Chart-named and generated Secrets come first and the log collector's last, so a refusal names the operator's setting. The public CA settings (marked "ca") may share one Secret with each other, such as one trust bundle: each mounts only its selected key, which holds public data (finding 1059). They stay apart from database.secretName, whose migration URL key a matching CA key would mount into the API and worker. Each name must also be a Kubernetes resource name, so a malformed one fails here rather than at Pod admission (finding 1066). */ -}}
+{{- /* Dedicated Secrets (findings 1037, 1044, 1046, 1048, 1054): each Secret an enabled feature reads, or cert-manager writes, needs its own name. A shared Secret mounts other credentials into a component, is overwritten by cert-manager (the Gateway TLS and root CA), or turns its other entries into keys Envoy Gateway's apiKeyAuth accepts (gatewayRouting.apiKeySecretName). Chart-named and generated Secrets come first and the log collector's last, so a refusal names the operator's setting. The public CA settings (marked "ca") may share one Secret with each other, such as one trust bundle: each mounts only its selected key, which holds public data (finding 1059). They stay apart from database.secretName, whose migration URL key a matching CA key would mount into the API and worker. Each name must also be a Kubernetes resource name, so a malformed one fails here rather than when Kubernetes refuses the Pod or leaves it waiting for a Secret that cannot exist (finding 1066). */ -}}
 {{- $routing := .Values.gatewayRouting -}}
 {{- $roles := list -}}
 {{- if and $routing.enabled (not $routing.issuerRef.name) -}}{{- $roles = append $roles (list "the generated Gateway root CA" (include "openclaw.gatewayRouting.rootSecretName" .)) -}}{{- end -}}

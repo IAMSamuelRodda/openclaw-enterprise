@@ -3455,9 +3455,9 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
   assert.equal(longest.length, 253);
 });
 
-// Findings 1065 and 1066: every Secret or ConfigMap name an operator sets must be a Kubernetes
-// resource name, the profile renderer's resourceNameRule, so a malformed one fails at template
-// time instead of at Pod admission.
+// Findings 1065 and 1066: every Secret or ConfigMap name an operator sets, and the GatewayClass,
+// must be a Kubernetes resource name (the profile renderer's resourceNameRule), so a malformed
+// one fails at template time instead of in the cluster.
 const oidcLoginValues = {
   "auth.oidc.enabled": "true",
   "auth.recoveryUserId": "recovery-admin_1",
@@ -3483,6 +3483,7 @@ for (const [field, enable = {}] of [
   ["backend.chatgpt.secretName", chatgptValues],
   ["gatewayRouting.apiKeySecretName", gatewayRoutingValues],
   ["gatewayRouting.tlsSecretName", gatewayRoutingValues],
+  ["gatewayRouting.gatewayClassName", gatewayRoutingValues],
   [
     "gatewayRouting.caSecretName",
     { ...externalGatewayRoutingValues, "gatewayRouting.caSecretKey": "ca.crt" },

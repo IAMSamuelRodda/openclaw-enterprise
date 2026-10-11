@@ -985,7 +985,7 @@ fieldParity("log collector exporter CIDRs get the same verdict from preflight an
 });
 
 // Findings 1065 and 1066: preflight (resourceNameRule) and the chart
-// (openclaw.validateResourceName) refuse the same operator-set Secret names, with the same rule.
+// (openclaw.validateResourceName) refuse the same operator-set names, with the same rule.
 const resourceNameRefusal = (field) =>
   new RegExp(`${escape(field)} must be a Kubernetes resource name of at most 253 characters`);
 const resourceNameCases = [
@@ -1010,25 +1010,28 @@ for (const [field, chartField, controlPlane, values] of [
     (apiKeySecretName) => ({ gatewayRouting: { apiKeySecretName } }),
   ],
   [
+    "controlPlane.gatewayClassName",
+    "gatewayRouting.gatewayClassName",
+    (gatewayClassName) => ({ gatewayClassName }),
+    (gatewayClassName) => ({ gatewayRouting: { gatewayClassName } }),
+  ],
+  [
     "controlPlane.github.secretName",
     "auth.github.secretName",
     (secretName) => ({ github: { egressCidrs: ["140.82.112.0/20"], secretName } }),
     (secretName) => ({ auth: { github: { secretName } } }),
   ],
 ]) {
-  test(
-    `${field} and ${chartField} refuse the same malformed Secret names`,
-    { skip: helmSkip },
-    () =>
-      each(resourceNameCases, ([name, accepted]) =>
-        assertParity({
-          label: short(name),
-          controlPlane: controlPlane(name),
-          values: values(name),
-          accepted,
-          rendererError: resourceNameRefusal(field),
-          chartError: resourceNameRefusal(chartField),
-        }),
-      ),
+  test(`${field} and ${chartField} refuse the same malformed names`, { skip: helmSkip }, () =>
+    each(resourceNameCases, ([name, accepted]) =>
+      assertParity({
+        label: short(name),
+        controlPlane: controlPlane(name),
+        values: values(name),
+        accepted,
+        rendererError: resourceNameRefusal(field),
+        chartError: resourceNameRefusal(chartField),
+      }),
+    ),
   );
 }
