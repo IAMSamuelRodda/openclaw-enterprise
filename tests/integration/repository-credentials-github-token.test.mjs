@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import test from "node:test";
+import { describe, it } from "node:test";
 import { createServer } from "node:http";
 import { request as httpsRequest } from "node:https";
 import { connect } from "node:net";
@@ -26,6 +26,12 @@ import {
   createGitHubTokenServiceFactory,
   startServiceListeners,
 } from "../fixtures/repository-credentials/service-resources.mjs";
+
+// Each case starts its own service, Git and GitHub fixtures and spends most of
+// its time waiting on stock Git children. The cases register here and run
+// concurrently in one suite at the end of the file.
+const cases = [];
+const test = (name, body) => cases.push([name, body]);
 
 // Stock Git must reach the gateway under its public HTTPS name. A CONNECT proxy
 // forwards only that name to the listener; TLS still terminates at the gateway.
@@ -435,4 +441,10 @@ test("a development token push of more than 256 refs is refused with its own cod
     },
   });
   assert.equal(receivePacks(fixture), before);
+});
+
+describe("development token repository credentials", { concurrency: true }, () => {
+  for (const [name, body] of cases) {
+    it(name, body);
+  }
 });
