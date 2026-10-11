@@ -219,6 +219,7 @@ test("QA waits report the last observation when they time out", async () => {
       "fake condition",
       async () => {
         observations += 1;
+        assert.ok(observations < 100, "the wait follows the fake clock");
         clock += 100;
         last = { observation: observations, pods: ["runtime-0"] };
         return false;
@@ -336,6 +337,7 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
         return undefined;
       }
       clock += 1_000;
+      assert.ok(clock < 100_000, "the stop wait follows the fake clock");
       return { desiredRuntimeState: "stopped", activeRevisionId: "revision-1" };
     },
     async kubectl(...args) {
@@ -564,6 +566,7 @@ test("a QA Agent stop waits for the Gateway stop bound and records a slow stop w
         }
         clock += steps[Math.min(reads, steps.length - 1)];
         reads += 1;
+        assert.ok(reads < 100, "the stop wait follows the fake clock");
         return finished()
           ? { desiredRuntimeState: "stopped", activeRevisionId: null }
           : { desiredRuntimeState: "stopped", activeRevisionId: "revision-4" };
@@ -696,25 +699,27 @@ test("a QA Agent stop waits for the Gateway stop bound and records a slow stop w
   assert.equal(written.length, 3);
 
   // The default timeout is that bound on the same clock: a stop that completes once the
-  // Gateway wait plus three minutes has passed still passes; one still running when
-  // the timeout is reached fails.
+  // Gateway wait plus three minutes has passed still passes; one still running at the
+  // bound fails.
   const bound = GATEWAY_STOP_TIMEOUT_MS + 10_000 + 3 * 60_000;
   clock = 0;
   const atBoundAgent = { id: "agent-6", namespaceId: "namespace-1" };
   await stopQaAgent(fixture([bound - 1, 1]).f, atBoundAgent, { now, interval: 0 });
   assert.equal(atBoundAgent.stopped, true);
   assert.equal(written.length, 4);
-  assert.ok(written[3].includes(`Agent agent-6 took ${Math.round(bound / 1000)} s`));
+  assert.match(written[3], new RegExp(`Agent agent-6 took ${Math.round(bound / 1000)} s`));
   clock = 0;
   const pastBoundAgent = { id: "agent-7", namespaceId: "namespace-1" };
   await assert.rejects(
-    stopQaAgent(fixture([QA_STOP_TIMEOUT_MS], { done: false }).f, pastBoundAgent, {
+    stopQaAgent(fixture([bound], { done: false }).f, pastBoundAgent, {
       now,
       interval: 0,
     }),
     { message: /^Timed out: ordinary Agent stop removes every runtime Pod; / },
   );
   assert.equal(pastBoundAgent.stopped, undefined);
+  // It timed out on its first read, at the bound: the timeout is no longer than the bound.
+  assert.equal(clock, bound);
 });
 
 test("QA log redaction hides each line of a registered multi-line secret", async () => {

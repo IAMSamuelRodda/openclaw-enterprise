@@ -21,7 +21,7 @@ export async function waitFor(
   description,
   observe,
   timeout = 300_000,
-  { describe, interval = 1000, now = Date.now } = {},
+  { describe, interval = 1000, now = () => Date.now() } = {},
 ) {
   const deadline = now() + timeout;
   while (now() < deadline) {
