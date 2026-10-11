@@ -2536,13 +2536,13 @@ test(
   "an expired last claim of a deployment whose predecessor stop yielded gets one more attempt, once",
   requiresPostgres,
   async (context) => {
-    const { pool, queue } = await dependencies(context, { leaseDurationMs: 40, maxAttempts: 2 });
-    const { namespaceId, agents } = await createResources(pool, 2);
+    const { pool, queue } = await dependencies(context, { leaseDurationMs: 200, maxAttempts: 2 });
+    const { namespaceId, agents } = await createResources(pool, 3);
     const crash = async (key) => {
       const claim = await claimExpected(queue, key);
       assert.equal(claim.attemptCount, 2);
-      await delay(80);
-      return queue.recoverStale();
+      await delay(300);
+      return queue.recoverStale({ limit: 1_000 });
     };
     const yielded = await predecessorDeployment(pool, queue, namespaceId, agents[0], {
       yielded: true,
@@ -2575,8 +2575,26 @@ test(
       ["LEASE_EXPIRED", true],
     ]);
 
+    // A deployment that already had the activation recovery's extra attempt (its pointer was
+    // published, so its predecessors were stopped) does not get this one too.
+    const activated = await predecessorDeployment(pool, queue, namespaceId, agents[1], {
+      yielded: true,
+      failures: 1,
+    });
+    await pool.query(
+      `INSERT INTO occ.audit_events (id, occurred_at, kind, actor_id, action, namespace_id,
+         resource_kind, resource_id, outcome, details)
+       SELECT 'aud_' || gen_random_uuid()::text, clock_timestamp(), 'mutation', actor_id,
+         'reconcile', namespace_id, 'agent_revision', revision_id, 'failure',
+         jsonb_build_object('reasonCode', 'ACTIVE_REVISION_RECOVERY', 'workId', idempotency_key)
+       FROM occ.controller_work WHERE idempotency_key = $1`,
+      [activated],
+    );
+    assert.ok(failedOn(await crash(activated), activated));
+    assert.equal((await workState(pool, activated)).reason_code, "LEASE_EXPIRED");
+
     // Work without that evidence never started a predecessor stop: it fails as before.
-    const plain = await predecessorDeployment(pool, queue, namespaceId, agents[1], {
+    const plain = await predecessorDeployment(pool, queue, namespaceId, agents[2], {
       yielded: false,
       failures: 1,
     });
@@ -2617,7 +2635,9 @@ test(
     });
     await park(plain);
     const restarted = new PostgresWorkQueue(pool, { maxAttempts: 2, random: () => 0 });
-    const recovery = await restarted.recoverStale();
+    // Parked rows sort last in the sweep; the limit keeps other tests' leftovers from crowding
+    // them out.
+    const recovery = await restarted.recoverStale({ limit: 1_000 });
     assert.ok(!failedOn(recovery, yielded));
     assert.ok(failedOn(recovery, plain));
     assert.deepEqual(await workState(pool, yielded), {
@@ -2638,7 +2658,7 @@ test(
       "UPDATE occ.controller_work SET attempt_count = 2 WHERE idempotency_key = $1",
       [yielded],
     );
-    assert.ok(failedOn(await restarted.recoverStale(), yielded));
+    assert.ok(failedOn(await restarted.recoverStale({ limit: 1_000 }), yielded));
     assert.deepEqual(await workState(pool, yielded), {
       state: "failed_permanent",
       attempt_count: 2,

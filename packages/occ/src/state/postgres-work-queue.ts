@@ -48,9 +48,13 @@ export interface RecoveryRequest {
 }
 
 export interface RecoverySummary {
+  /** Expired claims this pass recovered. */
   readonly recovered: number;
+  /** Work queued again: recovered claims, and queued work at its limit given one more attempt. */
   readonly requeued: number;
+  /** Work this pass failed permanently, from expired claims or queued exhaustion. */
   readonly failedPermanent: number;
+  /** Queued work at its attempt limit that this pass failed permanently. */
   readonly exhaustedQueued: number;
   /** The work this pass failed permanently, for follow-up the worker owns. */
   readonly failed: readonly ControllerWork[];
@@ -453,8 +457,10 @@ function workEvidenceExistsSql(code: string): string {
 // claim, or queued exhaustion) without a pass instead requeues it once with one more attempt,
 // so the predecessor is not left with its Harness, workspace and credentials and no Gateway
 // (finding 1107). PREDECESSOR_STOP_RECOVERY evidence bounds this to once per deployment, so a
-// pass that keeps crashing cannot requeue it forever: the next limit ends it as before.
-// `candidates` holds locked work keys and `excluded` keys another recovery owns; `$2` is
+// pass that keeps crashing cannot requeue it forever: the next limit ends it as before. It never
+// follows an ACTIVE_REVISION_RECOVERY grant (the pointer was published, so the predecessors were
+// already stopped); that recovery keeps its own once-only grant, so a deployment gets at most
+// two. `candidates` holds locked work keys and `excluded` keys another recovery owns; `$2` is
 // maxAttempts.
 function recoveringPredecessorStopsSql(candidates: string, excluded: string): string {
   return `
@@ -469,6 +475,7 @@ function recoveringPredecessorStopsSql(candidates: string, excluded: string): st
         AND ${excluded}
         AND ${workEvidenceExistsSql("PREDECESSOR_STOP_YIELDED")}
         AND NOT ${workEvidenceExistsSql(PREDECESSOR_STOP_RECOVERY)}
+        AND NOT ${workEvidenceExistsSql(ACTIVE_REVISION_RECOVERY)}
     ),`;
 }
 
@@ -1487,6 +1494,7 @@ export class PostgresWorkQueue {
          "candidates",
          "true",
        )} transitioned AS (
+         -- A requeued row keeps its available_at: it was already queued.
          UPDATE occ.controller_work AS work
          SET state = CASE WHEN ${predecessorStop} THEN 'queued' ELSE 'failed_permanent' END,
              attempt_count = CASE

@@ -191,7 +191,7 @@ test("a deployment recovered to finish its predecessor stop says so in its progr
         at: at.toISOString(),
         code: "PREDECESSOR_STOP_RECOVERY",
         message:
-          "The previous worker claim expired on the last attempt while the previous version was stopping. The controller will try once more.",
+          "The last attempt ended while the previous version was stopping. The controller will try once more.",
       },
       nextAttemptAt: availableAt.toISOString(),
     },
