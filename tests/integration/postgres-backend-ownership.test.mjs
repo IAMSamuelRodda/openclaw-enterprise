@@ -476,8 +476,8 @@ test(
             { namespaceId: exactNamespace.id, agentId: dedicated.id },
             resolveApprovedHarness,
           ),
-        /configured model and topology/,
-        "ResourceStateConflictError",
+        /^Agent setting harnessAuth\.method must be api_key or credential_source for Dedicated OpenClaw on Kubernetes Compute/,
+        "ConfigurationHarnessError",
       );
       assert.deepEqual(await admissionCounts(), beforeNativeAttempts, source.kind);
     }
