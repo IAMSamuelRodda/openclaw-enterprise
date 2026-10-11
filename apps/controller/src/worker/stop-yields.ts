@@ -2,9 +2,9 @@
 
 const STOP_YIELD_RECHECK_MIN_MS = 1_000;
 const STOP_YIELD_RECHECK_MAX_MS = 5_000;
-// The recheck reaches its 5 s cap 50 s into the stop. A Kubernetes Gateway drains for up to
-// 315 s, so most of a long drain is rechecked every 5 s, and a finished drain is noticed
-// within 5 s (finding 1093).
+// The recheck reaches its 5 s cap 50 s into the stop. A Kubernetes Gateway drains active work
+// for up to 315 s (the stop waits at most about 340 s), so most of a long drain is rechecked
+// every 5 s, and a finished drain is noticed within 5 s (finding 1093).
 const STOP_YIELD_RECHECK_AGE_DIVISOR = 10;
 /** A yielded stop's `worker.completed` line is written at most this often (finding 1094). */
 export const STOP_YIELD_LOG_INTERVAL_MS = 60_000;
@@ -34,7 +34,8 @@ interface YieldedStop {
  *   rechecks their own drain. Several stops draining at once would otherwise yield to each
  *   other and repeat their passes back to back for the whole drain.
  * - Their `worker.completed` lines are throttled: the first yield is logged, then at most one
- *   a minute, each with the work's yield count so far.
+ *   a minute, each with the work's yield count so far, which the work's next other line
+ *   (usually its completion) carries too.
  *
  * The record is this worker's own: after a restart, or for another worker's stops, the first
  * yield counts as due Work and is logged, as before.
@@ -59,6 +60,11 @@ export class StopYields {
     }
     this.stops.set(key, { loggedAt: now, yields, yieldedAt: now });
     return yields;
+  }
+
+  /** How many yields this worker recorded for `key` since it last settled, if any. */
+  count(key: string): number | undefined {
+    return this.stops.get(key)?.yields;
   }
 
   /** `key`'s pass ended without yielding its stop: it is no longer a yielded stop. */

@@ -616,6 +616,11 @@ function validComputeFailureDiagnostic(
   );
 }
 
+/** A yielded stop's log lines name how often this worker saw its stop yield (finding 1094). */
+function stopYieldsField(stopYields: number | undefined): { stopYields?: number } {
+  return stopYields === undefined ? {} : { stopYields };
+}
+
 function workLogFields(claim: ClaimedWork): {
   readonly workId: string;
   readonly attempt: number;
@@ -2500,6 +2505,8 @@ export class ControllerWorker {
       if (stopYields === undefined) {
         return;
       }
+    } else {
+      stopYields = this.stopYields.count(claim.idempotencyKey);
     }
     this.emit({
       event: "worker.completed",
@@ -2510,7 +2517,7 @@ export class ControllerWorker {
       result: result.outcome,
       outcome: result.outcome,
       code: result.code,
-      ...(stopYields === undefined ? {} : { stopYields }),
+      ...stopYieldsField(stopYields),
     });
   }
 
@@ -4504,6 +4511,8 @@ export class ControllerWorker {
       if (stopYields === undefined) {
         return;
       }
+    } else {
+      stopYields = this.stopYields.count(claim.idempotencyKey);
     }
     this.emit({
       event: "worker.completed",
@@ -4516,7 +4525,7 @@ export class ControllerWorker {
       code: resolved.code,
       ...failureLogFields,
       ...this.deployTimingFields(claim),
-      ...(stopYields === undefined ? {} : { stopYields }),
+      ...stopYieldsField(stopYields),
     });
   }
 
@@ -4767,6 +4776,7 @@ export class ControllerWorker {
       outcome: "success",
       code,
       ...this.deployTimingFields(claim),
+      ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
     });
   }
 

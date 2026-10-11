@@ -2002,7 +2002,7 @@ revisionTest(
     await Promise.all(stops.map((stop) => fixture.work(stop, "succeeded", 30_000)));
     assert.ok(Date.now() - requestedAt < 6_000 + 10_000, `${Date.now() - requestedAt} ms`);
     // Taking turns yields about once a second per stop (12 or so here); now only the stop that
-    // runs first yields, once, to the other's first pass.
+    // runs first yields, once, to the other's first pass (2 tolerates one extra preemption).
     const yields = [first, second].map(({ owner }) => records.get(owner.id).yields);
     assert.ok(yields[0] + yields[1] <= 2, `yields ${yields.join(", ")}`);
     for (const { owner } of [first, second]) {
@@ -2043,11 +2043,12 @@ revisionTest(
     await fixture.work(stop, "succeeded", 30_000);
     assert.ok(record.yields >= 2, `yields ${record.yields}`);
     const passes = stopPasses(events, stop);
+    // The completion carries the count of every yield, logged or not.
     assert.deepEqual(
       passes.map(({ code, stopYields }) => [code, stopYields]),
       [
         ["AGENT_STOP_YIELDED", 1],
-        ["AGENT_STOPPED", undefined],
+        ["AGENT_STOPPED", record.yields],
       ],
     );
     assert.ok(

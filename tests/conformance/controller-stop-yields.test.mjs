@@ -49,9 +49,12 @@ test("a stop's first yield is logged, then at most one a minute with the count",
   assert.equal(yields.yielded("stop-a"), undefined);
   now.value += STOP_YIELD_LOG_INTERVAL_MS;
   assert.equal(yields.yielded("stop-a"), 6);
-  // Another stop is logged on its own schedule.
+  // Another stop is logged on its own schedule. The count is kept for the work's final line.
   assert.equal(yields.yielded("stop-b"), 1);
   assert.equal(yields.yielded("stop-b"), undefined);
+  assert.equal(yields.count("stop-a"), 6);
+  assert.equal(yields.count("stop-b"), 2);
+  assert.equal(yields.count("stop-c"), undefined);
 });
 
 test("only stops whose latest pass yielded are excluded from a draining stop's due Work", () => {
@@ -65,6 +68,7 @@ test("only stops whose latest pass yielded are excluded from a draining stop's d
   // yield starts a new log series.
   yields.settled("stop-a");
   assert.deepEqual(yields.waiting(), ["revision-b"]);
+  assert.equal(yields.count("stop-a"), undefined);
   now.value += 1_000;
   assert.equal(yields.yielded("stop-a"), 1);
   yields.settled("unknown");
