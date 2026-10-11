@@ -8,9 +8,9 @@ last_updated_session: fix-1096
 
 ## Overview
 
-For an admitted Agent revision, OpenClaw Control Plane (OCC) authorizes status/log
-reads, obtains raw data through its Compute Driver and returns classified,
-redacted, bounded records. Logs are not persisted; downloads stay on the reader's device.
+OpenClaw Control Plane (OCC) authorizes status and log reads for an admitted Agent
+revision, fetches raw data through its Compute Driver, and returns classified,
+redacted, bounded records. Logs are not persisted; downloads stay local.
 
 ## Entry Points
 
