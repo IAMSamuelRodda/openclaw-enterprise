@@ -552,6 +552,31 @@ function isIpv4Cidr(value, requiredPrefix) {
   return requiredPrefix === undefined || prefix === requiredPrefix;
 }
 
+// Compute refuses a CIDR that covers every address in each list that grants reach (scopedCidr
+// in the Kubernetes Compute Driver), with the same words. These profile lists are IPv4-only,
+// so that range is a /0. Status proxy sources wider than one address also warn there and here.
+function sourceCidrs(controlPlane, key, diagnostics, { warnWide = false } = {}) {
+  const path = ["controlPlane", key];
+  const everyAddress = (value) => value.endsWith("/0") && isIP(value.slice(0, -2)) === 4;
+  const cidrs = stringArray(controlPlane, path, diagnostics, {
+    validate: (value) => everyAddress(value) || isIpv4Cidr(value),
+    description: "an IPv4 CIDR",
+  });
+  cidrs.forEach((value, index) => {
+    if (typeof value !== "string") {
+      return;
+    }
+    if (everyAddress(value)) {
+      diagnostics.errors.push(`${path.join(".")}[${index}] cannot cover every address.`);
+    } else if (warnWide && isIpv4Cidr(value) && !isIpv4Cidr(value, 32)) {
+      diagnostics.warnings.push(
+        `${path.join(".")}[${index}] covers more than one address: every Pod in it can reach the Agent status port. Use the API server /32 source addresses.`,
+      );
+    }
+  });
+  return cidrs;
+}
+
 // The API refuses a public-suffix shared cookie domain at startup (normalizeSharedCookieDomain)
 // with tldts and its bundled list. Resolve the controller's pinned copy so both use the same
 // list without a new root dependency; load it only when native admin is configured.
@@ -1644,17 +1669,16 @@ function buildRendered(profile, parsed, diagnostics) {
               podLabels: values.dns.podLabels,
             },
             gatewayPort: 8080,
-            gatewayTrustedProxyCidrs: stringArray(
+            gatewayTrustedProxyCidrs: sourceCidrs(
               controlPlane,
-              ["controlPlane", "gatewayTrustedProxyCidrs"],
+              "gatewayTrustedProxyCidrs",
               diagnostics,
-              { validate: isIpv4Cidr, description: "an IPv4 CIDR" },
             ),
-            pluginStatusProxySourceCidrs: stringArray(
+            pluginStatusProxySourceCidrs: sourceCidrs(
               controlPlane,
-              ["controlPlane", "pluginStatusProxySourceCidrs"],
+              "pluginStatusProxySourceCidrs",
               diagnostics,
-              { validate: isIpv4Cidr, description: "an IPv4 CIDR" },
+              { warnWide: true },
             ),
           },
           gatewayRouting: {
