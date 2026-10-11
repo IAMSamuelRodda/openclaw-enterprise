@@ -1916,6 +1916,36 @@ test("preflight rejects CIDR prefixes with a leading zero", () => {
   assert.match(accepted.installation, /192\.0\.2\.12\/8/);
 });
 
+// Compute refuses a source range that covers every address (scopedCidr) in the same words;
+// a status proxy source wider than one address only warns there and here (bughunt F2).
+test("preflight refuses source CIDRs that cover every address and warns about wide status sources", () => {
+  const controlPlane = baseInput().controlPlane;
+  for (const key of ["gatewayTrustedProxyCidrs", "pluginStatusProxySourceCidrs"]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ controlPlane: { ...controlPlane, [key]: ["192.0.2.12/32", "0.0.0.0/0"] } }),
+      new RegExp(`controlPlane\\.${key}\\[1\\] cannot cover every address\\.`),
+    );
+  }
+  const wide = render(
+    "openclaw",
+    baseInput({
+      controlPlane: { ...controlPlane, pluginStatusProxySourceCidrs: ["10.42.0.0/16"] },
+    }),
+  );
+  assert.match(
+    wide.preflight.warnings.join("\n"),
+    /controlPlane\.pluginStatusProxySourceCidrs\[0\] covers more than one address/,
+  );
+  const exact = render("openclaw", baseInput());
+  assert.doesNotMatch(exact.preflight.warnings.join("\n"), /covers more than one address/);
+  const widerTrust = render(
+    "openclaw",
+    baseInput({ controlPlane: { ...controlPlane, gatewayTrustedProxyCidrs: ["10.42.0.0/16"] } }),
+  );
+  assert.doesNotMatch(widerTrust.preflight.warnings.join("\n"), /covers more than one address/);
+});
+
 test("preflight rejects channel proxy URLs with an invalid octet or port", () => {
   const message = /must be an HTTP\(S\) literal IPv4 endpoint with an explicit port/;
   assertPreflightFailure(

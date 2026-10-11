@@ -288,11 +288,10 @@ const MINIMUM_KUBERNETES_VERSION_PARTS = [1, 35, 0] as const;
 const LEGACY_WORKSPACE_NODE_POLICY_SELECTOR: {
   readonly matchLabels: Readonly<Record<string, string>>;
 } = { matchLabels: { "openclaw.dev/workload-role": "agent" } };
-const OPENSHELL_SUPERVISOR_SELECTOR = Object.freeze({
-  "openshell.ai/boundary-role": "supervisor",
-});
 /** Every Agent-scoped NetworkPolicy name agentNetworkPolicies and
- * pluginStatusNetworkPolicies can write (each gets the Agent's suffix). */
+ * pluginStatusNetworkPolicies can write (each gets the Agent's suffix), plus
+ * `allow-workspace-node-gateway`, which earlier controllers wrote: listing it
+ * lets activation delete that copy (finding 1127). */
 const AGENT_NETWORK_POLICY_NAMES = Object.freeze([
   "allow-gateway-agent",
   "allow-gateway-workspace-node",
@@ -902,6 +901,8 @@ interface TargetedKubernetesResource {
 interface AgentPolicyPreparation {
   readonly anyRevision?: boolean;
   readonly unprofiledGateway?: boolean;
+  /** The serving predecessor, whose Sandbox keeps its workspace-node peer. */
+  readonly predecessorRevisionId?: string;
 }
 
 interface RuntimeCredentialContext {
@@ -1547,10 +1548,6 @@ function parseCidr(value: unknown, description: string): ParsedCidr {
   return { value, address, family: family === 4 ? 4 : 6, prefix: prefixValue };
 }
 
-function validateCidr(value: unknown, description: string): void {
-  parseCidr(value, description);
-}
-
 function providerHarnessUrl(
   endpoint: SandboxHarnessEndpoint,
   network: NonNullable<KubernetesComputeDriverOptions["network"]["providerHarness"]>,
@@ -1587,7 +1584,7 @@ function providerHarnessUrl(
   return url;
 }
 
-function trustedProxyCidrTrustsEverySource(cidr: ParsedCidr): boolean {
+function cidrCoversEveryAddress(cidr: ParsedCidr): boolean {
   if (cidr.prefix === 0) {
     return true;
   }
@@ -1599,19 +1596,37 @@ function trustedProxyCidrTrustsEverySource(cidr: ParsedCidr): boolean {
   return blockList.check("0.0.0.0", "ipv4") && blockList.check("255.255.255.255", "ipv4");
 }
 
+// The one rule for every operator CIDR that grants reach (trusted proxies, status proxy
+// sources, execution endpoints): a range covering every IPv4 or IPv6 address is refused.
+// The profile renderer names the same rule with the same words.
+function scopedCidr(value: unknown, description: string, index: number): ParsedCidr {
+  const parsed = parseCidr(value, `${description} ${index}`);
+  if (cidrCoversEveryAddress(parsed)) {
+    throw new ConfigurationFailure(`${description}s cannot cover every address.`);
+  }
+  return parsed;
+}
+
 function trustedProxyCidrSet(value: unknown, description: string): ReadonlySet<string> {
   if (!Array.isArray(value) || value.length === 0) {
     throw new ConfigurationFailure(`${description} must contain at least one CIDR.`);
   }
-  const cidrs = new Set<string>();
-  value.forEach((entry, index) => {
-    const parsed = parseCidr(entry, `${description} ${index}`);
-    if (trustedProxyCidrTrustsEverySource(parsed)) {
-      throw new ConfigurationFailure(`${description}s cannot trust every source.`);
-    }
-    cidrs.add(parsed.value.toLowerCase());
+  return new Set(
+    value.map((entry, index) => scopedCidr(entry, description, index).value.toLowerCase()),
+  );
+}
+
+// The documented status proxy source is the API server's own address. A wider range, such
+// as the Pod CIDR, admits every Pod in it to each Agent's status port: Compute cannot know
+// the cluster's ranges, so it warns rather than refuses.
+function broadStatusProxySourceCidrs(options: KubernetesComputeDriverOptions): readonly string[] {
+  return [
+    ...(options.network.pluginStatusProxySourceCidrs ?? []),
+    ...(options.executionCluster?.network.pluginStatusProxySourceCidrs ?? []),
+  ].filter((cidr) => {
+    const parsed = parseCidr(cidr, "Plugin status proxy CIDR");
+    return parsed.prefix < (parsed.family === 4 ? 32 : 128);
   });
-  return cidrs;
 }
 
 function cidrSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
@@ -2693,7 +2708,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw new ConfigurationFailure("Plugin status proxy source CIDRs must be an array.");
       }
       options.network.pluginStatusProxySourceCidrs.forEach((cidr, index) =>
-        validateCidr(cidr, `Plugin status proxy CIDR ${index}`),
+        scopedCidr(cidr, "Plugin status proxy CIDR", index),
       );
     }
     if (options.network.repositoryCredentials !== undefined) {
@@ -2831,19 +2846,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Harness routing hostname",
       );
       for (const [description, cidrs] of [
-        ["Harness endpoint", execution.network?.harnessEndpointCidrs],
-        ["Gateway endpoint", execution.network?.gatewayEndpointCidrs],
-        ["Execution status proxy", execution.network?.pluginStatusProxySourceCidrs],
+        ["Harness endpoint CIDR", execution.network?.harnessEndpointCidrs],
+        ["Gateway endpoint CIDR", execution.network?.gatewayEndpointCidrs],
+        ["Execution status proxy CIDR", execution.network?.pluginStatusProxySourceCidrs],
       ] as const) {
         if (!Array.isArray(cidrs) || cidrs.length === 0) {
-          throw new ConfigurationFailure(`${description} CIDRs must be explicit and nonempty.`);
+          throw new ConfigurationFailure(`${description}s must be explicit and nonempty.`);
         }
-        for (const cidr of cidrs) {
-          validateCidr(cidr, description);
-          if (cidr.endsWith("/0")) {
-            throw new ConfigurationFailure(`${description} must not allow all addresses.`);
-          }
-        }
+        cidrs.forEach((cidr, index) => scopedCidr(cidr, description, index));
       }
       if (execution.caBundle !== undefined) {
         const certificates = execution.caBundle.match(
@@ -2956,7 +2966,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   async preflight(): Promise<ComputePreflightResult> {
-    const warnings: { code: "KUBERNETES_VERSION_BELOW_MINIMUM"; message: string }[] = [];
+    const warnings: {
+      code: "KUBERNETES_VERSION_BELOW_MINIMUM" | "KUBERNETES_STATUS_PROXY_SOURCE_BROAD";
+      message: string;
+    }[] = broadStatusProxySourceCidrs(this.options).map((cidr) => ({
+      code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+      // The worker log keeps only plain text (logging.ts SAFE_STRING): no commas or quotes.
+      message:
+        `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
+        "can reach the Agent status port. Use the API server /32 or /128 source addresses.",
+    }));
     let controlIdentity: string | undefined;
     const planes =
       this.options.executionCluster === undefined
@@ -5011,6 +5030,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       existingGateway !== undefined && existingGatewayRevisionId !== revision.id;
     const preparation: AgentPolicyPreparation = {
       anyRevision: predecessorServes,
+      ...(predecessorServes && existingGatewayRevisionId !== undefined
+        ? { predecessorRevisionId: existingGatewayRevisionId }
+        : {}),
       unprofiledGateway:
         predecessorServes &&
         asRecord(asRecord(asRecord(existingGateway.spec?.template)?.metadata)?.labels)?.[
@@ -5276,7 +5298,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
       if (this.options.runtime !== undefined) {
-        for (const policy of this.agentNetworkPolicies(revision, namespace, preparation)) {
+        for (const policy of await this.agentNetworkPoliciesWithPeers(
+          revision,
+          namespace,
+          preparation,
+        )) {
           await this.reconcile(policy.resource, gatewayOwnership, policy.namespace);
         }
         if (this.harnessNetworkProfile(revision) === ORDINARY_NETWORK_PROFILE) {
@@ -5392,6 +5418,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
           }),
         );
         this.verifySandboxResourceRef(sandbox, revision, namespace);
+        if (this.options.runtime !== undefined) {
+          // The Sandbox, and with it the supervisor's exact peer labels, exists only
+          // now: admit that supervisor before waiting for its workspace node.
+          await this.reconcileWorkspaceNodePolicy(
+            revision,
+            namespace,
+            preparation,
+            gatewayOwnership,
+          );
+        }
         const providerEndpoint =
           sandboxDriver.harnessEndpoint === undefined
             ? undefined
@@ -5783,7 +5819,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         // activation never becomes ready, retirement would not run before stop.
         await this.deleteReplacedPredecessorArtifacts(revision, gateway, namespace);
       }
-      const policies = this.agentNetworkPolicies(revision, namespace);
+      const policies = await this.agentNetworkPoliciesWithPeers(revision, namespace);
       for (const { resource: policy, namespace: target } of policies) {
         await this.reconcile(policy, gatewayOwnership, target);
       }
@@ -6058,7 +6094,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (!providerOwnsHarnessEndpoint) {
       await this.reconcileHarnessRoute(revision, namespace);
     }
-    const policies = this.agentNetworkPolicies(revision, namespace);
+    const policies = await this.agentNetworkPoliciesWithPeers(revision, namespace);
     for (const { resource: policy, namespace: target } of policies) {
       await this.reconcile(policy, gatewayOwnership, target);
     }
@@ -8310,6 +8346,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
     container: "agent" | "gateway",
     path: string,
   ): Promise<PrivateStatusReadback | undefined> {
+    // A provider-fenced Harness admits only its Gateway's transport (the status proxy
+    // policy selects ordinary Pods, and the provider's own fence denies the API server),
+    // so a Pod proxy read could never answer: report no status without the round-trip.
+    // Checked without harnessNetworkProfile, which throws for a revision pinned to an
+    // unavailable SandboxDriver: such a revision keeps the read it had.
+    if (
+      container === "agent" &&
+      revision.harness.mode === "dedicated" &&
+      revision.sandboxDriverId !== undefined &&
+      this.sandboxDriver?.id === revision.sandboxDriverId &&
+      this.sandboxDriver.provisionHarness !== undefined
+    ) {
+      return undefined;
+    }
     namespace = container === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
     const pods = (await this.revisionPods(revision, namespace, container)).filter(
       (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
@@ -11902,10 +11952,111 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     ];
   }
 
+  /** Whether the revision's SandboxDriver Pods open its workspace-node connection
+   * to the Agent Gateway, which then admits exactly those Pods. */
+  private workspaceNodeRelay(revision: AgentRevision): SandboxDriver | undefined {
+    const sandboxDriver =
+      revision.harness.mode === "dedicated" ? this.sandboxDriverForRevision(revision) : undefined;
+    if (
+      sandboxDriver?.harnessEndpoint !== undefined &&
+      sandboxDriver.implementation === "openshell" &&
+      sandboxDriver.workspaceNodePeerLabels === undefined
+    ) {
+      // Its supervisor opens the node connection; without exact peer labels the
+      // Gateway would admit none, and preparation would wait without a cause.
+      throw new ConfigurationFailure(
+        "An OpenShell SandboxDriver must implement workspaceNodePeerLabels.",
+      );
+    }
+    return sandboxDriver?.harnessEndpoint !== undefined &&
+      sandboxDriver.workspaceNodePeerLabels !== undefined &&
+      this.options.executionCluster === undefined
+      ? sandboxDriver
+      : undefined;
+  }
+
+  /**
+   * The exact provider Pod labels of the revision's workspace-node relay and, while
+   * preparation runs, of the serving predecessor's, so its node stays connected
+   * until activation pins the policy to this revision. Any activation pins it to
+   * the activated revision: a maintenance re-activation of the serving revision
+   * drops a prepared successor's relay until that successor's next preparation
+   * pass, as deleteUnwrittenAgentPolicies does for policy names. A revision
+   * without a Sandbox contributes none.
+   */
+  private async workspaceNodePeers(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    preparation: AgentPolicyPreparation = {},
+  ): Promise<readonly Readonly<Record<string, string>>[]> {
+    const sandboxDriver = this.workspaceNodeRelay(revision);
+    if (sandboxDriver === undefined) {
+      return [];
+    }
+    const context = await this.sandboxNamespaceContext(
+      this.sandboxNamespaceForRevision(revision, namespace),
+      namespace,
+    );
+    const revisions = [
+      revision,
+      ...(preparation.predecessorRevisionId === undefined ||
+      preparation.predecessorRevisionId === revision.id
+        ? []
+        : [{ ...revision, id: preparation.predecessorRevisionId }]),
+    ];
+    const peers: Readonly<Record<string, string>>[] = [];
+    for (const candidate of revisions) {
+      const labels = await sandboxDriver.workspaceNodePeerLabels!({
+        ...context,
+        revision: candidate,
+      });
+      if (labels === undefined) {
+        continue;
+      }
+      validatePeer({ namespace: namespace.name, podLabels: labels }, "Workspace-node peer");
+      peers.push(Object.freeze({ ...labels }));
+    }
+    return peers;
+  }
+
+  private async agentNetworkPoliciesWithPeers(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    preparation: AgentPolicyPreparation = {},
+  ): Promise<TargetedKubernetesResource[]> {
+    return this.agentNetworkPolicies(
+      revision,
+      namespace,
+      preparation,
+      await this.workspaceNodePeers(revision, namespace, preparation),
+    );
+  }
+
+  private async reconcileWorkspaceNodePolicy(
+    revision: AgentRevision,
+    namespace: KubernetesNamespaceAddress,
+    preparation: AgentPolicyPreparation,
+    ownership: Ownership,
+  ): Promise<void> {
+    const name = `allow-gateway-workspace-node-${sha256Hex(revision.agentId, 12)}`;
+    for (const policy of await this.agentNetworkPoliciesWithPeers(
+      revision,
+      namespace,
+      preparation,
+    )) {
+      if (policy.resource.metadata.name === name) {
+        await this.reconcile(policy.resource, ownership, policy.namespace);
+      }
+    }
+  }
+
+  /** `workspaceNodePeers` holds the relay Pod labels that `workspaceNodePeers()`
+   * resolves; without them the Gateway admits no workspace-node relay. */
   private agentNetworkPolicies(
     revision: AgentRevision,
     namespace: KubernetesNamespaceAddress,
     preparation: AgentPolicyPreparation = {},
+    workspaceNodePeers: readonly Readonly<Record<string, string>>[] = [],
   ): TargetedKubernetesResource[] {
     const { unprofiledGateway = false } = preparation;
     const gatewayNamespace = this.gatewayNamespace(revision, namespace);
@@ -11990,42 +12141,31 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
           "SandboxDriver Harness endpoint requires an exact provider network route.",
         );
       }
-      const openShellWorkspaceNodePolicies =
-        this.sandboxDriverForRevision(revision)?.implementation === "openshell" &&
-        this.options.executionCluster === undefined
-          ? [
-              policy("allow-workspace-node-gateway", {
-                podSelector: { matchLabels: OPENSHELL_SUPERVISOR_SELECTOR },
-                policyTypes: ["Egress"],
-                egress: [
-                  {
-                    to: [
-                      this.peer({
-                        namespace: gatewayNamespace.name,
-                        podLabels: gateway.matchLabels,
-                      }),
-                    ],
-                    ports: [{ protocol: "TCP", port: this.options.network.gatewayPort }],
-                  },
-                ],
-              }),
+      // Only this revision's relay Pods (and, during preparation, the serving
+      // predecessor's) reach the Gateway, never another Agent's Sandbox in the
+      // namespace (finding 1127). No peer yet means no rule: an empty `from` would
+      // admit every source. The relay's egress is the provider's: OpenShell gives
+      // its supervisors egress to every destination.
+      const workspaceNodePolicies =
+        this.workspaceNodeRelay(revision) === undefined
+          ? []
+          : [
               policy("allow-gateway-workspace-node", {
                 podSelector: gateway,
                 policyTypes: ["Ingress"],
-                ingress: [
-                  {
-                    from: [
-                      this.peer({
-                        namespace: namespace.name,
-                        podLabels: OPENSHELL_SUPERVISOR_SELECTOR,
-                      }),
-                    ],
-                    ports: [{ protocol: "TCP", port: this.options.network.gatewayPort }],
-                  },
-                ],
+                ingress:
+                  workspaceNodePeers.length === 0
+                    ? []
+                    : [
+                        {
+                          from: workspaceNodePeers.map((podLabels) =>
+                            this.peer({ namespace: namespace.name, podLabels }),
+                          ),
+                          ports: [{ protocol: "TCP", port: this.options.network.gatewayPort }],
+                        },
+                      ],
               }),
-            ]
-          : [];
+            ];
       return [
         policy("allow-gateway-agent", {
           podSelector: gateway,
@@ -12037,7 +12177,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
             },
           ],
         }),
-        ...openShellWorkspaceNodePolicies,
+        ...workspaceNodePolicies,
         ...statusPolicies,
       ];
     }

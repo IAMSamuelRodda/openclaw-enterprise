@@ -34,6 +34,26 @@ deploying. Stored Configurations and Agents still read.
 **Steps.** Fix the named setting or the Agent's `executionMode`, then save
 again.
 
+## 2026-10-11: status proxy sources that cover every address are refused
+
+**What breaks.** Controller startup refuses a
+`network.pluginStatusProxySourceCidrs` entry that covers every address:
+`0.0.0.0/0`, `::/0`, or an IPv6 range containing all of `::ffff:0:0/96`.
+Such a source let every Pod reach each Agent's status port.
+`gatewayTrustedProxyCidrs` already refused these. The two-cluster
+`executionCluster.network` lists refused `/0` and now also such IPv6 ranges.
+
+**Who is affected.** Hand-written `installation.yaml` files with such an
+entry. Profiles already refused a `/0`.
+
+**How to tell.** Startup fails with `... CIDRs cannot cover every address.`
+A narrower status source wider than one address, such as the Pod CIDR, still
+starts; the worker logs `KUBERNETES_STATUS_PROXY_SOURCE_BROAD`, and the profile
+renderer warns.
+
+**Steps.** List the API server's `/32` or `/128` Pod proxy source addresses
+instead, then restart the controller. _untested_
+
 ## 2026-10-11: settings that took dedicated Agents down are refused earlier
 
 **What breaks.** Configuration create and update answer `400` for

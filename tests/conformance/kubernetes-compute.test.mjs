@@ -4733,23 +4733,46 @@ test("Kubernetes drivers require explicit authentication, images, and production
     [{ network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["10.42.0.1/1e1"] } }, /CIDR/i],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["0.0.0.0/0"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
     ],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::/0"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
     ],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::ffff:0:0/96"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
     ],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::ffff:0.0.0.0/96"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
+    ],
+    // The status proxy sources follow the trusted proxy rule (bughunt F2).
+    ...["0.0.0.0/0", "::/0", "::ffff:0:0/96", "::ffff:0.0.0.0/96"].map((cidr) => [
+      { network: { ...baseNetwork, pluginStatusProxySourceCidrs: ["192.0.2.20/32", cidr] } },
+      /Plugin status proxy CIDRs cannot cover every address\./,
+    ]),
+    [
+      { network: { ...baseNetwork, pluginStatusProxySourceCidrs: ["10.42.0.1/"] } },
+      /Plugin status proxy CIDR 0 must be a valid/,
     ],
     [{ servicePrincipalCredentials: undefined }, /credential|projection/i],
   ]) {
     assert.throws(() => createKubernetesComputeDriver(options(invalid)), expected);
+  }
+
+  // Narrower sources, the Pod CIDR included, start: preflight warns about them instead.
+  for (const pluginStatusProxySourceCidrs of [
+    ["10.42.0.1/32"],
+    ["10.42.0.0/16"],
+    ["::/96"],
+    ["2001:db8::1/128"],
+  ]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(
+        options({ network: { ...baseNetwork, pluginStatusProxySourceCidrs } }),
+      ),
+    );
   }
 
   for (const gatewayTrustedProxyCidrs of [
@@ -8068,6 +8091,105 @@ test("Kubernetes cached runtime failure evidence is native-only and readiness-pa
   );
 });
 
+// A provider-fenced Harness admits only its Gateway's transport: the status proxy policy
+// selects ordinary Pods and the provider's fence denies the API server. No Pod proxy read can
+// answer, so Compute sends none to the Harness and keeps reading the Gateway (bughunt F4).
+test("Kubernetes status readback skips provider-fenced Harness Pods", async () => {
+  const driver = new KubernetesComputeDriver(
+    routedOptions({
+      network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] },
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      servicePrincipalCredentials: {
+        mode: "projectedServiceAccountToken",
+        audience: "openclaw-controller",
+        expirationSeconds: 900,
+      },
+    }),
+    { sandboxDriver: { id: "sandbox-provider", async provisionHarness() {} } },
+  );
+  const ordinary = routedRevision(driver, { id: "revision-fenced-status" });
+  const fenced = { ...ordinary, sandboxDriverId: "sandbox-provider" };
+  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const proxyReads = [];
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespacedPod({ labelSelector }) {
+        const role = labelSelector.includes("openclaw.dev/workload-role=agent")
+          ? "agent"
+          : "gateway";
+        return {
+          apiVersion: "v1",
+          kind: "PodList",
+          items: [
+            {
+              apiVersion: "v1",
+              kind: "Pod",
+              metadata: {
+                name: `${role}-fenced-status-pod`,
+                namespace: namespace.name,
+                uid: `${role}-fenced-status-uid`,
+                labels: {
+                  "openclaw.dev/agent": ordinary.agentId,
+                  "openclaw.dev/revision": ordinary.id,
+                  "openclaw.dev/workload-role": role,
+                },
+              },
+              status: {
+                phase: "Running",
+                podIP: "10.42.0.10",
+                containerStatuses: [{ name: role, containerID: `${role}-container` }],
+              },
+            },
+          ],
+        };
+      },
+      async connectGetNamespacedPodProxyWithPath({ name, path }) {
+        const role = name.startsWith("agent-") ? "agent" : "gateway";
+        proxyReads.push(`${role} ${path}`);
+        return {
+          revisionId: ordinary.id,
+          container: role,
+          podUid: `${role}-fenced-status-uid`,
+          startupId: `${role}-startup`,
+          phase: "ready",
+          successfulPluginIds: [],
+          failures: [],
+          observedAt: "2026-10-11T12:00:00.000Z",
+          checks: [],
+        };
+      },
+    },
+  });
+  const observe = async (revision) => {
+    proxyReads.length = 0;
+    await driver.safeRuntimeFailureObservation(revision, namespace);
+    const agentStatus = await driver.pluginRuntimeStatus(revision, namespace, "agent");
+    const gatewayStatus = await driver.pluginRuntimeStatus(revision, namespace, "gateway");
+    const agentChecks = await driver.runtimeDiagnosticChecks(revision, namespace, "agent");
+    return { reads: [...proxyReads], agentStatus, gatewayStatus, agentChecks };
+  };
+
+  const fencedObservation = await observe(fenced);
+  assert.deepEqual(fencedObservation.reads, [
+    "gateway openclaw/runtime/status",
+    "gateway openclaw/plugin-runtime/status",
+  ]);
+  assert.equal(fencedObservation.agentStatus, undefined);
+  assert.equal(fencedObservation.agentChecks, undefined);
+  assert.notEqual(fencedObservation.gatewayStatus, undefined);
+
+  // The same revision without the provider's Harness still reads both containers.
+  const ordinaryObservation = await observe(ordinary);
+  assert.deepEqual(ordinaryObservation.reads, [
+    "agent openclaw/runtime/status",
+    "gateway openclaw/runtime/status",
+    "agent openclaw/plugin-runtime/status",
+    "gateway openclaw/plugin-runtime/status",
+    "agent openclaw/runtime/diagnostics",
+  ]);
+  assert.notEqual(ordinaryObservation.agentStatus, undefined);
+});
+
 async function exerciseEmbeddedReplacement({ providerId, model, environmentName, api, baseUrl }) {
   const modelRef = `${providerId}/${model}`;
   const driver = createKubernetesComputeDriver(
@@ -9716,11 +9838,20 @@ test("provider-owned Harness requirements preserve the exact projected ServicePr
   );
 });
 
+/** What an OpenShell-like Driver labels a revision's workspace-node relay Pod with. */
+function supervisorPeerLabels(revisionId) {
+  return {
+    "openshell.ai/sandbox-id": `sandbox-${digest(revisionId)}`,
+    "openshell.ai/boundary-role": "supervisor",
+  };
+}
+
 function providerReadinessFixture({
   provisionHarness,
   harnessEndpoint,
   lifecycleDrivers = [],
   nodeEnrollment,
+  workspaceNodePeerLabels = async ({ revision }) => supervisorPeerLabels(revision.id),
 } = {}) {
   const driver = new KubernetesComputeDriver(
     routedOptions({
@@ -9763,6 +9894,7 @@ function providerReadinessFixture({
           assert.fail("activation must only observe the previously provisioned Harness");
         },
         ...(harnessEndpoint === undefined ? {} : { harnessEndpoint }),
+        workspaceNodePeerLabels,
       },
     },
   );
@@ -10150,7 +10282,15 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
   const setupRequests = [];
   const providerUrl = "ws://tenant--sandbox.openshell.localhost:8080/";
   const providerWorkspaceRoot = "/sandbox/enterprise";
+  const peerLookups = [];
   const fixture = providerReadinessFixture({
+    // The Sandbox, and so its relay Pod's labels, exists only once provisioned.
+    async workspaceNodePeerLabels({ revision: target }) {
+      peerLookups.push(target.id);
+      return provisions.some(({ revision: { id } }) => id === target.id)
+        ? supervisorPeerLabels(target.id)
+        : undefined;
+    },
     async provisionHarness(context) {
       // The provider fences Harness egress; a Compute auth grant would be unioned with it.
       assert.equal(
@@ -10385,6 +10525,25 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     }
   }
   driver.apiClients = Promise.resolve(clients);
+  // What the workspace-node policy admitted each time Compute observed the
+  // provider Harness after provisioning: the relay must already be admitted.
+  const relayPeersAtHarnessObservation = [];
+  const listPods = core.listNamespacedPod;
+  core.listNamespacedPod = async (request) => {
+    if (
+      provisions.length > 0 &&
+      !request.labelSelector.includes("openclaw.dev/workload-role=gateway")
+    ) {
+      const latest = writes
+        .filter(
+          ({ metadata }) =>
+            metadata.name === `allow-gateway-workspace-node-${digest(revision.agentId)}`,
+        )
+        .at(-1);
+      relayPeersAtHarnessObservation.push(latest?.spec.ingress[0]?.from.length ?? 0);
+    }
+    return listPods(request);
+  };
   const expected = { namespaceId: tenant.id, agentId: revision.agentId, revisionId: revision.id };
 
   // The Agent Gateway must be available to mint node setup material. Its first
@@ -10472,13 +10631,14 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     true,
     "the provider-fenced Harness must retain exact workspace-node Gateway egress",
   );
-  const supervisorNodePolicy = objects.get(
-    key("NetworkPolicy", `allow-workspace-node-gateway-${digest(revision.agentId)}`, namespace),
+  // The supervisor's egress is OpenShell's own (egress to every destination);
+  // Compute writes no supervisor-selecting policy (finding 1127).
+  assert.equal(
+    objects.has(
+      key("NetworkPolicy", `allow-workspace-node-gateway-${digest(revision.agentId)}`, namespace),
+    ),
+    false,
   );
-  assert.deepEqual(supervisorNodePolicy.spec.podSelector, {
-    matchLabels: { "openshell.ai/boundary-role": "supervisor" },
-  });
-  assert.deepEqual(supervisorNodePolicy.spec.egress[0].ports, [{ protocol: "TCP", port: 8080 }]);
   const gatewayNodePolicy = objects.get(
     key(
       "NetworkPolicy",
@@ -10486,16 +10646,29 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
       gatewayNamespace,
     ),
   );
-  assert.deepEqual(gatewayNodePolicy.spec.ingress[0].from, [
+  // Only this revision's own supervisor, never every supervisor in the namespace.
+  assert.deepEqual(gatewayNodePolicy.spec.ingress, [
     {
-      namespaceSelector: {
-        matchLabels: { "kubernetes.io/metadata.name": namespace },
-      },
-      podSelector: {
-        matchLabels: { "openshell.ai/boundary-role": "supervisor" },
-      },
+      from: [
+        {
+          namespaceSelector: {
+            matchLabels: { "kubernetes.io/metadata.name": namespace },
+          },
+          podSelector: { matchLabels: supervisorPeerLabels(revision.id) },
+        },
+      ],
+      ports: [{ protocol: "TCP", port: 8080 }],
     },
   ]);
+  // Before the Sandbox existed the policy admitted no relay at all; the policy is
+  // re-applied right after provisioning, before the workspace node is awaited.
+  const workspaceNodeWrites = writes.filter(
+    ({ metadata }) => metadata.name === `allow-gateway-workspace-node-${digest(revision.agentId)}`,
+  );
+  assert.deepEqual(workspaceNodeWrites[0].spec.ingress, []);
+  assert.ok(relayPeersAtHarnessObservation.length > 0);
+  assert.ok(relayPeersAtHarnessObservation.every((peers) => peers === 1));
+  assert.ok(peerLookups.every((id) => id === revision.id));
   const gatewayContainer = objects.get(key("Deployment", gatewayName, gatewayNamespace)).spec
     .template.spec.containers[0];
   assert.equal(
@@ -10567,13 +10740,53 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     deletedPolicies.push(name);
     objects.delete(key("NetworkPolicy", name, target));
   };
+  // Upgrade: an earlier controller's pair admitted every supervisor Pod in the
+  // namespace. Activation replaces the ingress half and deletes the egress half.
+  const legacySupervisor = { "openshell.ai/boundary-role": "supervisor" };
+  const legacyIngressName = `allow-gateway-workspace-node-${digest(revision.agentId)}`;
+  const legacyIngress = objects.get(key("NetworkPolicy", legacyIngressName));
+  save({
+    ...legacyIngress,
+    spec: {
+      ...legacyIngress.spec,
+      ingress: [
+        {
+          from: [
+            {
+              namespaceSelector: { matchLabels: { "kubernetes.io/metadata.name": namespace } },
+              podSelector: { matchLabels: legacySupervisor },
+            },
+          ],
+          ports: [{ protocol: "TCP", port: 8080 }],
+        },
+      ],
+    },
+  });
+  const legacyEgress = driver.manifest(
+    "networking.k8s.io/v1",
+    "NetworkPolicy",
+    `allow-workspace-node-gateway-${digest(revision.agentId)}`,
+    { namespaceId: tenant.id, agentId: revision.agentId },
+    { name: namespace, plane: "execution" },
+  );
+  save({
+    ...legacyEgress,
+    metadata: { ...legacyEgress.metadata, uid: "legacy-egress-uid" },
+    spec: {
+      podSelector: { matchLabels: legacySupervisor },
+      policyTypes: ["Egress"],
+      egress: [{ ports: [{ protocol: "TCP", port: 8080 }] }],
+    },
+  });
   fixture.setObservation({ items: [fixture.pod("ready")] });
   await driver.activateRevision(revision, authContext(revision));
   assert.equal(endpoints.length, 6);
-  assert.deepEqual(deletedPolicies, [plainRuntime.metadata.name]);
-  for (const name of ["allow-workspace-node-gateway", "allow-gateway-workspace-node"]) {
-    assert.ok(objects.has(key("NetworkPolicy", `${name}-${digest(revision.agentId)}`)), name);
-  }
+  assert.deepEqual(deletedPolicies, [legacyEgress.metadata.name, plainRuntime.metadata.name]);
+  assert.equal(objects.has(key("NetworkPolicy", legacyEgress.metadata.name)), false);
+  assert.deepEqual(
+    objects.get(key("NetworkPolicy", legacyIngressName)).spec.ingress[0].from[0].podSelector,
+    { matchLabels: supervisorPeerLabels(revision.id) },
+  );
   assert.equal(
     objects.get(key("Service", agentServiceName)).spec.selector["app.kubernetes.io/name"],
     `${agentServiceName}-inactive`,
@@ -13386,6 +13599,9 @@ for (const stopped of [false, true]) {
           async harnessEndpoint() {
             return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
           },
+          async workspaceNodePeerLabels({ revision: target }) {
+            return supervisorPeerLabels(target.id);
+          },
           async cleanup(context) {
             cleanupCalls.push(context.revision.id);
           },
@@ -13419,13 +13635,21 @@ for (const stopped of [false, true]) {
       save(gateway);
     }
     const policies = [
-      ...driver.agentNetworkPolicies(revision, target).map(({ resource }) => resource),
+      ...driver
+        .agentNetworkPolicies(revision, target, {}, [supervisorPeerLabels(revision.id)])
+        .map(({ resource }) => resource),
       driver.channelNetworkPolicy(revision, [], target),
+      // An earlier controller's supervisor egress policy (finding 1127).
+      driver.manifest(
+        "networking.k8s.io/v1",
+        "NetworkPolicy",
+        `allow-workspace-node-gateway-${digest(revision.agentId)}`,
+        ownership,
+        target,
+      ),
     ];
     const policyNames = policies.map(({ metadata }) => metadata.name);
-    for (const name of ["allow-workspace-node-gateway", "allow-gateway-workspace-node"]) {
-      assert.ok(policyNames.includes(`${name}-${digest(revision.agentId)}`), name);
-    }
+    assert.ok(policyNames.includes(`allow-gateway-workspace-node-${digest(revision.agentId)}`));
     for (const policy of policies) {
       save(policy);
     }
@@ -13507,6 +13731,159 @@ for (const stopped of [false, true]) {
   });
 }
 
+// Finding 1127: the workspace-node ingress admitted every OpenShell supervisor in the
+// namespace, so one Agent's supervisor reached another Agent's Gateway port.
+test("an OpenShell supervisor reaches only its own Agent's Gateway", async () => {
+  const sandboxIds = new Map([
+    ["revision-d1", "d1"],
+    ["revision-d2", "d2"],
+    ["revision-f1", "f1"],
+  ]);
+  let peerLabels = ({ revision: target }) =>
+    sandboxIds.has(target.id)
+      ? {
+          "openshell.ai/sandbox-id": `sandbox-${sandboxIds.get(target.id)}`,
+          "openshell.ai/boundary-role": "supervisor",
+        }
+      : undefined;
+  const installation = () =>
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      network: {
+        ...options().network,
+        providerHarness: {
+          namespace: "openshell-system",
+          podLabels: { app: "openshell-gateway" },
+          address: "10.43.0.50",
+          port: 8080,
+        },
+      },
+    });
+  const driver = new KubernetesComputeDriver(installation(), {
+    sandboxDriver: {
+      id: "sandbox-provider",
+      implementation: "openshell",
+      async provisionHarness() {
+        assert.fail("rendering policies must not provision a Harness");
+      },
+      async harnessEndpoint() {
+        return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
+      },
+      async workspaceNodePeerLabels(context) {
+        assert.equal(context.namespace.id, context.revision.namespaceId);
+        return peerLabels(context);
+      },
+      async cleanup() {},
+    },
+  });
+  driver.apiClients = Promise.resolve({ objects: {} });
+  const d = routedRevision(driver, {
+    id: "revision-d1",
+    agentId: "agent-openshell-d",
+    sandboxDriverId: "sandbox-provider",
+  });
+  const f = { ...d, id: "revision-f1", agentId: "agent-openshell-f" };
+  const namespace = kubernetesNamespaceName(d.namespaceId);
+  const target = { name: namespace, plane: "execution" };
+  const render = async (revision, preparation) =>
+    (await driver.agentNetworkPoliciesWithPeers(revision, target, preparation)).map(
+      ({ resource }) => resource,
+    );
+  const ingressOf = (policies, revision) =>
+    policies.find(
+      ({ metadata }) =>
+        metadata.name === `allow-gateway-workspace-node-${digest(revision.agentId)}`,
+    );
+  const supervisor = (id, sourceNamespace = namespace) => ({
+    namespace: sourceNamespace,
+    labels: {
+      "openshell.ai/managed-by": "openshell",
+      "openshell.ai/component": "supervisor",
+      "openshell.ai/boundary-role": "supervisor",
+      ...(id === undefined ? {} : { "openshell.ai/sandbox-id": `sandbox-${id}` }),
+    },
+  });
+  // NetworkPolicies are additive: a connection is admitted if any policy selecting
+  // the Gateway Pod admits the source on the Gateway port.
+  const admitted = (policies, gatewayLabels, source, port = 8080) =>
+    policies.some(
+      (policy) =>
+        (policy.spec.policyTypes ?? []).includes("Ingress") &&
+        selectorMatches(policy.spec.podSelector, gatewayLabels) &&
+        (policy.spec.ingress ?? []).some(
+          (rule) =>
+            rule.from.some(
+              (peer) =>
+                selectorMatches(peer.namespaceSelector, {
+                  "kubernetes.io/metadata.name": source.namespace,
+                }) && selectorMatches(peer.podSelector, source.labels),
+            ) && rule.ports.some((entry) => entry.port === port),
+        ),
+    );
+  const dPolicies = await render(d);
+  const fPolicies = await render(f);
+  const all = [...dPolicies, ...fPolicies];
+  const dGateway = { ...ingressOf(dPolicies, d).spec.podSelector.matchLabels };
+  const fGateway = { ...ingressOf(fPolicies, f).spec.podSelector.matchLabels };
+  assert.equal(admitted(all, dGateway, supervisor("d1")), true, "D's own supervisor");
+  assert.equal(admitted(all, fGateway, supervisor("f1")), true, "F's own supervisor");
+  assert.equal(admitted(all, dGateway, supervisor("f1")), false, "F's supervisor -> D's Gateway");
+  assert.equal(admitted(all, fGateway, supervisor("d1")), false, "D's supervisor -> F's Gateway");
+  assert.equal(admitted(all, dGateway, supervisor(undefined)), false, "an unscoped supervisor");
+  assert.equal(admitted(all, dGateway, supervisor("d1", "other-tenant")), false, "other tenant");
+  assert.equal(admitted(all, dGateway, supervisor("d1"), 8081), false, "another port");
+  // The supervisor's egress is OpenShell's own: no Compute policy selects it.
+  for (const policy of all) {
+    assert.equal(
+      selectorMatches(policy.spec.podSelector, supervisor("d1").labels),
+      false,
+      policy.metadata.name,
+    );
+  }
+
+  // Preparing D's successor while rev-d1 serves keeps that supervisor connected.
+  const d2 = { ...d, id: "revision-d2", revision: d.revision + 1 };
+  const preparing = await render(d2, { anyRevision: true, predecessorRevisionId: d.id });
+  assert.equal(admitted(preparing, dGateway, supervisor("d1")), true, "serving predecessor");
+  assert.equal(admitted(preparing, dGateway, supervisor("d2")), true, "candidate");
+  assert.equal(admitted(preparing, dGateway, supervisor("f1")), false, "other Agent");
+  // Activation pins the peer to the active revision's Sandbox.
+  const active = await render(d2);
+  assert.equal(admitted(active, dGateway, supervisor("d2")), true);
+  assert.equal(admitted(active, dGateway, supervisor("d1")), false);
+
+  // Before its Sandbox exists a revision admits no relay: an empty `from` would
+  // admit every source, so the policy carries no rule at all.
+  const unprovisioned = ingressOf(await render({ ...d, id: "revision-d3" }), d);
+  assert.deepEqual(unprovisioned.spec.ingress, []);
+  assert.equal(admitted([unprovisioned], dGateway, supervisor("d1")), false);
+
+  // Labels a Driver returns are validated like any configured peer.
+  peerLabels = () => ({});
+  await assert.rejects(render(d), /Workspace-node peer Pod labels cannot be empty/);
+  peerLabels = () => ({ "not a key": "x" });
+  await assert.rejects(render(d), /Workspace-node peer label keys/);
+
+  // An OpenShell Driver that cannot name its relay fails closed with a cause.
+  const unnamed = new KubernetesComputeDriver(installation(), {
+    sandboxDriver: {
+      id: "sandbox-provider",
+      implementation: "openshell",
+      async provisionHarness() {
+        assert.fail("rendering policies must not provision a Harness");
+      },
+      async harnessEndpoint() {
+        return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
+      },
+      async cleanup() {},
+    },
+  });
+  assert.throws(
+    () => unnamed.agentNetworkPolicies(d, target),
+    /OpenShell SandboxDriver must implement workspaceNodePeerLabels/,
+  );
+});
+
 // Finding 861: the Agent-scoped policies share one name per Agent and each revision
 // applied its set additively, so after a revision left OpenShell the workspace-node
 // pair kept selecting its new Gateway and admitting every supervisor Pod.
@@ -13538,14 +13915,27 @@ test("activating a revision that leaves OpenShell deletes the Agent policies it 
         async harnessEndpoint() {
           return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
         },
+        async workspaceNodePeerLabels({ revision: target }) {
+          return supervisorPeerLabels(target.id);
+        },
       },
     },
   );
   const predecessor = { ...revision, sandboxDriverId: "sandbox-provider" };
   const pair = [`allow-workspace-node-gateway-${suffix}`, `allow-gateway-workspace-node-${suffix}`];
-  const seeded = openShell
-    .agentNetworkPolicies(predecessor, target)
-    .map(({ resource }) => resource);
+  // An earlier controller wrote both halves; this one writes only the Gateway ingress.
+  const seeded = [
+    ...openShell
+      .agentNetworkPolicies(predecessor, target, {}, [supervisorPeerLabels(predecessor.id)])
+      .map(({ resource }) => resource),
+    openShell.manifest(
+      "networking.k8s.io/v1",
+      "NetworkPolicy",
+      pair[0],
+      { namespaceId: predecessor.namespaceId, agentId: predecessor.agentId },
+      target,
+    ),
+  ];
   assert.deepEqual(
     pair.filter((name) => !seeded.some(({ metadata }) => metadata.name === name)),
     [],
@@ -13560,7 +13950,7 @@ test("activating a revision that leaves OpenShell deletes the Agent policies it 
   const siblings = openShell
     .agentNetworkPolicies({ ...predecessor, agentId: "agent-openshell-sibling" }, target)
     .map(({ resource }) => resource)
-    .filter(({ metadata }) => metadata.name.startsWith("allow-workspace-node-gateway-"));
+    .filter(({ metadata }) => metadata.name.startsWith("allow-gateway-workspace-node-"));
   assert.equal(siblings.length, 1);
   for (const policy of siblings) {
     objects.set(policyKey(policy.metadata.name), {
