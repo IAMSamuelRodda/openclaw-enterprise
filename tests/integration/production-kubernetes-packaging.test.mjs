@@ -3869,6 +3869,31 @@ test(
         { ...chatgptValues, "backend.chatgpt.key": "" },
       ],
       [
+        "ChatGPT Backend with an invalid admin Secret name",
+        { ...chatgptValues, "backend.chatgpt.secretName": "Bad_Name" },
+        /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
+      ],
+      [
+        "ChatGPT Backend with an invalid admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "bad/key" },
+        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "ChatGPT Backend with a reserved admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "..admin-key" },
+        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "ChatGPT Backend with an overlong admin Secret name",
+        { ...chatgptValues, "backend.chatgpt.secretName": "a".repeat(254) },
+        /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
+      ],
+      [
+        "ChatGPT Backend with an overlong admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "a".repeat(254) },
+        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
+      ],
+      [
         "Agent native admin enabled without a public DNS suffix",
         { "agentNativeAdmin.enabled": "true" },
       ],
@@ -3993,6 +4018,10 @@ test(
         new RegExp(`OCC_AUTH_${provider.toUpperCase()}`),
       );
     }
+    assert.match(
+      (await render({ ...chatgptValues, "backend.chatgpt.key": ".hidden" })).stdout,
+      /key: "\.hidden"/,
+    );
     // OCI SHA-256 digests are `sha256` and lowercase hex; containerd refuses other
     // spellings at pull time. The uppercase algorithm was already refused; uppercase hex
     // was not.

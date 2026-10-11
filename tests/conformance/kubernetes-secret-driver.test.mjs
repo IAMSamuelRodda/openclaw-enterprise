@@ -258,6 +258,7 @@ for (const layout of ["shared", "adopted", "split"]) {
     });
 
     stored.metadata.labels["operator.example/retained"] = "true";
+    stored.metadata.annotations["operator.example/retained"] = "true";
     await driver.update(
       {
         ...identity,
@@ -283,6 +284,7 @@ for (const layout of ["shared", "adopted", "split"]) {
     const updated = client.secrets.get(`${namespace}/${backendRef.name}`);
     assert.equal(updated.metadata.uid, backendRef.uid);
     assert.equal(updated.metadata.labels["operator.example/retained"], "true");
+    assert.equal(updated.metadata.annotations["operator.example/retained"], "true");
     assert.equal(Buffer.from(updated.data.value, "base64").toString("utf8"), "rotated-value");
     assert.deepEqual(
       await driver.resolve({
@@ -348,6 +350,8 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
     {
       name: "record owned by another Secret Driver",
       mutateRecord: (record) => ({ ...record, driverId: "secret-other-driver" }),
+      // delete does not compare the record's driverId: OCC picks the driver by it.
+      deleteChecksDriver: false,
     },
     {
       name: "foreign driver annotation",
@@ -362,6 +366,20 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
       name: "foreign backend UID",
       mutateBackendRef: (backendRef) => ({ ...backendRef, uid: "foreign-uid" }),
     },
+    {
+      name: "foreign backend key",
+      mutateBackendRef: (backendRef) => ({ ...backendRef, key: "token" }),
+    },
+    {
+      name: "unmanaged Secret",
+      mutateStored: (stored) => delete stored.metadata.labels["app.kubernetes.io/managed-by"],
+    },
+    {
+      name: "service account token Secret",
+      mutateStored: (stored) => (stored.type = "kubernetes.io/service-account-token"),
+    },
+    { name: "immutable Secret", mutateStored: (stored) => (stored.immutable = true) },
+    { name: "Secret without its value key", mutateStored: (stored) => delete stored.data.value },
   ]) {
     const client = new FakeCoreV1Api();
     const nsId = namespaceId();
@@ -383,6 +401,11 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
       SecretOwnershipError,
       scenario.name,
     );
+    if (scenario.deleteChecksDriver !== false) {
+      await assert.rejects(driver.delete(secret), SecretOwnershipError, scenario.name);
+      assert.equal(client.calls.deleteNamespacedSecret, 0, scenario.name);
+      assert.equal(client.secrets.size, 1, scenario.name);
+    }
   }
 
   const client = new FakeCoreV1Api();
@@ -401,6 +424,76 @@ test("kubernetes-secret-driver fails closed on missing placement, invalid values
   await assert.rejects(
     () => driver.create({ ...identity, id: secretId(), namespaceId: namespaceId() }, "safe-value"),
     SecretBackendUnavailableError,
+  );
+
+  // Malformed identities and values are refused before any request, and nothing is stored,
+  // even when a namespace carries the unprefixed ID.
+  const unprefixed = `namespace_${randomUUID()}`;
+  client.addNamespace(unprefixed);
+  const listed = client.calls.listNamespace;
+  for (const [name, invalid, value] of [
+    ["Secret ID prefix", { ...identity, id: `secret_${randomUUID()}` }, "safe-value"],
+    ["Namespace ID prefix", { ...identity, namespaceId: unprefixed }, "safe-value"],
+    ["empty name", { ...identity, name: "" }, "safe-value"],
+    // 65,537 UTF-8 bytes in 32,769 UTF-16 code units.
+    ["one byte over the limit", identity, `${"é".repeat(32_768)}x`],
+  ]) {
+    await assert.rejects(() => driver.create(invalid, value), SecretValidationError, name);
+  }
+  assert.equal(client.calls.listNamespace, listed);
+  assert.equal(client.secrets.size, 0);
+
+  // Exactly 65,536 UTF-8 bytes fit.
+  const largest = "é".repeat(32_768);
+  const backendRef = await driver.create(identity, largest);
+  const secret = {
+    ...identity,
+    driverId: driver.id,
+    backendRef,
+    createdAt: new Date().toISOString(),
+  };
+  // Updates and conditional writes refuse what a create refuses, and write nothing.
+  await assert.rejects(driver.update(secret, ""), SecretValidationError);
+  await assert.rejects(driver.compareAndSwap(secret, "", "safe-value"), SecretValidationError);
+  // A record without a name or a backend reference is refused before it is used.
+  await assert.rejects(driver.update({ ...secret, name: "" }, "safe-value"), SecretValidationError);
+  await assert.rejects(driver.delete({ ...secret, name: "" }), SecretValidationError);
+  await assert.rejects(driver.resolve({ ...secret, backendRef: undefined }), SecretValidationError);
+  assert.equal(client.calls.replaceNamespacedSecret, 0);
+  assert.equal(await driver.withValue(secret, async (value) => value), largest);
+
+  // Each create gets a fresh backend name, so a failed create's cleanup can only find its own.
+  const again = await driver.create(identity, "safe-value");
+  assert.notEqual(again.name, backendRef.name);
+  assert.equal(client.secrets.size, 2);
+
+  // A create whose stored object lacks OCC ownership (a mutating webhook, say) is refused.
+  const realCreate = client.createNamespacedSecret.bind(client);
+  client.createNamespacedSecret = async (request) => {
+    delete request.body.metadata.labels["openclaw.dev/secret"];
+    return realCreate(request);
+  };
+  await assert.rejects(
+    driver.create({ ...identity, id: secretId() }, "safe-value"),
+    SecretOwnershipError,
+  );
+});
+
+test("kubernetes-secret-driver refuses unknown options and implementations", () => {
+  const authentication = { mode: "inCluster" };
+  for (const options of [
+    undefined,
+    { authentication, clients: {} },
+    { authentication, namespace: "default" },
+  ]) {
+    assert.throws(
+      () => KubernetesSecretDriver.validateConfiguration(options),
+      SecretValidationError,
+    );
+  }
+  assert.throws(
+    () => new KubernetesSecretDriver({ authentication }, { implementation: "occ/other-secret" }),
+    SecretValidationError,
   );
 });
 
@@ -423,6 +516,8 @@ test("kubernetes-secret-driver rejects malformed or oversized stored values on t
     "",
     "not-base64!",
     "c2FmZS12YWx1ZQ==\n",
+    // "a" with nonzero padding bits; its canonical form is "YQ==".
+    "YR==",
     Buffer.from([0xff]).toString("base64"),
     Buffer.from("value\0suffix").toString("base64"),
     Buffer.alloc(65_537, "x").toString("base64"),
@@ -582,7 +677,11 @@ test("kubernetes-secret-driver retries a read the API server dropped for a few s
   // A refused read is final at once.
   client.readSecretFailureCodes.push(403);
   reads = client.reads;
-  await assert.rejects(() => driver.resolve(secret), SecretBackendUnavailableError);
+  await assert.rejects(
+    () => driver.resolve(secret),
+    (error) =>
+      error instanceof SecretBackendUnavailableError && /not authorized/.test(error.message),
+  );
   assert.equal(client.reads - reads, 1);
 });
 
