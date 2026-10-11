@@ -218,7 +218,51 @@ export class KubernetesSecretDriver implements SecretDriver {
       await this.discardFailedCreate(client, namespace, name, identity);
       throw error;
     }
-    return this.checkedBackendRef(observed, identity, namespace);
+    try {
+      return this.checkedBackendRef(observed, identity, namespace);
+    } catch (error) {
+      await this.discardRefusedCreate(client, namespace, name, observed);
+      throw error;
+    }
+  }
+
+  /**
+   * A create the API server stored but answered with an object that fails the ownership check
+   * (a mutating admission webhook rewrote it, or a nonconforming server) is refused, yet the
+   * stored object holds the value and no OCC metadata names it (finding 1111). Re-checking
+   * ownership, as discardFailedCreate does, would find the same rewrite and keep it. So the
+   * driver deletes the object it was answered with, by its own name with the answered uid and
+   * resourceVersion as preconditions: a different object under that name, or a later version,
+   * is never deleted. When that delete cannot finish, the outcome is reported as unknown.
+   */
+  private async discardRefusedCreate(
+    client: CoreV1Api,
+    namespace: string,
+    name: string,
+    observed: V1Secret,
+  ): Promise<void> {
+    const uid = observed.metadata?.uid;
+    const resourceVersion = observed.metadata?.resourceVersion;
+    if (!isNonEmptyString(uid) || !isNonEmptyString(resourceVersion)) {
+      throw this.unknownCreateOutcome();
+    }
+    try {
+      await this.request(
+        () =>
+          client.deleteNamespacedSecret({
+            namespace,
+            name,
+            body: { preconditions: { uid, resourceVersion } },
+          }),
+        "delete",
+        { mutating: true },
+      );
+    } catch (error) {
+      if (error instanceof SecretBackendMissingError) {
+        return;
+      }
+      throw this.unknownCreateOutcome();
+    }
   }
 
   /**
