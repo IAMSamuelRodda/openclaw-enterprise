@@ -1,5 +1,10 @@
 {{- /* One IPv4 host. Go's ParseCIDR rejects an octet above 255 and a leading zero. */ -}}
 {{- define "openclaw.ipv4Host32" -}}^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/32${{- end -}}
+{{- define "openclaw.validateSecretKey" -}}
+{{- if or (eq (toString .value) ".") (hasPrefix ".." (toString .value)) (gt (len (toString .value)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString .value))) -}}
+{{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" .label) -}}
+{{- end -}}
+{{- end -}}
 {{- define "openclaw.validate" -}}
 {{- if or (gt (len .Release.Namespace) 63) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?$" .Release.Namespace)) -}}
 {{- fail "Helm release namespace must be a DNS-1123 label of at most 63 characters" -}}
@@ -95,6 +100,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $github $github.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.github.enabled requires auth.recoveryUserId: install without GitHub first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $github.secretName) (not $github.clientIdKey) (not $github.clientSecretKey) -}}{{- fail "auth.github requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.github.clientIdKey" "value" $github.clientIdKey) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.github.clientSecretKey" "value" $github.clientSecretKey) -}}
 {{- if eq $github.clientIdKey $github.clientSecretKey -}}{{- fail "auth.github client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.github requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false; GitHub sign-in supports host-only cookies only" -}}{{- end -}}
@@ -109,6 +116,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $google $google.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.google.enabled requires auth.recoveryUserId: install without Google first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $google.secretName) (not $google.clientIdKey) (not $google.clientSecretKey) -}}{{- fail "auth.google requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.google.clientIdKey" "value" $google.clientIdKey) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.google.clientSecretKey" "value" $google.clientSecretKey) -}}
 {{- if eq $google.clientIdKey $google.clientSecretKey -}}{{- fail "auth.google client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.google requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google sign-in supports host-only cookies only" -}}{{- end -}}
@@ -123,6 +132,8 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $oidc $oidc.enabled -}}
 {{- if not $recoveryUserId -}}{{- fail "auth.oidc.enabled requires auth.recoveryUserId: install without OIDC first, then upgrade with the administrator's user ID" -}}{{- end -}}
 {{- if or (not $oidc.secretName) (not $oidc.clientIdKey) (not $oidc.clientSecretKey) -}}{{- fail "auth.oidc requires a dedicated operator-created Secret name, client ID key, and client secret key" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.clientIdKey" "value" $oidc.clientIdKey) -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.oidc.clientSecretKey" "value" $oidc.clientSecretKey) -}}
 {{- if eq $oidc.clientIdKey $oidc.clientSecretKey -}}{{- fail "auth.oidc client ID and client secret must use different Secret keys" -}}{{- end -}}
 {{- if ne $baseUrl.scheme "https" -}}{{- fail "auth.oidc requires an HTTPS auth.baseUrl" -}}{{- end -}}
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.oidc requires agentNativeAdmin.enabled: false; OIDC sign-in supports host-only cookies only" -}}{{- end -}}

@@ -3764,7 +3764,7 @@ test(
       const gateway = objects.find((object) => object.kind === "Gateway");
       assert.equal(gateway.metadata.namespace, namespace);
     }
-    for (const [description, override] of [
+    for (const [description, override, message] of [
       ["mutable controller", { "images.controller": "registry.example/controller:latest" }],
       ["missing Better Auth secret", { "auth.secretName": "" }],
       ["missing bootstrap admin email", { "bootstrap.adminEmail": "" }],
@@ -3799,6 +3799,43 @@ test(
       ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
       ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
       ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
+      [
+        "invalid GitHub client ID Secret key",
+        { ...githubLoginValues, "auth.github.clientIdKey": "bad/key" },
+        /auth\.github\.clientIdKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved GitHub client secret Secret key",
+        { ...githubLoginValues, "auth.github.clientSecretKey": "." },
+        /auth\.github\.clientSecretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "overlong Google client secret Secret key",
+        {
+          "auth.google.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.google.clientSecretKey": "a".repeat(254),
+        },
+        /auth\.google\.clientSecretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "invalid OIDC client ID Secret key",
+        {
+          "auth.oidc.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.oidc.clientIdKey": "bad/key",
+        },
+        /auth\.oidc\.clientIdKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved Google client ID Secret key",
+        {
+          "auth.google.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.google.clientIdKey": "..client-id",
+        },
+        /auth\.google\.clientIdKey must be a Kubernetes Secret key/,
+      ],
       ["shared migration database credentials", { "database.migrationUrlKey": "application-url" }],
       [
         "retired ChatGPT integration key",
@@ -3932,8 +3969,28 @@ test(
       // Rejection comes from the actual Helm templates, not a reimplemented test validator.
       await assert.rejects(
         render(override),
-        ({ code, stderr }) => code !== 0 && stderr.length > 0,
+        ({ code, stderr }) => code !== 0 && stderr.length > 0 && (!message || message.test(stderr)),
         description,
+      );
+    }
+    for (const [provider, override] of [
+      ["github", { ...githubLoginValues, "auth.github.clientIdKey": ".hidden" }],
+      [
+        "oidc",
+        {
+          "auth.oidc.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.oidc.issuer": "https://tenant.idp.example.test/",
+          "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
+          "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
+          "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+          "auth.oidc.clientSecretKey": "a".repeat(253),
+        },
+      ],
+    ]) {
+      assert.match(
+        (await render(override)).stdout,
+        new RegExp(`OCC_AUTH_${provider.toUpperCase()}`),
       );
     }
     // OCI SHA-256 digests are `sha256` and lowercase hex; containerd refuses other

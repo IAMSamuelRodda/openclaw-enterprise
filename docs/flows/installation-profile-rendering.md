@@ -117,13 +117,11 @@ ChatGPT admin and sign-in Secrets, gateway StorageClass, repository ConfigMap,
 Secret and Service names, and paired metrics selectors. Invalid values fail
 preflight.
 
-`scripts/render-installation-profile.mjs:signInProvider` validates Secret names and
-refuses equal client-ID and client-secret keys for GitHub, Google and OIDC, including
-chart defaults when one key is overridden.
-`dedicatedSecrets` applies the chart's dedicated-Secret rule in the chart's
-order: the ChatGPT admin, database CA, gateway API key, sign-in and repository
-Secrets must each differ from `occ-installation-startup`, `occ-database`,
-`occ-auth`, the generated Gateway TLS and root CA Secrets
+`signInProvider` validates GitHub, Google and OIDC Secret names and keys, and
+refuses equal client-ID and client-secret keys after applying chart defaults.
+`dedicatedSecrets` applies the chart's ordering: ChatGPT admin, database CA,
+gateway API key, sign-in and repository Secrets must differ from
+`occ-installation-startup`, `occ-database`, `occ-auth`, and generated Gateway Secrets
 (`chartGatewaySecretNames`), the enabled log collector's Secrets and every Secret
 listed before it; only the two public CA Secrets may share one. A collision fails
 preflight.
@@ -281,7 +279,7 @@ activation, and repository registry creation need separate evidence.
 
 ## Changelog
 
-- 2026-10-11 18:12: Validate sign-in Secret names alongside current database CA and repository resource-name checks. (authoring-run/a792f860-0966-4b83-8955-7d864ba96f61 - ec6d41d1ac7f4cbe889ff7cdf45b60ebef99ffb7)
+- 2026-10-11 18:12: Validate sign-in Secret names and keys alongside current database CA and repository checks. (authoring-run/a792f860-0966-4b83-8955-7d864ba96f61 - ec6d41d1ac7f4cbe889ff7cdf45b60ebef99ffb7)
 
 - 2026-10-10: Public CA Secrets may share one Secret, as in the chart.
 
