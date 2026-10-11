@@ -128,7 +128,8 @@ The worker emits fixed operational event classes through the same logger:
   write. A pass that could not stop a refused candidate stays pending with code
   `REFUSED_CANDIDATE_STOP_PENDING` and adds `refusal`, the refusal's code
   (`CONVERGENCE_DEADLINE_EXCEEDED` once a lifted refusal outlived the deadline),
-  until the stop succeeds. A provisioning plan that the Compute Driver refuses for a reason the caller
+  until the stop succeeds. A stopped Agent's stop or revision pass whose Gateway drain
+  yielded to other work stays pending with `AGENT_STOP_YIELDED` and runs again after it. A provisioning plan that the Compute Driver refuses for a reason the caller
   cannot fix adds that `reason`. A failed Namespace pass adds the Compute Driver's
   `reason` when it gives one: bounded printable text that never carries another
   tenant's values. These fields stay in the local log; the Collector
