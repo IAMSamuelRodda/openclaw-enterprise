@@ -8,9 +8,9 @@ last_updated_session: fix-1096
 
 ## Overview
 
-OpenClaw Control Plane (OCC) authorizes status and log reads for an admitted Agent
-revision, fetches raw data through its Compute Driver, and returns classified,
-redacted, bounded records. Logs are not persisted; downloads stay local.
+OpenClaw Control Plane (OCC) authorizes status and log reads for an admitted
+revision, fetches raw data through its Compute Driver, and returns redacted,
+bounded records. Nothing is persisted; downloads stay local.
 
 ## Entry Points
 
@@ -245,8 +245,6 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 ## Changelog
 
 - 2026-10-11 09:48: Refuse impossible or offset Kubernetes Pod and Event times. (fix-1096 - 839b0c90cb1c54d7ed70eb23229bd117f25278be)
-
-- 2026-10-11: Reject impossible timestamps. (#2146)
 
 - 2026-10-11 15:20: Reject malformed or impossible Compute Driver timestamps at the runtime-description boundary. (authoring-run/b5dc3ace-2767-4645-9b89-e30d18fa3184 - 2a1eae472d6a820a574cdbcb75dd7d31e3619a68)
 
