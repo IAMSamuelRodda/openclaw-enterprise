@@ -1676,6 +1676,33 @@ test("preflight warns, without failing, when no trusted proxy is set", () => {
   );
 });
 
+test("preflight rejects external sign-in Secret names Kubernetes refuses", () => {
+  const oidc = {
+    issuer: "https://tenant.idp.example.test/",
+    authorizationUrl: "https://tenant.idp.example.test/authorize",
+    tokenUrl: "https://tenant.idp.example.test/oauth/token",
+    jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
+  };
+  for (const [provider, signIn] of [
+    ["github", { github: { secretName: "Bad_Name" } }],
+    ["google", { github: undefined, google: { secretName: "Bad_Name" } }],
+    ["oidc", { github: undefined, oidc: { ...oidc, secretName: "Bad_Name" } }],
+  ]) {
+    assertPreflightFailure(
+      "openclaw",
+      externalSignInInput(signIn),
+      new RegExp(`controlPlane\\.${provider}\\.secretName must be a Kubernetes resource name`),
+    );
+  }
+  for (const signIn of [
+    { github: { secretName: "github.login-v2" } },
+    { github: undefined, google: { secretName: "google.login-v2" } },
+    { github: undefined, oidc: { ...oidc, secretName: "oidc.login-v2" } },
+  ]) {
+    assert.equal(render("openclaw", externalSignInInput(signIn)).summary.ok, true);
+  }
+});
+
 test("preflight rejects external sign-in and trusted proxy inputs Helm would reject", () => {
   assertPreflightFailure(
     "openclaw",

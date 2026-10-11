@@ -693,7 +693,12 @@ function signInProvider(source, name, diagnostics) {
   const path = ["controlPlane", name];
   const rendered = { enabled: true };
   for (const key of ["secretName", "clientIdKey", "clientSecretKey"]) {
-    const value = optionalString(source, [...path, key], diagnostics);
+    const value = optionalString(
+      source,
+      [...path, key],
+      diagnostics,
+      key === "secretName" ? resourceNameRule : undefined,
+    );
     if (value !== undefined) {
       rendered[key] = value;
     }
