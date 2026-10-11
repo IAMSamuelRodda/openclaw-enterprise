@@ -34,7 +34,8 @@ Each real gateway, embedded or dedicated, receives one private `10Gi`
 Claims live in the tenant namespace in a single cluster; dedicated Gateway claims
 use the control-cluster Gateway namespace only with the two-cluster profile. The required
 `runtime.gatewayStorageClassName` selects an operator-provisioned
-StorageClass for a local or cloud block disk mounted as a filesystem.
+StorageClass for a local or cloud block disk mounted as a filesystem. Configure its
+Kubernetes resource name: a lowercase DNS subdomain of at most 253 characters.
 
 The filesystem must be SQLite-compatible: reliable file locking, durable writes
 through `fsync`, and support for SQLite's database and companion WAL/SHM files
