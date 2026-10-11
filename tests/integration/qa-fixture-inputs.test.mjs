@@ -221,7 +221,7 @@ test("QA waits report the last observation when they time out", async () => {
         return false;
       },
       200,
-      { describe: () => JSON.stringify(last), interval: 20 },
+      { describe: () => JSON.stringify(last), interval: 5 },
     ),
     (error) => {
       assert.equal(
@@ -300,6 +300,7 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     },
     async record(name, value) {
       records.set(name, value);
+      return `${this.controlPlane}-${name}.json`;
     },
   };
   await assert.rejects(stopQaAgent(f, agent, { timeout: 10 }), (error) => {
@@ -362,4 +363,23 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
       !/API and worker logs/.test(error.message),
   );
   assert.equal(records.size, 0);
+});
+
+test("QA log redaction hides each line of a registered multi-line secret", async () => {
+  const { redactedQaTail, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const body = ["MIIEfixtureLineOneAAAAAAAA", "fixtureLineTwoBBBBBBBBBBBB"];
+  registerQaSecret(
+    ["-----BEGIN PRIVATE KEY-----", ...body, "-----END PRIVATE KEY-----"].join("\n"),
+  );
+  const lines = redactedQaTail(
+    `reading key\n${body[0]}\n${body[1]}\ndone\n`,
+    {},
+    {
+      lines: 10,
+      lineChars: 200,
+    },
+  );
+  assert.deepEqual(lines[0], "reading key");
+  assert.equal(lines.at(-1), "done");
+  assert.doesNotMatch(lines.join("\n"), /fixtureLine/);
 });

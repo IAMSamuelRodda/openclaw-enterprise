@@ -32,7 +32,18 @@ export function qaCommandFailureDetail(stderr, env) {
 export function redactedQaTail(text, env, { lines, lineChars }) {
   const secrets = [
     ...failureSecrets([env]),
-    ...[...protectedValues].map((value) => [value, "qa-secret"]),
+    // Text is redacted line by line, so each line of a multi-line value (a PEM
+    // key) is a value of its own, as failureSecrets does for the environment.
+    ...[...protectedValues].flatMap((value) => [
+      [value, "qa-secret"],
+      ...(value.includes("\n")
+        ? value
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.length >= 8)
+            .map((line) => [line, "qa-secret"])
+        : []),
+    ]),
   ].sort(([a], [b]) => b.length - a.length);
   return String(text ?? "")
     .trimEnd()

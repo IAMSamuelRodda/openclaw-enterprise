@@ -346,7 +346,7 @@ const publicLauncherSettings = new Set([
 
 // The QA evidence artifact is uploaded on every run, and only its *.json files;
 // keep the API and worker log tails there, redacted, for the kubernetes control
-// plane (Compose runs them as containers outside the cluster).
+// plane (Compose runs them as containers outside the cluster). Returns the file name.
 async function recordPlatformLogs(f, label) {
   if (f.controlPlane !== "kubernetes") {
     return;
@@ -374,13 +374,11 @@ async function recordPlatformLogs(f, label) {
       });
     } catch (error) {
       logs[component] = {
-        unavailable: redactedQaTail(error.message, env, { lines: 4, lineChars: 800 }),
+        unavailable: redactedQaTail(error.message, env, { lines: 12, lineChars: 800 }),
       };
     }
   }
-  const name = `${label}-platform-logs`;
-  await f.record(name, { capturedAt: new Date().toISOString(), logs });
-  return `${f.controlPlane}-${name}.json`;
+  return f.record(`${label}-platform-logs`, { capturedAt: new Date().toISOString(), logs });
 }
 
 export async function verifyQaRepository(f, agent, profile = "git-full") {
