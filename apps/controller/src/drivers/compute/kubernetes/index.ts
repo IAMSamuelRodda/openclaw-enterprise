@@ -8428,7 +8428,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   private validIsoTimestamp(value: unknown): value is string {
-    return typeof value === "string" && !Number.isNaN(Date.parse(value));
+    if (typeof value !== "string") {
+      return false;
+    }
+    const canonical = RUNTIME_DIAGNOSTIC_TIMESTAMP.test(value)
+      ? value
+      : value.replace(/Z$/u, ".000Z");
+    if (!RUNTIME_DIAGNOSTIC_TIMESTAMP.test(canonical)) {
+      return false;
+    }
+    const parsed = new Date(value);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === canonical;
   }
 
   private cachedRuntimeFailureEvidence(
