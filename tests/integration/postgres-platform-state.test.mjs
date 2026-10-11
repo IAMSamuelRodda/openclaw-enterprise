@@ -1762,6 +1762,12 @@ test(
       namespaceId,
       "Unreadable saved configuration",
     );
+    // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
+    // it as an older release did, to match the revisions seeded below.
+    await pool.query(
+      "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
+      [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
+    );
     const { agent: healthyAgent } = await createConfiguredAgent(
       api,
       namespaceId,
@@ -2032,6 +2038,12 @@ test(
       api,
       namespaceId,
       "Native admin successor",
+    );
+    // Kubernetes Compute never deploys runtime authentication, so Agent save refuses it; store
+    // it as an older release did, to match the revisions seeded below.
+    await pool.query(
+      "UPDATE occ.agents SET harness_auth = $3::jsonb WHERE namespace_id = $1 AND id = $2",
+      [namespaceId, agent.id, JSON.stringify({ method: "runtime" })],
     );
     const plugins = {
       "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },

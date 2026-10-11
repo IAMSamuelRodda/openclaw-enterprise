@@ -1504,12 +1504,15 @@ test(
       ),
     );
 
+    // Agent save refuses an embedded draft of this Codex Agent, as deployment would; the
+    // running revision is unaffected.
     const updatedDedicated = await request(
       "PATCH",
       `/namespaces/${adopted.data.id}/agents/${adoptedTenant.id}`,
       { configurationId: adoptedTenant.configurationId, executionMode: "embedded" },
     );
-    assert.equal(updatedDedicated.status, 200, JSON.stringify(updatedDedicated.error));
+    assert.equal(updatedDedicated.status, 400, JSON.stringify(updatedDedicated.error));
+    assert.match(updatedDedicated.error.message, /^The Configuration selects the Codex Harness, /);
     // Public deletion of an active dedicated Agent must remove persisted ownership only after
     // every real Agent-owned Kubernetes effect, including its live Pods, has been removed.
     const deleting = await request(
