@@ -3861,6 +3861,11 @@ test(
       ["missing bootstrap admin email", { "bootstrap.adminEmail": "" }],
       ["missing bootstrap password claim", { "bootstrap.password.claimName": "" }],
       ["nested bootstrap password file", { "bootstrap.password.fileName": "nested/password" }],
+      [
+        "oversized bootstrap password basename",
+        { "bootstrap.password.fileName": "a".repeat(256) },
+        /bootstrap\.password\.fileName must be a simple basename of at most 255 characters/,
+      ],
       ["missing bootstrap service key file", { "bootstrap.serviceKey.fileName": "" }],
       ["nested bootstrap service key file", { "bootstrap.serviceKey.fileName": "nested/key.json" }],
       [
