@@ -2947,9 +2947,10 @@ export class KubernetesComputeDriver implements ComputeDriver {
       message: string;
     }[] = broadStatusProxySourceCidrs(this.options).map((cidr) => ({
       code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+      // The worker log keeps only plain text (logging.ts SAFE_STRING): no commas or quotes.
       message:
-        `Plugin status proxy CIDR ${cidr} covers more than one address, so every Pod in it ` +
-        "can reach each Agent's status port. Use the API server's /32 or /128 source addresses.",
+        `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
+        "can reach the Agent status port. Use the API server /32 or /128 source addresses.",
     }));
     let controlIdentity: string | undefined;
     const planes =
@@ -8300,9 +8301,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // A provider-fenced Harness admits only its Gateway's transport (the status proxy
     // policy selects ordinary Pods, and the provider's own fence denies the API server),
     // so a Pod proxy read could never answer: report no status without the round-trip.
+    // Checked without harnessNetworkProfile, which throws for a revision pinned to an
+    // unavailable SandboxDriver: such a revision keeps the read it had.
     if (
       container === "agent" &&
-      this.harnessNetworkProfile(revision) === PROVIDER_FENCED_NETWORK_PROFILE
+      revision.harness.mode === "dedicated" &&
+      revision.sandboxDriverId !== undefined &&
+      this.sandboxDriver?.id === revision.sandboxDriverId &&
+      this.sandboxDriver.provisionHarness !== undefined
     ) {
       return undefined;
     }

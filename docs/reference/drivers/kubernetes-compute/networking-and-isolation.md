@@ -36,8 +36,9 @@ the endpoint capability retain ordinary Service or private routing.
 For Compute-owned startup failure evidence, plugin reporting, and on-demand
 deployment diagnostics, set `network.pluginStatusProxySourceCidrs` to the
 Kubernetes API server's source addresses for Pod proxy requests, as `/32` or
-`/128` addresses: wider ranges warn and all-address ranges fail. On overlay networks, the source may be the
-control-plane node's overlay address rather than its node IP; verify it across
+`/128` addresses: wider ranges warn and all-address ranges fail. On overlay
+networks, the source may be the control-plane node's overlay address rather than
+its node IP; verify it across
 nodes with enforced policies. The policy allows those sources only to the private
 status port, TCP/18791, even when an Agent has no enabled plugins. Worker and API
 ServiceAccounts each need namespace-local `get` on `pods/proxy`. An omitted list
@@ -161,8 +162,9 @@ the expected template profile.
 
 Harness Pods provisioned by a SandboxDriver, such as OpenShell, carry
 `provider-fenced-v1` instead. The provider fences their egress, so Compute grants
-them only Gateway transport ingress (`allow-agent-runtime` is ingress-only for
-them) and the workspace-node route: no DNS, model or authentication egress.
+them only Gateway transport and status ingress (`allow-agent-runtime` is
+ingress-only for them) and the workspace-node route: no DNS, model or
+authentication egress.
 Provider Harness readiness and activation reject a Pod with any other profile.
 
 Existing policy names remain stable; upgrading the controller restarts no Pod.

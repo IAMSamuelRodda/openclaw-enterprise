@@ -335,12 +335,31 @@ test("Kubernetes preflight warns about status proxy sources wider than one addre
   const warning = (cidr) => ({
     code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
     message:
-      `Plugin status proxy CIDR ${cidr} covers more than one address, so every Pod in it ` +
-      "can reach each Agent's status port. Use the API server's /32 or /128 source addresses.",
+      `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
+      "can reach the Agent status port. Use the API server /32 or /128 source addresses.",
   });
-  assert.deepEqual(await driver.preflight(), {
+  const result = await driver.preflight();
+  assert.deepEqual(result, {
     warnings: [warning("2001:db8::/64"), warning("10.42.0.0/16")],
   });
+  // The worker logs each warning; the log keeps only plain text, so the message must survive.
+  const lines = [];
+  const logger = createOccLogger({
+    component: "occ-worker",
+    destination: {
+      write(chunk) {
+        lines.push(JSON.parse(String(chunk)));
+        return true;
+      },
+    },
+  });
+  for (const entry of result.warnings) {
+    emitOccLogEvent(logger, { event: "compute.preflight-warning", ...entry });
+  }
+  assert.deepEqual(
+    lines.map(({ code, message }) => ({ code, message })),
+    result.warnings,
+  );
 
   const exact = createKubernetesComputeDriver(executionOptions());
   exact.apiClients = Promise.resolve(clients);

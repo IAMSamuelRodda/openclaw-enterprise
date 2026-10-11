@@ -570,7 +570,7 @@ function sourceCidrs(controlPlane, key, diagnostics, { warnWide = false } = {}) 
       diagnostics.errors.push(`${path.join(".")}[${index}] cannot cover every address.`);
     } else if (warnWide && isIpv4Cidr(value) && !isIpv4Cidr(value, 32)) {
       diagnostics.warnings.push(
-        `${path.join(".")}[${index}] covers more than one address, so every Pod in it can reach each Agent's status port. Use the API server's /32 source addresses.`,
+        `${path.join(".")}[${index}] covers more than one address: every Pod in it can reach the Agent status port. Use the API server /32 source addresses.`,
       );
     }
   });
