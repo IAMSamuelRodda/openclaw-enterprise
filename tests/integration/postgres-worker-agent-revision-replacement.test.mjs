@@ -6,6 +6,7 @@ import { SandboxRevisionUnsupportedError } from "../../packages/occ/src/index.ts
 import {
   ComputeStopYieldedError,
   computeStopShouldYield,
+  computeWorkWaiting,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
@@ -619,8 +620,10 @@ test(
 // wait ends with ComputeStopYieldedError when the worker allows it, and the Harness stops only
 // after the drain. `overlaps` records any preparation while another revision of the same Agent
 // still has a Harness: the RWO workspace and Gateway SQLite volumes would be mounted twice.
-// `busy` revisions never become ready, so their deployments keep Work due.
-function drainingExclusiveCompute(fixture, { drainMs }) {
+// `busy` revisions never become ready, so their deployments keep Work due. With `holdMs`, each of
+// their passes first holds an optional wait (like the D221 binding ack) for up to `holdMs`, ending
+// it once other Work is due; `holds` records how long each one took.
+function drainingExclusiveCompute(fixture, { drainMs, holdMs }) {
   const running = new Map();
   const busy = new Set();
   const prepared = [];
@@ -629,6 +632,7 @@ function drainingExclusiveCompute(fixture, { drainMs }) {
   const drains = new Map();
   const pointers = new Set();
   const stopCalls = new Map();
+  const holds = [];
   let yields = 0;
   const compute = {
     ...fixture.compute,
@@ -641,6 +645,13 @@ function drainingExclusiveCompute(fixture, { drainMs }) {
       }
       running.set(revision.id, revision.agentId);
       prepared.push(revision.id);
+      if (holdMs !== undefined && busy.has(revision.id)) {
+        const started = Date.now();
+        while (Date.now() - started < holdMs && !(await computeWorkWaiting())) {
+          await delay(100);
+        }
+        holds.push(Date.now() - started);
+      }
       const observation = await fixture.compute.prepareRevision(revision);
       return busy.has(revision.id) ? { ...observation, ready: false } : observation;
     },
@@ -678,6 +689,7 @@ function drainingExclusiveCompute(fixture, { drainMs }) {
     overlaps,
     harnessStops,
     pointers,
+    holds,
     stopCalls: (revision) => stopCalls.get(revision.id) ?? 0,
     yields: () => yields,
   };
@@ -696,13 +708,14 @@ function workPasses(events, work) {
 /**
  * An exclusive Agent whose first revision serves, another Agent's deployment that keeps Work due,
  * and a redeploy whose first pass yields its predecessor stop. `drainMs` is the first revision's
- * Gateway drain.
+ * Gateway drain; `holdMs` and `start` (worker options) are optional.
  */
-async function yieldedRedeploy(fixture, label, { drainMs }) {
+async function yieldedRedeploy(fixture, label, { drainMs, holdMs, start = {} }) {
   const owner = await fixture.agent(label, { executionMode: "dedicated" });
-  const driver = drainingExclusiveCompute(fixture, { drainMs });
+  const driver = drainingExclusiveCompute(fixture, { drainMs, holdMs });
   const events = [];
   await fixture.start(driver.compute, {
+    ...start,
     emit: (event) => events.push({ ...event, at: Date.now() }),
   });
   const first = await fixture.revision(owner, 1);
@@ -832,6 +845,71 @@ revisionTest(
     assert.deepEqual(driver.overlaps, []);
     // Nothing serves until a new revision activates; the pointer still names the predecessor.
     assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
+  },
+);
+
+// Finding 1109: an Agent stop admitted while a redeploy's predecessor stop is yielded makes the
+// redeploy's next pass end REVISION_STOPPED. It finishes the predecessor stop it started first,
+// so the predecessor's Harness does not depend on the Agent-stop work alone, which re-decides
+// `operate` on every pass and here fails.
+revisionTest(
+  "a yielded redeploy overtaken by an Agent stop finishes its predecessor stop before it ends stopped",
+  async (fixture) => {
+    let operateDenied;
+    const { owner, driver, events, first, replacement } = await yieldedRedeploy(
+      fixture,
+      "drain-predecessor-stopped",
+      {
+        drainMs: 4_000,
+        start: {
+          transformDrivers: proxiedIAM(async (iam, request) => {
+            const decision = await iam.authorize(request);
+            return request.action === "operate" && request.resource.id === operateDenied
+              ? { ...decision, allowed: false }
+              : decision;
+          }),
+        },
+      },
+    );
+    // The stop is admitted, but the worker's per-pass check refuses the Agent-stop work.
+    operateDenied = owner.id;
+    const stop = await fixture.requestStop(owner);
+    await assertWorkEnds(fixture, stop, "failed_permanent", "AUTHORIZATION_DENIED");
+    await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_STOPPED");
+    // Hard invariant: nothing prepared the replacement, and the predecessor whose Gateway the
+    // redeploy removed ended fully stopped, by the redeploy's own work.
+    assert.ok(!driver.prepared.includes(replacement.id), driver.prepared.join(","));
+    assert.deepEqual(driver.overlaps, []);
+    assert.deepEqual(driver.harnessStops, [first.id]);
+    assert.deepEqual(runningFor(driver, owner), []);
+    // A stop keeps the pointer and the workspace; only a deployment moves the pointer.
+    assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
+    // Its finishing drain yielded like the stopped Agent's own drain, not as a deployment
+    // waiting to start.
+    const codes = workPasses(events, replacement).map(({ code }) => code);
+    assert.equal(codes.at(-1), "REVISION_STOPPED");
+    assert.ok(!codes.includes("DEPENDENCY_UNAVAILABLE"), codes.join(", "));
+  },
+);
+
+// Finding 1108: once a redeploy's predecessor stop yielded, another Agent's optional in-pass wait
+// (here a 20 s hold, like the D221 binding ack) still ends when the redeploy is due: the redeploy's
+// next pass may be its whole deployment. Only a Gateway drain does not end for it.
+revisionTest(
+  "another Agent's optional wait ends for a yielded redeploy, which starts soon after its drain",
+  async (fixture) => {
+    const { owner, driver, first, replacement, requestedAt } = await yieldedRedeploy(
+      fixture,
+      "drain-predecessor-hold",
+      { drainMs: 3_000, holdMs: 20_000 },
+    );
+    await fixture.work(replacement, "succeeded", 30_000);
+    // Bounded by the drain and a few rechecks, not by the other Agent's 20 s holds.
+    const elapsed = Date.now() - requestedAt;
+    assert.ok(elapsed < 3_000 + 12_000, `${elapsed} ms, holds ${driver.holds.join(", ")}`);
+    assert.deepEqual(driver.overlaps, []);
+    assert.deepEqual(driver.harnessStops, [first.id]);
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, replacement.id);
   },
 );
 

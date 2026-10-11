@@ -3,6 +3,7 @@
 
 import {
   ComputeStopYieldedError,
+  type ComputeWorkWait,
   withYieldingGatewayDrain,
 } from "../drivers/compute/operation-context.ts";
 
@@ -27,18 +28,25 @@ export function stopYieldRecheckMs(ageMs: number): number {
   );
 }
 
+/** The pending code of a pass whose stop yielded during a Gateway drain. */
+export type StopYieldedCode = "AGENT_STOP_YIELDED" | "PREDECESSOR_STOP_YIELDED";
+
 interface YieldedStop {
+  readonly code: StopYieldedCode;
   readonly loggedAt: number;
   readonly yields: number;
   readonly yieldedAt: number;
 }
 
 /**
- * The work items whose latest pass in this worker yielded its stop. Two uses (finding 1093,
- * finding 1094):
- * - A draining stop does not yield to these: they are draining stops too, whose next pass only
- *   rechecks their own drain. Several stops draining at once would otherwise yield to each
- *   other and repeat their passes back to back for the whole drain.
+ * The work items whose latest pass in this worker yielded its stop. Two uses (findings 1093,
+ * 1094, 1108):
+ * - A draining stop does not yield to these: they are draining stops too. Several stops draining
+ *   at once would otherwise yield to each other and repeat their passes back to back for the
+ *   whole drain.
+ * - Other optional waits do not end for a stopped Agent's yielded stop, whose next pass only
+ *   rechecks its drain. They do end for a deployment whose predecessor stop yielded: once that
+ *   drain is over, its next pass deletes the predecessor's Harness and deploys.
  * - Their `worker.completed` lines are throttled: the first yield is logged, then at most one
  *   a minute, each with the work's yield count so far, which the work's next other line
  *   (usually its completion) carries too.
@@ -54,17 +62,20 @@ export class StopYields {
     this.now = now;
   }
 
-  /** Records that `key`'s pass yielded its stop. Returns the yield count when it should be logged. */
-  yielded(key: string): number | undefined {
+  /**
+   * Records that `key`'s pass yielded its stop, deferring as `code`. Returns the yield count when
+   * it should be logged.
+   */
+  yielded(key: string, code: StopYieldedCode): number | undefined {
     const now = this.now();
     this.prune(now);
     const previous = this.stops.get(key);
     const yields = (previous?.yields ?? 0) + 1;
     if (previous !== undefined && now - previous.loggedAt < STOP_YIELD_LOG_INTERVAL_MS) {
-      this.stops.set(key, { loggedAt: previous.loggedAt, yields, yieldedAt: now });
+      this.stops.set(key, { code, loggedAt: previous.loggedAt, yields, yieldedAt: now });
       return undefined;
     }
-    this.stops.set(key, { loggedAt: now, yields, yieldedAt: now });
+    this.stops.set(key, { code, loggedAt: now, yields, yieldedAt: now });
     return yields;
   }
 
@@ -78,10 +89,15 @@ export class StopYields {
     this.stops.delete(key);
   }
 
-  /** The keys of work whose latest pass yielded its stop, which a draining stop does not yield to. */
-  waiting(): string[] {
+  /**
+   * The keys of yielded stops that `wait` does not end for: every one for a Gateway drain, only a
+   * stopped Agent's (AGENT_STOP_YIELDED) for any other wait.
+   */
+  waiting(wait: ComputeWorkWait): string[] {
     this.prune(this.now());
-    return [...this.stops.keys()];
+    return [...this.stops]
+      .filter(([, stop]) => wait === "gateway-drain" || stop.code === "AGENT_STOP_YIELDED")
+      .map(([key]) => key);
   }
 
   private prune(now: number): void {
@@ -105,14 +121,12 @@ export class PredecessorStopYieldedError extends ComputeStopYieldedError {
 }
 
 /** Whether `code` is the pending code of revision work whose stop yielded during a drain. */
-export function isStopYieldedCode(code: string): boolean {
+export function isStopYieldedCode(code: string): code is StopYieldedCode {
   return code === "AGENT_STOP_YIELDED" || code === "PREDECESSOR_STOP_YIELDED";
 }
 
 /** The pending code of a pass whose stop yielded with `error`, if it did. */
-export function stopYieldedCode(
-  error: unknown,
-): "AGENT_STOP_YIELDED" | "PREDECESSOR_STOP_YIELDED" | undefined {
+export function stopYieldedCode(error: unknown): StopYieldedCode | undefined {
   if (error instanceof PredecessorStopYieldedError) {
     return "PREDECESSOR_STOP_YIELDED";
   }

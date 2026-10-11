@@ -98,6 +98,13 @@ export function deploymentProgressForWork(
       message =
         "Waiting for the previous version's gateway to finish its active work before this version starts.";
       break;
+    case "AGENT_STOP_YIELDED":
+      // The Agent stopped during this deployment: its stop waits for a gateway drain, and the
+      // deployment then ends stopped (finding 1106).
+      code = attempt.code;
+      message =
+        "The Agent was stopped; waiting for its gateway to finish its active work before it stops.";
+      break;
     case "AGENT_GATEWAY_UNAVAILABLE":
       code = attempt.code;
       message =
