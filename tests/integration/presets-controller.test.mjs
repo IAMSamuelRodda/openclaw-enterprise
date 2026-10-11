@@ -82,7 +82,7 @@ async function createPreset(fixture, namespaceId, name, template = {}) {
   return response.data;
 }
 
-// Replaces a Preset's template by PATCH, which stores it as seeding does.
+// Replaces a Preset's template by PATCH.
 async function patchTemplate(fixture, namespaceId, presetId, template) {
   const response = await fixture.request("PATCH", presetPath(namespaceId, presetId), {
     body: { template },
@@ -163,7 +163,7 @@ function installationOnlyAdmin(fixture) {
   });
 }
 
-// Grants `subjectId` read on one Preset through the managed Role and access-binding APIs.
+// Creates a Namespace Role granting Preset read; bindPreset binds it to one Preset.
 async function presetReaderRole(fixture, namespaceId) {
   const role = await fixture.request("POST", `/namespaces/${namespaceId}/iam/roles`, {
     body: { name: "Preset reader", permissions: [{ action: "read", resourceKind: "preset" }] },
@@ -198,7 +198,7 @@ function captureLog() {
   return { lines, emit: (event) => emitOccLogEvent(logger, event) };
 }
 
-// Fails the next `action` on Presets with an IAM outage, until the case ends.
+// Fails every `action` on Presets with an IAM outage until the case ends.
 function failPresetAuthorization(t, iam, action) {
   const authorize = iam.authorize.bind(iam);
   iam.authorize = async (request) => {
@@ -214,7 +214,8 @@ function failPresetAuthorization(t, iam, action) {
 
 // Sends a write's head and its first 64 KiB, declaring a body of `declaredBytes`, and never the
 // rest. Resolves with the response, or with null if the controller is still waiting for the body
-// after the deadline (it would buffer it before answering).
+// after the deadline (it would buffer it before answering). A correct controller answers at once,
+// so the deadline is generous: it only bounds how long a real failure takes to report.
 function partialWrite(fixture, method, path, session, declaredBytes) {
   return new Promise((resolve, reject) => {
     let settled = false;
@@ -234,7 +235,7 @@ function partialWrite(fixture, method, path, session, declaredBytes) {
         "content-length": String(declaredBytes),
       },
     });
-    const timer = setTimeout(() => settle(resolve, null), 5000);
+    const timer = setTimeout(() => settle(resolve, null), 15_000);
     request.on("response", (response) => {
       const chunks = [];
       response.on("data", (chunk) => chunks.push(chunk));
@@ -283,9 +284,12 @@ async function launchWithKey(fixture, namespaceId, rendered, secret, installed) 
   return { agent: agent.data, values };
 }
 
-describe("Presets", { concurrency: true }, () => {
-  // Cases that change only their own Namespaces, accounts and grants share one app. Cases that
-  // change controller-wide state (Drivers, IAM hooks, startup seeding) get their own.
+// Two cases at a time: the work is mostly on this thread, so two already overlap the password
+// hashing, and more would only queue requests behind each other toward their 5 s timeout.
+describe("Presets", { concurrency: 2 }, () => {
+  // Cases that change only their own Namespaces, accounts and grants share one app. A case that
+  // changes Drivers, controller methods or Restrictions, runs startup seeding, or counts audit
+  // rows beyond its own resources must use its own createFixture(t) instead of shared().
   const cleanups = [];
   let sharedFixture;
   const shared = () =>
