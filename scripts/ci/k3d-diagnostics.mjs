@@ -59,6 +59,11 @@ const NODE_LOG_HEAD = { lines: 60, chars: 8_000 };
 const NODE_LOG_FIRST_PROBLEMS = { lines: 20, chars: 4_000 };
 const NODE_LOG_LAST_PROBLEMS = { lines: 100, chars: 12_000 };
 const NODE_LOG_TAIL_CHARS = 16_000;
+// Each diagnostic command is bounded; a hung one must not replace the failure.
+const diagnosticCommandTimeoutMs =
+  Number(process.env.OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS)
+    : 10_000;
 
 function takeWithin(lines, { lines: maxLines = Infinity, chars }, fromEnd = false) {
   const ordered = fromEnd ? [...lines].reverse() : lines;
@@ -183,7 +188,7 @@ export async function captureK3dDiagnostics({ execFile, cluster, lane, statePath
   ) {
     try {
       const output = await execFile(command, args, {
-        timeoutMs: 10_000,
+        timeoutMs: diagnosticCommandTimeoutMs,
         maxOutputChars,
       });
       return { status: "ok", value: project(output) };
