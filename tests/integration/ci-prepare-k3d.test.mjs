@@ -62,7 +62,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     },
   ]) {
     test(`fixture preparation preserves bootstrap failure with bounded diagnostics: ${scenario}`, async (t) => {
-      // The hung events read waits out the diagnostic command timeout (10 s in CI).
+      // The hung events read waits out the diagnostic command timeout (5 s here; 10 s by default).
       const commands = await fixtureImageCommands(
         t,
         scenario,

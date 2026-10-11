@@ -162,8 +162,9 @@ function finish(stdout = "") {
   process.stdout.write(stdout);
   process.exit(0);
 }
-// An engine or node command that does not answer; preparation must time it out. It exits
-// on its own after the CLI watchdogs, so a regression cannot leave it running.
+// An external command that does not answer; preparation must time it out. It exits
+// on its own after the CLI watchdogs, so a regression or a killed preparation cannot
+// leave it running.
 async function hang() {
   setTimeout(() => process.exit(124), ${hungCommandExitMs});
   await new Promise(() => {});
@@ -673,11 +674,8 @@ if (command === "kubectl") {
         }] }));
       }
       if (equals(args.slice(6), ["get", "events", "-o", "json"])) {
-        if (scenario === "nodes-unready-diagnostics-failed") {
-          // Keep this external command alive until the real preparation deadline kills it.
-          setInterval(() => {}, 60_000);
-          await new Promise(() => {});
-        }
+        // The diagnostic command timeout kills this read.
+        if (scenario === "nodes-unready-diagnostics-failed") await hang();
         finish(JSON.stringify({ items: [{ type: "Warning", reason: "FailedScheduling",
           message: "fixture network is not ready", involvedObject: { kind: "Pod", name: "coredns-fixture" },
         }] }));
