@@ -1653,6 +1653,10 @@ function buildRendered(profile, parsed, diagnostics) {
               runtime,
               ["runtime", "gatewayStorageClassName"],
               diagnostics,
+              {
+                validate: isKubernetesResourceName,
+                description: "a Kubernetes resource name of at most 253 characters",
+              },
             ),
             nodeSelector: nodeSelector(runtime, ["runtime", "nodeSelector"], diagnostics),
             gatewayNodeSelector: nodeSelector(

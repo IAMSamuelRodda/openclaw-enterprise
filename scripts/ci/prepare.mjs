@@ -363,6 +363,13 @@ async function markResourceReady(statePath, state, resource) {
   await writeState(statePath, state);
 }
 
+// A timed-out command gets SIGTERM, SIGKILL after this grace, and after the same
+// grace again its held output pipes are abandoned. Tests shorten it.
+const commandKillGraceMs =
+  Number(process.env.OPENCLAW_CI_COMMAND_KILL_GRACE_MS) > 0
+    ? Number(process.env.OPENCLAW_CI_COMMAND_KILL_GRACE_MS)
+    : 5_000;
+
 function execFile(command, args, options = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(command, args, {
@@ -427,8 +434,8 @@ function execFile(command, args, options = {}) {
             child.stdout?.destroy();
             child.stderr?.destroy();
             finish(() => reject(timedOutError(child.exitCode, child.signalCode)));
-          }, 5_000);
-        }, 5_000);
+          }, commandKillGraceMs);
+        }, commandKillGraceMs);
       }, options.timeoutMs);
     }
     let stdout = "";

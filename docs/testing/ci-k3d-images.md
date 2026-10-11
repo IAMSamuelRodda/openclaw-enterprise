@@ -33,10 +33,15 @@ resource creation. Clean up a failed run's owned resources with
 
 `k3d cluster create` times out after five minutes (hosted runners take under a
 minute, node image pull included; `OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS` overrides
-it). The timeout stops k3d's whole process group. Preparation then writes the
-lane's cluster diagnostics, deletes the partial cluster and retries once; a second
-timeout fails preparation and leaves the cluster to lane cleanup. The node Ready wait
-starts only after every owned node has registered (up to two minutes).
+it). The timeout stops k3d's whole process group. A preparation command still
+running 5 seconds after its timeout's SIGTERM gets SIGKILL, and 5 seconds later
+preparation stops waiting for output that escaped descendants hold open
+(`OPENCLAW_CI_COMMAND_KILL_GRACE_MS` overrides both). Preparation then writes the
+lane's cluster diagnostics (10 seconds per command;
+`OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS` overrides it), deletes the partial
+cluster and retries once; a second timeout fails preparation and leaves the
+cluster to lane cleanup. The node Ready wait starts only after every owned node
+has registered (up to two minutes).
 
 Preparation reuses a supplied immutable workload image in the local Docker daemon
 only when `docker image inspect` records the requested digest in `RepoDigests`;

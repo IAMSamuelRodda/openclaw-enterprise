@@ -11,6 +11,21 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-11: Gateway StorageClass names are checked before startup
+
+**What breaks.** Profile preflight and controller startup refuse a
+`runtime.gatewayStorageClassName` that is not a Kubernetes DNS-subdomain resource
+name. Such a value could never create a Gateway PVC.
+
+**Who is affected.** Hand-written `installation.yaml` files with an invalid value;
+profiles now refuse the same value before writing deployable files.
+
+**How to tell.** Preflight names `runtime.gatewayStorageClassName`; controller
+startup logs `GATEWAY_STORAGE_CLASS_INVALID`.
+
+**Steps.** Run `kubectl get storageclass`, copy the intended StorageClass name into
+the Installation input, rerender when using a profile, and restart the controller.
+
 ## 2026-10-11: `occ` refuses explicitly empty flag values
 
 **What breaks.** `occ` refuses an empty `--revision=`, `--pod=`, `--level=`,
