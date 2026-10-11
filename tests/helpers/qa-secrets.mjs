@@ -11,12 +11,10 @@ const protectedValues = new Set();
 
 // The forms a registered value takes in logs and API errors besides itself:
 // JSON-escaped (pino's JSON lines, and Go's, which also escapes <, > and &),
-// base64 (a Secret's `data` in a kube API error) and percent-encoded. Values
-// shorter than 8 characters register only themselves.
+// base64 (a Secret's `data` in a kube API error) and percent-encoded. A value
+// shorter than 8 characters gets no base64 forms, which would be short enough
+// to garble unrelated text.
 export function qaSecretVariants(value) {
-  if (value.length < 8) {
-    return [value];
-  }
   const json = JSON.stringify(value).slice(1, -1);
   const goJson = json.replace(
     /[<>&\u2028\u2029]/gu,
@@ -28,8 +26,7 @@ export function qaSecretVariants(value) {
       value,
       json,
       goJson,
-      bytes.toString("base64"),
-      bytes.toString("base64url"),
+      ...(value.length >= 8 ? [bytes.toString("base64"), bytes.toString("base64url")] : []),
       encodeURIComponent(value),
     ]),
   ];

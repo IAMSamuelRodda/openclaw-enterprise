@@ -155,9 +155,11 @@ const namesCredential = (line) => credentialLine.test(line) || credentialToken.t
 // Control characters can split a keyword or a private key header.
 const stripControl = (text) => stripVTControlCharacters(text).replace(/[^\P{Cc}\n\t]/gu, "");
 
-// Whether a raw line names a credential once control characters are gone.
+// Whether a raw line names a credential once control characters are gone. Only
+// the part redactText can publish is tested, which bounds the URL rule's cost on a
+// huge line.
 export function isCredentialLine(line) {
-  return namesCredential(stripControl(line));
+  return namesCredential(stripControl(line.slice(0, failureInputLimit)));
 }
 
 function dropCredentialLines(text) {
@@ -196,8 +198,9 @@ export function redactFailureDetail(error, secrets, root) {
 
 const privateKeyEnd = /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/u;
 const privateKeyLine = "[redacted credential-bearing line]";
-// Longer than any PEM key; an orphan END masks at most this many lines above it.
-const orphanKeyLines = 256;
+// Longer than any PEM key or ordinary PGP key block; an orphan END masks at most
+// this many lines above it.
+const orphanKeyLines = 1_024;
 
 // Output is redacted line by line, so a plain-text private key spread over lines
 // would keep its body. This replaces every line of a key with a marker, keeping
@@ -255,7 +258,7 @@ export function redactOutputLines(lines, secrets, root, limit) {
 // One line of a failed file's output for the diagnostics report.
 export function redactOutputLine(line, secrets, root, limit) {
   // Test the raw line first, as for container logs: redaction can consume the keyword.
-  if (namesCredential(stripControl(line))) {
+  if (isCredentialLine(line)) {
     return "[redacted credential-bearing line]";
   }
   const redacted = redactText(line, limit, secrets, root) ?? "";

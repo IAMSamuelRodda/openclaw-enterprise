@@ -2088,15 +2088,15 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
   );
   // An orphan END masks a bounded number of lines above it, not the whole tail.
   const orphan = redactOutputLines(
-    [...Array.from({ length: 300 }, (_, index) => `line ${index}`), ...key.slice(1)],
+    [...Array.from({ length: 1_100 }, (_, index) => `line ${index}`), ...key.slice(1)],
     secrets,
     "",
     1_000,
   );
-  assert.equal(orphan.length, 303);
+  assert.equal(orphan.length, 1_103);
   assert.equal(orphan[0], "line 0");
-  assert.equal(orphan[299], marker);
-  assert.equal(orphan.filter((line) => line === marker).length, 257);
+  assert.equal(orphan[1_099], marker);
+  assert.equal(orphan.filter((line) => line === marker).length, 1_025);
   // Lines without a key keep the per-line behaviour.
   assert.deepEqual(redactOutputLines(["plain", "key jobonlyopaque123"], secrets, "", 1_000), [
     "plain",
