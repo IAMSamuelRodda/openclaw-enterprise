@@ -20,27 +20,33 @@ defines each field and its limits.
 ## Record the release identity
 
 In the disposable environment, install the exact version you reviewed, then
-inspect it. `--runtime` loads the plugin's code to list its tools, which is why
-this environment must hold nothing of value. Replace the package, version, and
-plugin ID:
+inspect it. Replace the package, version, and plugin ID:
 
 ```bash
 openclaw plugins install 'clawhub:@acme/openclaw-search@1.4.2' --no-enable
-openclaw plugins inspect acme-search --runtime --json > acme-search.json
+openclaw plugins inspect acme-search --json > acme-search.json
 ```
 
-From `acme-search.json`, record:
+From `acme-search.json` and the installed plugin's manifest, record:
 
-| Approved field | Inspect output                                       |
-| -------------- | ---------------------------------------------------- |
-| `nativeId`     | `plugin.id`                                          |
-| `packageName`  | `install.clawhubPackage`                             |
-| `version`      | `install.version`, which must equal `plugin.version` |
-| `integrity`    | `install.integrity`, beginning `sha256-`             |
-| `toolNames`    | Every name in `tools[].names`                        |
+| Approved field | Source                                                                  |
+| -------------- | ----------------------------------------------------------------------- |
+| `nativeId`     | `plugin.id`                                                             |
+| `packageName`  | `install.clawhubPackage`                                                |
+| `version`      | `install.version`, which must equal `plugin.version`                    |
+| `integrity`    | `install.integrity`, beginning `sha256-`                                |
+| `toolNames`    | `contracts.tools` in `openclaw.plugin.json` under `install.installPath` |
 
 Use `source: clawhub` and a display `name`. If `install.integrity` is missing
-or does not begin with `sha256-`, the release cannot be approved.
+or does not begin with `sha256-`, the release cannot be approved. Take tool names
+from the manifest, not `inspect --runtime`: a plugin that registers its tool
+through a factory reports an empty name list there. ClawHub's package detail
+publishes the same artifact SHA-256 as hex; its base64 form after `sha256-` is
+the `integrity` value, so you can cross-check the two.
+
+Read what the tools can do before approving. A plugin tool can run shell commands
+or reach external services on its own, even when the Configuration denies the
+core `exec` tool.
 
 ## Approve it
 

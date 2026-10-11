@@ -51,9 +51,9 @@ that snapshot in the plugin runtime manifest, and the Pod installs the recorded
 release on every start, so removing or changing an entry affects only later
 saves and deployments. Diffs is compiled into every runtime and is not recorded.
 
-Preparation installs a ClawHub entry as `clawhub:<packageName>@<version>` and an
-npm entry as `<packageName>@<version>`, with the same `--pin --force --no-enable`
-options as Diffs. It then inspects the install and requires the recorded source,
+Preparation installs a ClawHub entry as `clawhub:<packageName>@<version>` with
+`--force --no-enable`, and an npm entry as `<packageName>@<version>` with
+`--pin --force --no-enable` like Diffs; OpenClaw accepts `--pin` only for npm. It then inspects the install and requires the recorded source,
 package (`clawhubPackage` for ClawHub, `resolvedName` for npm), version, and
 integrity to match the admitted release. A mismatch keeps the gateway unready.
 Package downloads use the Agent's existing public HTTPS egress.
@@ -70,6 +70,10 @@ Package downloads use the Agent's existing public HTTPS egress.
   Configuration that denies every tool still blocks the plugin's tools.
 - The Codex Plugin Driver has no approved list, and SSH Compute rejects plugin
   selections.
+- An approved plugin runs inside the gateway container and adds to its memory.
+  With `@openclaw/lobster` loaded, a 1 GiB gateway limit was OOM-killed and a
+  2 GiB limit was not. Size `resources.gateway.limits.memory` for the plugins
+  you approve.
 - There is no API or Console control for the list.
 
 ## Source and verification

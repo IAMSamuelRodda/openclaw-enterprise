@@ -188,6 +188,19 @@ through their test fixture. The QA matrix uses the shipped Secret API and
 supported `codex_pat` authentication instead. Neither path proves creation of a
 new upstream account. Never print credential values or resolved account identifiers.
 
+### Approved ClawHub release
+
+The `plugin-clawhub-real` lane runs `tests/integration/plugin-driver-clawhub-real.test.mjs`
+(`OCC_TEST_PLUGIN_DRIVER_OPENCLAW_CLAWHUB_REAL=1`). It approves one ClawHub release in
+the `occ-plugin` Installation configuration, deploys an embedded OpenClaw Agent that
+selects it, and checks the revision's bound release, the Pod's native install record
+(source, package, version, integrity), and a normal turn whose tool output carries a
+marker. It needs `OPENAI_API_KEY` and an immutable `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`.
+The default release is `@openclaw/lobster` 2026.9.7, compatible with the pinned
+OpenClaw 2026.9.8; set `OCC_TEST_OPENCLAW_CLAWHUB_RELEASE` to an approved-entry JSON
+object, with `OCC_TEST_OPENCLAW_CLAWHUB_PROMPT` and `OCC_TEST_OPENCLAW_CLAWHUB_RESULT_EXPECT`,
+to prove another. The lane has no workflow entrypoint and is in no group.
+
 ## Per-call approval acceptance
 
 The Calendar scenario also redeploys the same Agent with

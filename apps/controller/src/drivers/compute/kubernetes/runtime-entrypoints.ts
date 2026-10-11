@@ -1319,8 +1319,9 @@ function installOpenClawPlugins(runtime, failures = []) {
     if (failedIds.has(plugin.pluginId)) continue;
     const spec = openClawPluginPackageSpec(plugin);
     try {
+      // OpenClaw accepts --pin only for npm specs; a ClawHub spec is already exact.
       runOpenClaw(
-        ["plugins", "install", spec, "--pin", "--force", "--no-enable"],
+        ["plugins", "install", spec, ...(plugin.source === "clawhub" ? [] : ["--pin"]), "--force", "--no-enable"],
         "OpenClaw plugin install",
         pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
       );

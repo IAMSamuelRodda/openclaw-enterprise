@@ -237,6 +237,8 @@ function installationConfiguration({
   pluginDriverId,
   pluginDriverConfiguration,
   codexServiceAccountImport,
+  gatewayMemoryLimit,
+  gatewayCpuLimit,
 }) {
   const configuration = createKubernetesInstallationConfiguration({
     authentication,
@@ -249,6 +251,13 @@ function installationConfiguration({
   if (pluginDriverId === "codex-plugin") {
     configuration.drivers.compute.configuration.resources.gateway.limits.memory = "4Gi";
     configuration.drivers.compute.configuration.resources.agent.limits.memory = "2Gi";
+  }
+  if (gatewayMemoryLimit !== undefined) {
+    configuration.drivers.compute.configuration.resources.gateway.limits.memory =
+      gatewayMemoryLimit;
+  }
+  if (gatewayCpuLimit !== undefined) {
+    configuration.drivers.compute.configuration.resources.gateway.limits.cpu = gatewayCpuLimit;
   }
   configuration.drivers.secret.configuration.authentication = authentication;
   configuration.drivers.configuration.id = "configuration-kubernetes-plugin-real";
@@ -928,6 +937,34 @@ export function createNativePluginAssertions({
     return JSON.parse(execution.stdout);
   }
 
+  // The native install record the gateway Pod's runtime wrote, read through its
+  // own CLI. Only identity fields are returned; the record holds no credentials.
+  async function readOpenClawPluginInstall(agent, pluginId) {
+    // A just-activated gateway can briefly fail readiness while its post-ready
+    // warm-up runs at the CPU limit; wait for it rather than fail on the first read.
+    return waitFor("gateway Pod ready to read the plugin install record", async () => {
+      try {
+        return await readOpenClawPluginInstallOnce(agent, pluginId);
+      } catch (error) {
+        if (isTransientGatewayReadinessAssertion(error)) {
+          return undefined;
+        }
+        throw error;
+      }
+    });
+  }
+
+  async function readOpenClawPluginInstallOnce(agent, pluginId) {
+    const execution = await execGateway(agent, [
+      "sh",
+      "-c",
+      'node /app/openclaw.mjs plugins inspect "$1" --json | node -e \'let s = ""; process.stdin.on("data", (c) => (s += c)); process.stdin.on("end", () => { const r = JSON.parse(s); const i = r.install ?? {}; process.stdout.write(JSON.stringify({ pluginId: r.plugin?.id, pluginVersion: r.plugin?.version, source: i.source, clawhubPackage: i.clawhubPackage, version: i.version, integrity: i.integrity })); });\'',
+      "inspect",
+      pluginId,
+    ]);
+    return JSON.parse(execution.stdout);
+  }
+
   function isTransientGatewayReadinessAssertion(error) {
     return (
       error?.name === "AssertionError" &&
@@ -1433,6 +1470,7 @@ export function createNativePluginAssertions({
     assertSessionToolDeniedEvidence,
     assertNoSessionToolCallEvidence,
     readOpenClawPluginPolicy,
+    readOpenClawPluginInstall,
     listCodexNativeCatalog,
     codexNativePluginDetail,
     codexPluginToolInventory,
@@ -1445,7 +1483,15 @@ export function createNativePluginAssertions({
 
 export async function createPluginDriverRealFixture(
   context,
-  { scenario, pluginDriverId, databaseUrl, codexCredential, pluginDriverConfiguration = {} },
+  {
+    scenario,
+    pluginDriverId,
+    databaseUrl,
+    codexCredential,
+    pluginDriverConfiguration = {},
+    gatewayMemoryLimit,
+    gatewayCpuLimit,
+  },
 ) {
   const kubeconfigPath = requiredPluginProofEnv("OCC_TEST_KUBERNETES_KUBECONFIG");
   const kubernetesContext = requiredPluginProofEnv("OCC_TEST_KUBERNETES_CONTEXT");
@@ -1651,6 +1697,8 @@ export async function createPluginDriverRealFixture(
           pluginDriverId,
           pluginDriverConfiguration,
           codexServiceAccountImport,
+          gatewayMemoryLimit,
+          gatewayCpuLimit,
         }),
       ),
       { mode: 0o600 },
@@ -1666,6 +1714,8 @@ export async function createPluginDriverRealFixture(
           pluginDriverId,
           pluginDriverConfiguration,
           codexServiceAccountImport,
+          gatewayMemoryLimit,
+          gatewayCpuLimit,
         }),
       ),
       { mode: 0o600 },
@@ -2221,6 +2271,7 @@ export async function createPluginDriverRealFixture(
     assertSessionToolDeniedEvidence: nativeAssertions.assertSessionToolDeniedEvidence,
     assertNoSessionToolCallEvidence: nativeAssertions.assertNoSessionToolCallEvidence,
     readOpenClawPluginPolicy: nativeAssertions.readOpenClawPluginPolicy,
+    readOpenClawPluginInstall: nativeAssertions.readOpenClawPluginInstall,
     listCodexNativeCatalog: nativeAssertions.listCodexNativeCatalog,
     codexNativePluginDetail: nativeAssertions.codexNativePluginDetail,
     codexPluginToolInventory: nativeAssertions.codexPluginToolInventory,

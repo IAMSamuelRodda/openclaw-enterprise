@@ -133,6 +133,8 @@ function clawHubInstallResponses(install = {}) {
   ];
 }
 
+// OpenClaw 2026.9.8 refuses --pin for ClawHub specs ("--pin is only supported with npm
+// registry installs"), so the ClawHub command omits it.
 test("OpenClaw runtime helper installs an admitted ClawHub release and verifies its install record", () => {
   const { calls, files } = runOpenClawRuntimeHelper(
     approvedClawHubRuntime(),
@@ -145,7 +147,6 @@ test("OpenClaw runtime helper installs an admitted ClawHub release and verifies 
       "plugins",
       "install",
       "clawhub:@acme/openclaw-search@1.4.2",
-      "--pin",
       "--force",
       "--no-enable",
     ],
