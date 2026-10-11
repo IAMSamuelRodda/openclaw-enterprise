@@ -837,6 +837,190 @@ test("QA error redaction keeps errors whose message cannot be written", async ()
   assert.equal(redactQaError(undefined), undefined);
 });
 
+test("QA error redaction covers causes, AggregateError errors and command output", async () => {
+  const { execFile } = await import("node:child_process");
+  const { inspect, promisify } = await import("node:util");
+  const { qaSecretVariants, redactQaError, registerQaSecret } =
+    await import("../helpers/qa-secrets.mjs");
+  const value = "synthetic-qa-nested-secret-2026";
+  registerQaSecret(value);
+  // Everything node:test prints, getters included, at any depth.
+  const printed = (error) => inspect(error, { depth: Infinity, getters: true });
+  const assertClean = (error) => {
+    const text = printed(error);
+    for (const variant of [...qaSecretVariants(value), inspectedBytes(value)]) {
+      assert.ok(!text.includes(variant), `variant survived: ${text}`);
+    }
+  };
+  // A real execFile failure: the secret is in argv (cmd), stdout and stderr.
+  const failingCommand = (encoding) =>
+    promisify(execFile)(
+      process.execPath,
+      [
+        "-e",
+        "process.stdout.write(process.argv[1]); process.stderr.write(process.argv[1]); process.exit(3)",
+        value,
+      ],
+      { encoding },
+    ).then(
+      () => assert.fail("the command must fail"),
+      (error) => error,
+    );
+
+  for (const encoding of ["utf8", "buffer"]) {
+    const error = await failingCommand(encoding);
+    assert.equal(Buffer.isBuffer(error.stdout), encoding === "buffer");
+    assert.ok(printed(error).includes(value), "fixture must carry the secret");
+    assert.equal(redactQaError(error), error);
+    assert.equal(Buffer.isBuffer(error.stdout), encoding === "buffer");
+    assert.equal(Buffer.isBuffer(error.stderr), encoding === "buffer");
+    assert.equal(String(error.stdout), "[REDACTED]");
+    assert.equal(String(error.stderr), "[REDACTED]");
+    assert.match(error.cmd, / \[REDACTED\]$/);
+    assert.equal(error.code, 3);
+    assertClean(error);
+  }
+
+  // A cause chain, a string cause and an AggregateError's errors, with a
+  // Buffer stderr two levels down.
+  const chained = new Error("outer", {
+    cause: new AggregateError(
+      [
+        new Error("first", { cause: new Error(`inner ${value}`) }),
+        Object.assign(new Error("second"), { stderr: Buffer.from(`denied ${value}\n`) }),
+        new Error("third", { cause: `token ${value}` }),
+      ],
+      `aggregate ${value}`,
+    ),
+  });
+  assert.equal(redactQaError(chained), chained);
+  assert.equal(chained.cause.message, "aggregate [REDACTED]");
+  assert.equal(chained.cause.errors[0].cause.message, "inner [REDACTED]");
+  assert.equal(String(chained.cause.errors[1].stderr), "denied [REDACTED]\n");
+  assert.equal(chained.cause.errors[2].cause, "token [REDACTED]");
+  assertClean(chained);
+
+  // A cause that points back at its own error is cut, not followed forever.
+  const cyclic = new Error(`cyclic ${value}`);
+  cyclic.cause = cyclic;
+  assert.equal(redactQaError(cyclic), cyclic);
+  assert.equal(cyclic.cause, "[Circular]");
+  assertClean(cyclic);
+
+  // A two-error cycle whose top error is frozen: the replacement's cause must
+  // not lead back to the unredacted original.
+  const top = new Error(`top ${value}`);
+  const middle = new Error(`middle ${value}`, { cause: top });
+  top.cause = middle;
+  Object.freeze(top);
+  const replaced = redactQaError(top);
+  assert.notEqual(replaced, top);
+  assert.equal(replaced.message, "top [REDACTED]");
+  assert.equal(replaced.cause, middle);
+  assert.equal(middle.message, "middle [REDACTED]");
+  assert.equal(middle.cause, "[Circular]");
+  assertClean(replaced);
+
+  // A frozen cause is replaced inside a writable parent.
+  const frozenCause = Object.freeze(Object.assign(new Error(`frozen ${value}`), { code: "E1" }));
+  const parent = new Error("parent", { cause: frozenCause });
+  assert.equal(redactQaError(parent), parent);
+  assert.notEqual(parent.cause, frozenCause);
+  assert.equal(parent.cause.message, "frozen [REDACTED]");
+  assert.equal(parent.cause.code, "E1");
+  assertClean(parent);
+
+  // A getter-only field (node:test prints getters) forces a replacement that
+  // keeps the other redacted fields and drops non-data ones.
+  const getter = Object.assign(new Error(`getter ${value}`), {
+    code: "EGETTER",
+    stderr: `stderr ${value}`,
+    request: { headers: { authorization: value } },
+  });
+  Object.defineProperty(getter, "stdout", { enumerable: true, get: () => `stdout ${value}` });
+  const fromGetter = redactQaError(getter);
+  assert.notEqual(fromGetter, getter);
+  assert.equal(fromGetter.message, "getter [REDACTED]");
+  assert.equal(fromGetter.stdout, "stdout [REDACTED]");
+  assert.equal(fromGetter.stderr, "stderr [REDACTED]");
+  assert.equal(fromGetter.code, "EGETTER");
+  assert.equal(fromGetter.request, undefined);
+  assertClean(fromGetter);
+
+  // A cause chain deeper than the bound is cut rather than left unredacted.
+  let deep = new Error(`deepest ${value}`);
+  for (let i = 0; i < 20; i += 1) {
+    deep = Object.freeze(new Error(`level ${i}`, { cause: deep }));
+  }
+  const shallow = redactQaError(deep);
+  assert.ok(printed(shallow).includes("[Truncated]"), printed(shallow));
+  assertClean(shallow);
+});
+
+test("node:test failure output carries no QA secret from nested error fields", async (t) => {
+  const { qaSecretVariants } = await import("../helpers/qa-secrets.mjs");
+  const value = "synthetic-qa-reporter-secret-2026";
+  const directory = await mkdtemp(join(tmpdir(), "qa-reporter-"));
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
+  const file = join(directory, "redacted.test.mjs");
+  await writeFile(
+    file,
+    `
+    import { execFile } from 'node:child_process';
+    import test from 'node:test';
+    import { promisify } from 'node:util';
+    import { redactQaError, registerQaSecret } from ${JSON.stringify(secretsModule)};
+    const value = ${JSON.stringify(value)};
+    registerQaSecret(value);
+    test('command failure', async () => {
+      const error = await promisify(execFile)(process.execPath, [
+        '-e', 'process.stdout.write(process.argv[1]); process.stderr.write(process.argv[1]); process.exit(3)', value,
+      ], { encoding: 'buffer' }).catch((thrown) => thrown);
+      error.cause = new AggregateError([new Error('nested ' + value)], 'aggregate', { cause: 'string ' + value });
+      Object.defineProperty(error, 'detail', { enumerable: true, get: () => 'getter ' + value });
+      throw redactQaError(error);
+    });
+  `,
+  );
+  // NODE_TEST_CONTEXT would make the child report to this runner instead of printing.
+  const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
+  const child = spawn(process.execPath, ["--test", "--test-reporter=spec", file], {
+    env,
+    stdio: ["ignore", "pipe", "pipe"],
+  });
+  t.after(() => {
+    if (child.exitCode === null) {
+      child.kill("SIGKILL");
+    }
+  });
+  let output = "";
+  for (const stream of [child.stdout, child.stderr]) {
+    stream.on("data", (chunk) => {
+      output += chunk;
+    });
+  }
+  const code = await new Promise((resolve, reject) => {
+    child.once("error", reject);
+    child.once("exit", resolve);
+  });
+  assert.equal(code, 1, output);
+  // The failure printed the redacted fields, and no form of the secret.
+  assert.match(output, /cmd: '.* \[REDACTED\]'/, output);
+  assert.match(output, /detail: 'getter \[REDACTED\]'/, output);
+  assert.match(output, /stdout: <Buffer 5b 52 45 44 41 43 54 45 44 5d>/, output);
+  for (const variant of [...qaSecretVariants(value), inspectedBytes(value)]) {
+    assert.ok(!output.includes(variant), `variant survived: ${output}`);
+  }
+});
+
+// How util.inspect prints the start of a Buffer holding `value`: hex bytes.
+function inspectedBytes(value) {
+  return [...Buffer.from(value).subarray(0, 12)]
+    .map((byte) => byte.toString(16).padStart(2, "0"))
+    .join(" ");
+}
+
 test("QA log tails drop the body of an unregistered key that starts above the tail", async () => {
   const { redactedQaTail } = await import("../helpers/qa-secrets.mjs");
   const lines = redactedQaTail(
