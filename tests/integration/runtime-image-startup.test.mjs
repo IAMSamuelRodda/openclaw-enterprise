@@ -1964,6 +1964,9 @@ async function expectFailure(name, script, pattern, permissionProfile = brokerPe
     ${JSON.stringify("printf '%s\n' \"$output\"")},
     ${JSON.stringify('if [ "$status" -eq 0 ]; then exit 42; fi')},
     // An in-shell match: printf piped to grep -q can fail with EPIPE under pipefail.
+    // Patterns are case-insensitive alternations of literals matched against the
+    // whole output; they go into a double-quoted assignment, so keep $, backticks
+    // and backslashes out of them.
     ${JSON.stringify("shopt -s nocasematch")},
     ${JSON.stringify("pattern=")} + JSON.stringify(pattern),
     ${JSON.stringify("[[ $output =~ $pattern ]]")},
