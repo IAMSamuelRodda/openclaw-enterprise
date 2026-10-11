@@ -2107,6 +2107,22 @@ test(
       ],
       [{ "repositoryCredentials.backendId": "" }, /backendId is required/],
       [{ "repositoryCredentials.registryConfigMapName": "" }, /registryConfigMapName is required/],
+      [
+        { "repositoryCredentials.registryKey": "bad/key" },
+        /registryKey must be a Kubernetes Secret key/,
+      ],
+      [
+        { "repositoryCredentials.serviceConfigKey": "." },
+        /serviceConfigKey must be a Kubernetes Secret key/,
+      ],
+      [
+        { "repositoryCredentials.appKeyKey": "bad/key" },
+        /appKeyKey must be a Kubernetes Secret key/,
+      ],
+      [
+        { "repositoryCredentials.publicCaKey": "..ca" },
+        /publicCaKey must be a Kubernetes Secret key/,
+      ],
       [{ "repositoryCredentials.publicCaSecretName": "repository-tls" }, /dedicated Secret/],
       [{ "repositoryCredentials.appKeySecretName": "occ-auth" }, /dedicated Secret/],
       [{ "repositoryCredentials.tlsSecretName": "repository-config" }, /dedicated Secret/],
