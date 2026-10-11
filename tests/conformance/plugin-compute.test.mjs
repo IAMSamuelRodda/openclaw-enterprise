@@ -2740,10 +2740,12 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
     ],
   ]) {
     await t.test(name, async () => {
+      let proxied = 0;
       driver.clients = async () => ({
         core: {
           listNamespacedPod: async () => ({ apiVersion: "v1", kind: "PodList", items: [pod] }),
           connectGetNamespacedPodProxyWithPath: async () => {
+            proxied += 1;
             if (response instanceof Error) {
               throw response;
             }
@@ -2771,6 +2773,8 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
         );
         assert.deepEqual(status, expected === "not-ready" ? undefined : expected);
       }
+      // Every case, not-ready ones included, reads the running Pod's report.
+      assert.equal(proxied, 1);
     });
   }
 });

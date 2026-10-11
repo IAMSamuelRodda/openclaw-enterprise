@@ -7660,6 +7660,8 @@ test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod rea
     ),
     undefined,
   );
+  // The proxy answered; the re-list after it saw the second Pod.
+  assert.equal(podLists, 2);
 
   // A status port that is not serving yet (503) is an answer, read once and not retried.
   podLists = 0;
