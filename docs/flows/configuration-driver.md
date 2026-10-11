@@ -123,7 +123,13 @@ Namespace. POST and PATCH accept bodies up to 6 x (1 MiB + 32 KiB): the
 Kubernetes Driver's 1 MiB of values and the envelope in six-byte JSON escapes.
 Their `onRequest` hook runs `authorizeConfigurationWrite` before the body is
 read, so a caller without the grant gets `403` before any body error; the
-transaction repeats the check. Creation requires `kind: "agent"` and a native
+transaction repeats the check. The controller's JSON body parser
+(`apps/controller/src/http/json-depth.ts:tooDeepJsonPath`, registered in
+`createFastifyApp`) then scans the raw text once and refuses a value more than
+24 levels below the body root with `400 INVALID_REQUEST` and a `TOO_DEEP`
+detail, before parsing, schema validation, the NUL/surrogate check or
+`validateConfiguration`; other bodies go to Fastify's default JSON parser.
+Every JSON route shares this parser and limit. Creation requires `kind: "agent"` and a native
 root-object JSON document; omitted or unknown kinds and malformed request
 shapes fail with `400`. Updates require the complete replacement `values`
 document and accept optional `secretBindings`; `kind`,
@@ -207,6 +213,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-11 14:30: Every JSON request body nested more than 24 levels deep is refused with `400 TOO_DEEP` before it is parsed, instead of a `500` and hundreds of megabytes of heap on Configuration and Preset writes. (fix-1124, finding 1124)
 - 2026-10-11 13:00: Configuration save refuses a Codex approval policy the Gateway refuses and a literal `gateway.auth.password`; Kubernetes deployment admission and provisioning refuse the gateway password, channel topology and workspace-node plugin settings that preparation or the Gateway refused only after predecessors stopped. (fix-1112-1115, findings 1112-1115)
 - 2026-10-11 12:00: Configuration POST/PATCH admit every Configuration the Kubernetes Driver stores (6 x (1 MiB + 32 KiB) body) and check the create or update grant before reading the body. (fix-1118, finding 1118)
 
