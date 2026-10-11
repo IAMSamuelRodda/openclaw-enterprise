@@ -312,6 +312,13 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if eq .Values.database.appUrlKey .Values.database.migrationUrlKey -}}
 {{- fail "database application and migration credentials must use different Secret keys" -}}
 {{- end -}}
+{{- if .Values.backend.chatgpt.enabled -}}
+{{- $chatgpt := .Values.backend.chatgpt -}}
+{{- if and $chatgpt.secretName (or (gt (len (toString $chatgpt.secretName)) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" (toString $chatgpt.secretName)))) -}}
+{{- fail "backend.chatgpt.secretName must be a Kubernetes resource name of at most 253 characters" -}}
+{{- end -}}
+{{- if $chatgpt.key -}}{{- include "openclaw.validateSecretKey" (dict "label" "backend.chatgpt.key" "value" $chatgpt.key) -}}{{- end -}}
+{{- end -}}
 {{- if .Values.database.caSecretName -}}
 {{- if or (not .Values.database.caKey) (not .Values.database.caMountPath) -}}
 {{- fail "database CA Secret mounts require database.caKey and database.caMountPath" -}}

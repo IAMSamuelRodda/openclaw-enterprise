@@ -857,14 +857,19 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     ],
   },
   {
-    name: "preflight refuses ChatGPT admin Secret names that Kubernetes refuses",
+    name: "profiles refuse ChatGPT admin Secret references Kubernetes refuses",
     profile: "codex",
     input: managedCodexInput,
     cases: [
       [
         "codex.managedServiceAccounts.adminSecretName",
         ["Bad_Name", "-chatgpt-admin", "c".repeat(254)],
-        "must be a Kubernetes resource name",
+        "must be a Kubernetes resource name of at most 253 characters",
+      ],
+      [
+        "codex.managedServiceAccounts.adminSecretKey",
+        ["bad/key", ".", "..admin-key", "a".repeat(254)],
+        "must be a Kubernetes Secret key of at most 253 characters",
       ],
     ],
   },
