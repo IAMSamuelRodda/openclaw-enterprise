@@ -22,6 +22,7 @@
     "tests/conformance/kubernetes-preflight.test.mjs",
     "tests/conformance/kubernetes-client.test.mjs",
     "tests/integration/configuration-controller.test.mjs",
+    "tests/integration/configuration-body-limits.test.mjs",
     "tests/conformance/workspace-files.test.mjs",
     "tests/conformance/runtime-logs-sandbox.test.mjs",
     "tests/integration/device-authorization-api.test.mjs",
@@ -243,6 +244,9 @@
     },
     {
       "path": "tests/integration/configuration-controller.test.mjs"
+    },
+    {
+      "path": "tests/integration/configuration-body-limits.test.mjs"
     },
     {
       "path": "tests/integration/configuration-startup.test.mjs"
