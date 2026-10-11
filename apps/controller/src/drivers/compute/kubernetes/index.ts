@@ -3251,6 +3251,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Every topology's Gateway rejects these rosters, so Configuration save refuses them too.
     // Only dedicated execution serves main, so that rule stays here, at deployment.
     requireOpenClawRoster(configuration);
+    // The same rules as Configuration save, with its messages, for a row stored before them.
+    this.validateConfiguration(configuration);
     if (native || codex) {
       requireDedicatedMainAgentDefault(
         configuration,
@@ -3341,8 +3343,6 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
     }
-    // The same rules as Configuration save, for a Configuration stored before them.
-    this.validateConfiguration(configuration);
     // Preparation and the Gateway entrypoint would refuse these only after a dedicated
     // deployment stopped its predecessors. The caller owns them, so admission names the setting.
     if (this.hostsWorkspaceNode(harness)) {

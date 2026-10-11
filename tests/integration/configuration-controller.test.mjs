@@ -739,6 +739,135 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   }
 });
 
+test("Configuration save and Kubernetes deployment refuse caller-owned credentials and channels with one named message", async () => {
+  // Finding 1116: deployment refused these with an unnamed 409; Configuration save accepted them.
+  // Both now run the Kubernetes Compute rule module and name the setting.
+  const kubernetes = createTestKubernetesComputeDriver("compute-caller-settings");
+  const computeDriver = createReadyComputeDriver("compute-caller-settings", {
+    implementation: "integration-compute-substrate",
+    validateConfiguration: (...args) => kubernetes.validateConfiguration(...args),
+    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
+    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
+  });
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const valid = {
+    agents: {
+      defaults: {
+        model: "openai/gpt-4.1",
+        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+      },
+    },
+  };
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const configurationId = created.body.data.id;
+  const item = `${collection}/${configurationId}`;
+  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "Caller settings consumer", configurationId },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "caller-key");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
+  const storeAsOlderRelease = async (values) => {
+    const stored = configurationDriver
+      .storedConfigurations()
+      .find(({ id }) => id === configurationId);
+    await configurationDriver.update({ ...stored, values });
+  };
+  const binding = "model credentials come from the Agent's Harness authentication binding";
+  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+
+  for (const [values, message] of [
+    [
+      { ...valid, channels: { discord: { enabled: true } } },
+      setting(
+        "channels.discord",
+        "is not a supported channel: use slack or msteams, or set its enabled to false",
+      ),
+    ],
+    [
+      { ...valid, auth: { profiles: { "openai:default": { provider: "openai", mode: "api_key" } } } },
+      setting("auth", `must be empty: ${binding}`),
+    ],
+    [
+      { ...valid, env: { vars: { OPENAI_BASE_URL: "https://example.invalid/v1" } } },
+      setting("env.vars.OPENAI_BASE_URL", `must not be set: ${binding}`),
+    ],
+    [
+      {
+        ...valid,
+        models: {
+          providers: { openai: { headers: { "X-Api-Key": "${OPENAI_API_KEY}" }, models: [] } },
+        },
+      },
+      setting("models.providers.openai.headers", `must not set an authorization header: ${binding}`),
+    ],
+  ]) {
+    const label = JSON.stringify(values);
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, `${label}: ${JSON.stringify(rejected.body)}`);
+    assert.equal(rejected.body.error.message, message, label);
+    const replaced = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(replaced.status, 400, label);
+    assert.equal(replaced.body.error.message, message, label);
+    const unchanged = await request(context.app, "GET", item);
+    assert.deepEqual(unchanged.body.data, created.body.data, label);
+
+    // A row an older release stored still reads; deployment refuses it with the same text.
+    await storeAsOlderRelease(values);
+    const read = await request(context.app, "GET", item);
+    assert.equal(read.status, 200, label);
+    assert.deepEqual(read.body.data.values, values, label);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, 400, `${label}: ${JSON.stringify(deployed.body)}`);
+    assert.equal(deployed.body.error.message, message, label);
+    await storeAsOlderRelease(valid);
+  }
+  assert.equal(configurationDriver.storedConfigurations().length, 1);
+
+  // A provider apiKey depends on the Agent's binding, so it saves and deployment names it.
+  const apiKey = {
+    ...valid,
+    models: {
+      providers: {
+        openai: { apiKey: { source: "env", provider: "default", id: "OTHER_MODEL_KEY" } },
+      },
+    },
+  };
+  const saved = await request(context.app, "PATCH", item, { body: { values: apiKey } });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(deployed.status, 400, JSON.stringify(deployed.body));
+  assert.equal(
+    deployed.body.error.message,
+    setting(
+      "models.providers.openai.apiKey",
+      "must be ${OPENAI_API_KEY} or an env SecretRef to OPENAI_API_KEY, which the Agent's Harness authentication binding supplies",
+    ),
+  );
+  const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+  assert.deepEqual(revisions.body.data, []);
+
+  // A disabled unsupported channel and a non-credential env name still save.
+  for (const values of [
+    { ...valid, channels: { discord: { enabled: false } } },
+    { ...valid, env: { vars: { HTTP_PROXY: "http://proxy:3128" } } },
+  ]) {
+    const accepted = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(accepted.status, 200, `${JSON.stringify(values)}: ${JSON.stringify(accepted.body)}`);
+  }
+});
+
 test("Namespace deletion names the Configuration IDs that keep it occupied", async () => {
   const context = await fixture();
   const namespace = await bootstrapAndCreateNamespace(context);
