@@ -947,14 +947,26 @@ test("QA error redaction covers causes, AggregateError errors and command output
   assert.deepEqual(fromGetter.request, { headers: { authorization: "[REDACTED]" } });
   assertClean(fromGetter);
 
-  // Object-valued fields: a parsed response body, a Map, a symbol key, a
-  // self-containing array. Binary bytes around a secret in a Buffer survive.
+  // Object-valued fields: a parsed response body, a Map, a Set, a class
+  // instance, a symbol key, a self-containing array. Binary bytes around a
+  // secret in a Buffer survive. Objects the error only refers to are copied,
+  // never written: an assertion's `actual` may be a fixture still in use.
+  class Detail {
+    constructor() {
+      this.raw = Buffer.from(value);
+    }
+  }
+  const shared = { token: value };
   const symbol = Symbol("detail");
   const loop = [`loop ${value}`];
   loop.push(loop);
   const objects = Object.assign(new Error("objects"), {
     response: { status: 403, body: { message: `denied ${value}` } },
     headers: new Map([["authorization", value]]),
+    raw: new Map([["body", Buffer.from(value)]]),
+    seen: new Set([`set ${value}`]),
+    detail: new Detail(),
+    actual: shared,
     loop,
     [symbol]: `symbol ${value}`,
     stdout: Buffer.concat([Buffer.from([0xff, 0x00]), Buffer.from(value), Buffer.from([0xfe])]),
@@ -962,7 +974,12 @@ test("QA error redaction covers causes, AggregateError errors and command output
   assert.equal(redactQaError(objects), objects);
   assert.equal(objects.response.body.message, "denied [REDACTED]");
   assert.equal(objects.response.status, 403);
-  assert.match(objects.headers, /\[REDACTED\]/);
+  assert.equal(objects.headers.get("authorization"), "[REDACTED]");
+  assert.equal(String(objects.raw.get("body")), "[REDACTED]");
+  assert.deepEqual([...objects.seen], ["set [REDACTED]"]);
+  assert.equal(String(objects.detail.raw), "[REDACTED]");
+  assert.equal(objects.actual.token, "[REDACTED]");
+  assert.equal(shared.token, value);
   assert.equal(objects.loop[0], "loop [REDACTED]");
   assert.equal(objects.loop[1], "[Circular]");
   assert.equal(objects[symbol], "symbol [REDACTED]");
@@ -1007,11 +1024,19 @@ test("QA error redaction covers causes, AggregateError errors and command output
   assert.equal(fromHostile.message, "proxy [REDACTED]");
   assertClean(fromHostile);
 
+  // An error without a secret is left as it is, cycle included.
+  const clean = new Error("clean");
+  clean.cause = clean;
+  Object.freeze(clean);
+  assert.equal(redactQaError(clean), clean);
+  assert.equal(clean.cause, clean);
+
   // A cause chain deeper than the bound is cut rather than left unredacted.
   let deep = new Error(`deepest ${value}`);
   for (let i = 0; i < 20; i += 1) {
     deep = Object.freeze(new Error(`level ${i}`, { cause: deep }));
   }
+  deep = new Error(`top ${value}`, { cause: deep });
   const shallow = redactQaError(deep);
   assert.ok(printed(shallow).includes("[Truncated]"), printed(shallow));
   assertClean(shallow);
@@ -1041,6 +1066,7 @@ test(
         '-e', 'process.stdout.write(process.argv[1]); process.stderr.write(process.argv[1]); process.exit(3)', value,
       ], { encoding: 'buffer' }).catch((thrown) => thrown);
       error.cause = new AggregateError([new Error('nested ' + value)], 'aggregate', { cause: 'string ' + value });
+      error.headers = new Map([['authorization', Buffer.from(value)]]);
       Object.defineProperty(error, 'detail', { enumerable: true, get: () => 'getter ' + value });
       throw redactQaError(error);
     });

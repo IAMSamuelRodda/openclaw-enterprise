@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { inspect } from "node:util";
+import { types } from "node:util";
 import {
   failureSecrets,
   maskPrivateKeyLines,
@@ -40,45 +40,49 @@ export function registerQaSecret(value) {
 }
 
 // How deep redaction follows nested values (a cause chain, AggregateError
-// errors, a parsed response body). A deeper value is cut to "[Truncated]"
-// rather than left unredacted.
+// errors, a parsed response body). node:test prints only a few levels; a deeper
+// value is cut to "[Truncated]" rather than left unredacted. A value reached
+// twice is redacted once, at the depth it was first reached.
 const maxErrorDepth = 8;
 // Read even when inherited: a DOMException's message, name and code are getters
 // on its prototype.
 const inheritedErrorFields = ["name", "message", "stack", "code"];
 
-// Errors, arrays and plain objects are redacted field by field. Any other object
-// (a Map, a class instance) is checked through its printed form instead.
-function walkable(value) {
-  if (Array.isArray(value) || value instanceof Error) {
-    return true;
-  }
-  const prototype = Object.getPrototypeOf(value);
-  return prototype === Object.prototype || prototype === null;
+function isError(value) {
+  return types.isNativeError(value) || value instanceof Error;
 }
 
 // Redacts registered secrets from every field of a thrown value that the test
 // runner prints (it uses util.inspect, getters included): message and stack, an
 // execFile error's cmd, stdout and stderr (strings or Buffers), every other own
-// field, the `cause` chain and AggregateError `errors`, recursively. A thrown
-// string is redacted too.
+// field, the `cause` chain and AggregateError `errors`, recursively, including
+// arrays, Maps, Sets and objects inside them. A thrown string is redacted too.
+// A value that holds no registered secret is returned untouched.
 //
-// It returns the value to rethrow: the same error when every field could be
-// updated in place, otherwise a plain Error carrying the redacted fields. Some
-// errors cannot be updated: a DOMException (AbortSignal.timeout's TimeoutError)
-// has a getter-only `message`, a field can be an own getter, and a frozen error
-// has read-only fields. A replacement keeps only redacted values, never the
-// original. A value that points back up its own chain becomes "[Circular]", so
-// no cycle leads from a replacement to an unredacted original. If redaction
-// itself throws (a throwing setter or proxy trap), a bare Error carrying only the
-// redacted message is returned instead.
+// Errors are updated in place. Any other object an error refers to (an
+// assertion's `actual`, a shared fixture) is never written: a redacted copy
+// takes its place in the error. When an error's field cannot be written (a
+// DOMException's getter-only `message`, an own getter, a frozen error, a
+// throwing setter), a plain Error carrying the redacted fields replaces it. A
+// replacement keeps only redacted values, never the original. A value that
+// points back up its own chain becomes "[Circular]", so no cycle leads from a
+// replacement to an unredacted original. If redaction itself throws (a proxy
+// trap), a bare Error carrying only the redacted message is returned.
 export function redactQaError(error) {
   // Longest first, so a value containing another is replaced whole.
   const secrets = [...protectedValues].sort((a, b) => b.length - a.length);
-  const redactText = (text) =>
-    secrets.reduce((value, secret) => value.replaceAll(secret, "[REDACTED]"), text);
   const marker = Buffer.from("[REDACTED]");
   const secretBytes = secrets.map((secret) => Buffer.from(secret, "utf8"));
+  let found = false;
+  let dryRun = true;
+  const redactText = (text) => {
+    const redacted = secrets.reduce(
+      (value, secret) => value.replaceAll(secret, "[REDACTED]"),
+      text,
+    );
+    found ||= redacted !== text;
+    return redacted;
+  };
   // Byte for byte, so the rest of a binary buffer survives unchanged.
   const redactBytes = (view) => {
     let bytes = Buffer.from(view.buffer, view.byteOffset, view.byteLength);
@@ -95,9 +99,10 @@ export function redactQaError(error) {
         changed = true;
       }
     }
+    found ||= changed;
     return changed ? bytes : view;
   };
-  const done = new Map();
+  let done = new Map();
   const active = new Set();
 
   const redactValue = (value, depth) => {
@@ -109,6 +114,10 @@ export function redactQaError(error) {
     }
     if (ArrayBuffer.isView(value)) {
       return redactBytes(value);
+    }
+    if (types.isAnyArrayBuffer(value)) {
+      const bytes = redactBytes(new Uint8Array(value));
+      return bytes instanceof Buffer ? bytes : value;
     }
     if (done.has(value)) {
       return done.get(value);
@@ -122,16 +131,7 @@ export function redactQaError(error) {
     active.add(value);
     let result;
     try {
-      if (Array.isArray(value)) {
-        const items = value.map((item) => redactValue(item, depth + 1));
-        result = items.every((item, index) => item === value[index]) ? value : items;
-      } else if (walkable(value)) {
-        result = redactObject(value, depth);
-      } else {
-        const text = inspect(value, { depth: maxErrorDepth, getters: true });
-        const redacted = redactText(text);
-        result = redacted === text ? value : redacted;
-      }
+      result = isError(value) ? redactError(value, depth) : copyRedacted(value, depth);
     } finally {
       active.delete(value);
     }
@@ -139,9 +139,10 @@ export function redactQaError(error) {
     return result;
   };
 
-  const redactObject = (object, depth) => {
+  // Own fields (symbol keys included) and, for an error, the inherited ones.
+  const redactFields = (object, depth, keys) => {
     const fields = [];
-    for (const key of new Set([...inheritedErrorFields, ...Reflect.ownKeys(object)])) {
+    for (const key of new Set([...keys, ...Reflect.ownKeys(object)])) {
       let value;
       try {
         value = object[key];
@@ -152,6 +153,48 @@ export function redactQaError(error) {
         continue;
       }
       fields.push([key, value, redactValue(value, depth + 1)]);
+    }
+    return fields;
+  };
+
+  // Arrays, Maps, Sets and other objects: the original when nothing changed,
+  // otherwise a copy holding the redacted values (a plain object for anything
+  // that is not an array, Map or Set). Functions are left out of a copy.
+  const copyRedacted = (value, depth) => {
+    if (Array.isArray(value)) {
+      const items = value.map((item) => redactValue(item, depth + 1));
+      return items.every((item, index) => item === value[index]) ? value : items;
+    }
+    if (value instanceof Map || value instanceof Set) {
+      const entries = [...value.entries()];
+      const redacted = entries.map(([key, item]) => [
+        redactValue(key, depth + 1),
+        redactValue(item, depth + 1),
+      ]);
+      if (
+        redacted.every(
+          ([key, item], index) => key === entries[index][0] && item === entries[index][1],
+        )
+      ) {
+        return value;
+      }
+      return value instanceof Map ? new Map(redacted) : new Set(redacted.map(([key]) => key));
+    }
+    const fields = redactFields(value, depth, []);
+    if (fields.every(([, item, redacted]) => item === redacted)) {
+      return value;
+    }
+    return Object.fromEntries(
+      fields
+        .filter(([, , redacted]) => typeof redacted !== "function")
+        .map(([key, , redacted]) => [key, redacted]),
+    );
+  };
+
+  const redactError = (object, depth) => {
+    const fields = redactFields(object, depth, inheritedErrorFields);
+    if (dryRun) {
+      return object;
     }
     const write = (key, value) => {
       try {
@@ -167,9 +210,6 @@ export function redactQaError(error) {
     const kept = fields
       .map(([key, , redacted]) => [key, redacted])
       .filter(([, value]) => typeof value !== "function");
-    if (!(object instanceof Error)) {
-      return Object.fromEntries(kept);
-    }
     const values = new Map(kept);
     const message = values.get("message");
     const replacement = new Error(typeof message === "string" ? message : "[REDACTED]");
@@ -185,6 +225,14 @@ export function redactQaError(error) {
   };
 
   try {
+    // A first pass writes nothing and only looks for a secret, so an error
+    // without one keeps its cycles, depth and identity.
+    redactValue(error, 0);
+    if (!found) {
+      return error;
+    }
+    dryRun = false;
+    done = new Map();
     return redactValue(error, 0);
   } catch {
     let message = "[REDACTED: the thrown value could not be redacted]";
