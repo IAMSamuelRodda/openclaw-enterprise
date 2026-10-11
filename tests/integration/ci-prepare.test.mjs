@@ -1826,11 +1826,12 @@ test("prepareLane pre-pulls logging and metrics images with retry and preserves 
       // pulls in its own file: reading the shared call log while the other
       // image's process creates or appends to it can return an empty or torn line.
       const dockerPath = join(root, "docker");
+      // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
       await writeFile(
         dockerPath,
         `#!${process.execPath}
-const { appendFileSync, existsSync, readFileSync } = require("node:fs");
-const { createHash } = require("node:crypto");
+const { appendFileSync, existsSync, readFileSync } = process.getBuiltinModule("node:fs");
+const { createHash } = process.getBuiltinModule("node:crypto");
 const log = ${JSON.stringify(join(root, "docker.jsonl"))};
 const args = process.argv.slice(2);
 appendFileSync(log, JSON.stringify(args) + "\\n");

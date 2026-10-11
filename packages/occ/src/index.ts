@@ -341,6 +341,7 @@ export {
   type RuntimeLogQuery,
   type RuntimeLogViewAdmission,
   type SanitizedRuntimeLogRecord,
+  validRuntimeLogFrontierTime,
 } from "./runtime-logs/index.ts";
 export {
   PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS,

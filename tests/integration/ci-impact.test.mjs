@@ -412,7 +412,9 @@ test("pnpm impact rejects dirty tracked and untracked checkout inputs before run
 test("pnpm impact rejects a checkout changed during graph inspection", async (t) => {
   const f = await fixture(t, sharedChange, workspaceFiles());
   const originalPath = process.env.PATH ?? "";
-  const wrapper = `#!${process.execPath}\nconst { spawnSync } = require("node:child_process");\nconst { writeFileSync } = require("node:fs");\nconst result = spawnSync("pnpm", process.argv.slice(2), { encoding: "utf8", env: { ...process.env, PATH: ${JSON.stringify(originalPath)} } });\nprocess.stdout.write(result.stdout || "");\nif (process.argv.includes("--filter")) writeFileSync("base.txt", "dirty\\n");\nprocess.exit(result.status ?? 1);\n`;
+  // getBuiltinModule works whether Node loads the wrapper as CommonJS or as ESM, which depends
+  // on the nearest package.json above TMPDIR (finding 1068).
+  const wrapper = `#!${process.execPath}\nconst { spawnSync } = process.getBuiltinModule("node:child_process");\nconst { writeFileSync } = process.getBuiltinModule("node:fs");\nconst result = spawnSync("pnpm", process.argv.slice(2), { encoding: "utf8", env: { ...process.env, PATH: ${JSON.stringify(originalPath)} } });\nprocess.stdout.write(result.stdout || "");\nif (process.argv.includes("--filter")) writeFileSync("base.txt", "dirty\\n");\nprocess.exit(result.status ?? 1);\n`;
   const path = shim(join(f.dir, "mutating-bin"), "pnpm", wrapper);
   assert.deepEqual(await affectedPackages(f, path), unavailable("dirty_checkout"));
 });

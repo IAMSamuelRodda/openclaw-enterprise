@@ -55,6 +55,7 @@ import {
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
+  withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -7528,6 +7529,12 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
     },
     (role) => ({ ...held(role), podUid: "replaced-pod-uid" }),
     (role) => ({ ...held(role), runtimeFailure: { ...heldFailure, code: "not a code" } }),
+    // Date.parse accepts this impossible date and normalizes it to March 2. The
+    // private runtime boundary must not turn it into different failure evidence.
+    (role) => ({
+      ...held(role),
+      runtimeFailure: { ...heldFailure, checkedAt: "2026-02-30T11:59:00.000Z" },
+    }),
     // Parseable, but outside the timestamps OCC accepts.
     (role) => ({
       ...held(role),
@@ -9632,6 +9639,15 @@ test("provider Harness readiness requires exactly one live matching Pod", async 
   const stringTimestamp = structuredClone(terminating);
   stringTimestamp.metadata.deletionTimestamp = "2026-08-25T00:00:00Z";
   cases.push(["serialized deletion timestamp", [ready, stringTimestamp], true]);
+  for (const fraction of [".5", ".123456", ".123456789"]) {
+    const fractional = structuredClone(terminating);
+    fractional.metadata.deletionTimestamp = `2026-08-25T00:00:00${fraction}Z`;
+    cases.push([
+      `serialized deletion timestamp with ${fraction} fraction`,
+      [ready, fractional],
+      true,
+    ]);
+  }
 
   for (const [name, items, expected] of cases) {
     await t.test(name, async () => {
@@ -9678,6 +9694,25 @@ test("provider Harness readiness rejects malformed or incomplete Pod observation
     ["null deletion timestamp", (pod) => (pod.metadata.deletionTimestamp = null)],
     ["invalid deletion date", (pod) => (pod.metadata.deletionTimestamp = new Date(NaN))],
     ["invalid deletion string", (pod) => (pod.metadata.deletionTimestamp = "0")],
+    // Date would roll these over to a plausible wrong day; the frontier rule refuses them.
+    [
+      "impossible deletion date",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-02-30T00:00:00Z"),
+    ],
+    ["non-leap February 29", (pod) => (pod.metadata.deletionTimestamp = "2026-02-29T00:00:00Z")],
+    ["hour 24 deletion time", (pod) => (pod.metadata.deletionTimestamp = "2026-08-24T24:00:00Z")],
+    [
+      "offset deletion time",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-08-25T00:00:00+00:00"),
+    ],
+    [
+      "nonzero offset deletion time",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-08-25T02:00:00.000+02:00"),
+    ],
+    [
+      "ten fraction digits",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-08-25T00:00:00.1234567890Z"),
+    ],
     ["null status", (pod) => (pod.status = null)],
     ["array status", (pod) => (pod.status = [])],
     ["object conditions", (pod) => (pod.status.conditions = {})],
@@ -11029,6 +11064,35 @@ test("real gateways require an explicit SQLite-compatible storage class", () => 
   }
 });
 
+test("gateway storage class names must be Kubernetes resource names", () => {
+  for (const gatewayStorageClassName of [
+    "Bad_Class",
+    "bad class",
+    "-local-path",
+    "a".repeat(254),
+  ]) {
+    assert.throws(
+      () =>
+        createKubernetesComputeDriver(
+          options({
+            runtime: {
+              transportSecretPrefix: "transport",
+              gatewayStorageClassName,
+            },
+          }),
+        ),
+      /SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name/,
+    );
+  }
+  for (const gatewayStorageClassName of ["a".repeat(253), "gp3.encrypted"]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(
+        options({ runtime: { transportSecretPrefix: "transport", gatewayStorageClassName } }),
+      ),
+    );
+  }
+});
+
 test("Gateway and Harness storage are separate and preserve ephemeral Codex credentials", () => {
   const driver = createKubernetesComputeDriver(
     options({
@@ -12158,12 +12222,13 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
   }
 });
 
-test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
-  // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
-  // waits for the Gateway's Pods, so a yield there leaves no Harness running until the retry.
-  // Any other stop drains the Gateway into the running Harness first.
+// A dedicated revision whose Gateway and Agent Pods stay for `gatewayPodsLeft` and
+// `agentPodsLeft` observations. `events` records the Pod observations and the Agent Deployment's
+// deletion, in order; `gatewayReads` counts reads of the Gateway's Deployment, which its removal
+// repeats.
+function stopOrderFixture(id) {
   const driver = new KubernetesComputeDriver(options());
-  const revision = routedRevision(driver, { id: "revision-refused-stop-order" });
+  const revision = routedRevision(driver, { id });
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   const namespaceResource = {
     apiVersion: "v1",
@@ -12212,9 +12277,16 @@ test("a refused candidate's stop deletes its Harness before the Gateway drains",
       },
     },
   };
-  let events = [];
-  let deploymentPresent = true;
-  let gatewayPodsLeft = 0;
+  const agentPod = structuredClone(gatewayPod);
+  agentPod.metadata.name = "refused-stop-order-agent-pod";
+  agentPod.metadata.labels["openclaw.dev/workload-role"] = "agent";
+  const fixture = {
+    events: [],
+    deploymentPresent: true,
+    gatewayPodsLeft: 0,
+    agentPodsLeft: 0,
+    gatewayReads: 0,
+  };
   const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
     core: {
@@ -12246,33 +12318,49 @@ test("a refused candidate's stop deletes its Harness before the Gateway drains",
         const role = Object.fromEntries(
           request.labelSelector.split(",").map((entry) => entry.split("=")),
         )["openclaw.dev/workload-role"];
-        events.push(`list ${role} Pods`);
-        if (role === "gateway" && gatewayPodsLeft > 0) {
-          gatewayPodsLeft -= 1;
+        fixture.events.push(`list ${role} Pods`);
+        if (role === "gateway" && fixture.gatewayPodsLeft > 0) {
+          fixture.gatewayPodsLeft -= 1;
           return { apiVersion: "v1", kind: "PodList", items: [structuredClone(gatewayPod)] };
+        }
+        if (role === "agent" && fixture.agentPodsLeft > 0) {
+          fixture.agentPodsLeft -= 1;
+          return { apiVersion: "v1", kind: "PodList", items: [structuredClone(agentPod)] };
         }
         return { apiVersion: "v1", kind: "PodList", items: [] };
       },
     },
     apps: {
       async readNamespacedDeployment({ name }) {
-        if (name === deploymentName && deploymentPresent) {
+        if (name.startsWith("gateway-")) {
+          fixture.gatewayReads += 1;
+        }
+        if (name === deploymentName && fixture.deploymentPresent) {
           return structuredClone(deployment);
         }
         throw notFound();
       },
       async deleteNamespacedDeployment({ name }) {
         assert.equal(name, deploymentName);
-        events.push("delete Agent Deployment");
-        deploymentPresent = false;
+        fixture.events.push("delete Agent Deployment");
+        fixture.deploymentPresent = false;
       },
     },
     objects: {},
   });
 
+  return Object.assign(fixture, { driver, revision });
+}
+
+test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
+  // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
+  // waits for the Gateway's Pods, so a yield there leaves no Harness running until the retry.
+  // Any other stop drains the Gateway into the running Harness first.
+  const fixture = stopOrderFixture("revision-refused-stop-order");
+  const { driver, revision } = fixture;
   // Other Work is waiting, so the refused candidate's stop yields at the Gateway wait, after
   // the Harness's deletion was issued.
-  gatewayPodsLeft = 1;
+  fixture.gatewayPodsLeft = 1;
   await assert.rejects(
     withComputeWorkWaiting(
       async () => true,
@@ -12280,23 +12368,96 @@ test("a refused candidate's stop deletes its Harness before the Gateway drains",
     ),
     (error) => error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message),
   );
-  assert.deepEqual(events, ["delete Agent Deployment", "list agent Pods", "list gateway Pods"]);
-  assert.equal(deploymentPresent, false);
+  assert.deepEqual(fixture.events, [
+    "delete Agent Deployment",
+    "list agent Pods",
+    "list gateway Pods",
+  ]);
+  assert.equal(fixture.deploymentPresent, false);
 
   // Any other stop drains the Gateway before it deletes the Harness, and does not yield.
-  events = [];
-  deploymentPresent = true;
-  gatewayPodsLeft = 1;
+  fixture.events = [];
+  fixture.deploymentPresent = true;
+  fixture.gatewayPodsLeft = 1;
   await withComputeWorkWaiting(
     async () => true,
     () => driver.stopRevision(revision),
   );
-  assert.deepEqual(events, [
+  assert.deepEqual(fixture.events, [
     "list gateway Pods",
     "list gateway Pods",
     "delete Agent Deployment",
     "list agent Pods",
   ]);
+});
+
+test("an Agent stop's Gateway drain yields to due work and keeps the Harness until it ends", async () => {
+  // Finding 1088: an ordinary stop held the serial worker for the Gateway's whole drain (up to
+  // about 340 s). Under withYieldingGatewayDrain only that wait yields; the stop keeps its order,
+  // so the Harness the Gateway drains into runs until a retry sees the Gateway's Pods gone.
+  const fixture = stopOrderFixture("revision-ordinary-stop-yield");
+  const { driver, revision } = fixture;
+  const stop = (waiting) =>
+    withComputeWorkWaiting(
+      async () => waiting,
+      () => withYieldingGatewayDrain(() => driver.stopRevision(revision)),
+    );
+  const yielded = (error) =>
+    error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message);
+
+  // Other Work is waiting: the Gateway is removed, one observation still lists its Pod, and the
+  // stop yields before it touches the Harness.
+  fixture.gatewayPodsLeft = 2;
+  await assert.rejects(stop(true), yielded);
+  assert.deepEqual(fixture.events, ["list gateway Pods"]);
+  assert.equal(fixture.deploymentPresent, true);
+  const firstReads = fixture.gatewayReads;
+  assert.ok(firstReads > 0, "the stop removes the Gateway");
+
+  // A retry repeats the idempotent removal and yields again while the Gateway still drains.
+  fixture.events = [];
+  await assert.rejects(stop(true), yielded);
+  assert.deepEqual(fixture.events, ["list gateway Pods"]);
+  assert.equal(fixture.gatewayReads, 2 * firstReads);
+  assert.equal(fixture.deploymentPresent, true);
+
+  // Once the Gateway's Pods are gone the retry deletes the Harness. Its own wait never yields,
+  // even with Work waiting, so the stop completes.
+  fixture.events = [];
+  fixture.agentPodsLeft = 1;
+  await stop(true);
+  assert.deepEqual(fixture.events, [
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+    "list agent Pods",
+  ]);
+  assert.equal(fixture.deploymentPresent, false);
+
+  // With nothing waiting, the drain is awaited in the same pass, as before.
+  fixture.events = [];
+  fixture.deploymentPresent = true;
+  fixture.gatewayPodsLeft = 1;
+  await stop(false);
+  assert.deepEqual(fixture.events, [
+    "list gateway Pods",
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+  ]);
+
+  // A refused candidate's stop still yields on its Harness's wait too.
+  fixture.events = [];
+  fixture.deploymentPresent = true;
+  fixture.agentPodsLeft = 1;
+  await assert.rejects(
+    withComputeWorkWaiting(
+      async () => true,
+      () => withYieldingComputeStop(() => driver.stopRevision(revision)),
+    ),
+    yielded,
+  );
+  assert.deepEqual(fixture.events, ["delete Agent Deployment", "list agent Pods"]);
 });
 
 test("stopping a provider-owned Kubernetes revision waits for Sandbox workload termination", async () => {
@@ -14810,6 +14971,11 @@ for (const embedded of [true, false]) {
       { finishedAt: null },
       { finishedAt: undefined },
       { finishedAt: "not-a-time" },
+      // Refused strings are unusable times, not a rolled-over or shifted day.
+      { finishedAt: "2026-02-30T00:00:00Z" },
+      { finishedAt: "2026-09-22T00:00:00+00:00" },
+      // A serialized fraction other than milliseconds is a real instant, kept at millisecond precision.
+      { finishedAt: "2026-09-22T00:00:00.123456Z", expected: "2026-09-22T00:00:00.123Z" },
     ]) {
       const fixture = workspaceSetupFixture(embedded);
       fixture.state.failedInitializer = true;
@@ -14838,7 +15004,12 @@ for (const embedded of [true, false]) {
       assert.equal(result.ready, false);
       assert.equal(result.runtimeFailure.code, "WORKSPACE_SETUP_FAILED");
       const checkedAt = Date.parse(result.runtimeFailure.checkedAt);
-      if (scenario.finishedAt instanceof Date && !Number.isNaN(scenario.finishedAt.getTime())) {
+      if (scenario.expected !== undefined) {
+        assert.equal(result.runtimeFailure.checkedAt, scenario.expected);
+      } else if (
+        scenario.finishedAt instanceof Date &&
+        !Number.isNaN(scenario.finishedAt.getTime())
+      ) {
         assert.equal(checkedAt, scenario.finishedAt.getTime());
       } else {
         assert.ok(checkedAt >= before && checkedAt <= after);
@@ -17047,6 +17218,109 @@ for (const scenario of [
     }
   });
 }
+
+test("Kubernetes runtime times keep real UTC instants and refuse rolled-over or offset strings", async (t) => {
+  const describe = (fixture) =>
+    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal);
+  const withContainerState = (state) => {
+    const fixture = runtimeLogDriverFixture();
+    fixture.state.containerStatus = { state };
+    return fixture;
+  };
+  const accepted = [
+    // The typed client hands a Date; a valid one keeps its exact instant.
+    [new Date("2026-09-30T11:00:00.123Z"), "2026-09-30T11:00:00.123Z"],
+    ["2026-09-30T11:00:00Z", "2026-09-30T11:00:00.000Z"],
+    ["2026-09-30T11:00:00.5Z", "2026-09-30T11:00:00.500Z"],
+    ["2026-09-30T11:00:00.123456Z", "2026-09-30T11:00:00.123Z"],
+    ["2026-09-30T11:00:00.123456789Z", "2026-09-30T11:00:00.123Z"],
+    ["2024-02-29T00:00:00Z", "2024-02-29T00:00:00.000Z"],
+  ];
+  const refused = [
+    "2026-02-30T00:00:00Z",
+    "2026-02-29T00:00:00Z",
+    "2026-04-31T12:00:00.000Z",
+    "2026-09-30T24:00:00Z",
+    "2026-09-30T11:60:00Z",
+    "2026-09-30T11:00:00+00:00",
+    "2026-09-30T13:00:00.000+02:00",
+    "2026-09-30T11:00:00",
+    "2026-09-30T11:00:00.1234567890Z",
+    "2026-09-30",
+    "not-a-time",
+    new Date(Number.NaN),
+    Date.UTC(2026, 8, 30, 11),
+  ];
+  const invalidTime = (error) =>
+    error instanceof DependencyUnavailableError && /invalid timestamp/.test(error.message);
+  for (const [value, expected] of accepted) {
+    await t.test(`accepts ${inspect(value)}`, async () => {
+      const running = await describe(withContainerState({ running: { startedAt: value } }));
+      for (const pod of running.pods) {
+        assert.equal(pod.containers[0].startedAt, expected, pod.role);
+      }
+      const exited = await describe(
+        withContainerState({ terminated: { reason: "Error", exitCode: 1, finishedAt: value } }),
+      );
+      for (const pod of exited.pods) {
+        assert.equal(pod.containers[0].lastTermination.finishedAt, expected, pod.role);
+      }
+      const fixture = runtimeLogDriverFixture();
+      fixture.state.extraEvents = [
+        { type: "Warning", reason: "Series", series: { count: 2, lastObservedTime: value } },
+        { type: "Normal", reason: "Micro", eventTime: value, lastTimestamp: null },
+      ];
+      const observed = await describe(fixture);
+      for (const pod of observed.pods) {
+        for (const reason of ["Series", "Micro"]) {
+          assert.equal(
+            pod.events.find((event) => event.reason === reason)?.lastObservedAt,
+            expected,
+            `${pod.role} ${reason}`,
+          );
+        }
+      }
+    });
+  }
+  for (const value of refused) {
+    await t.test(`refuses ${inspect(value)}`, async () => {
+      await assert.rejects(
+        describe(withContainerState({ running: { startedAt: value } })),
+        invalidTime,
+      );
+      await assert.rejects(
+        describe(
+          withContainerState({ terminated: { reason: "Error", exitCode: 1, finishedAt: value } }),
+        ),
+        invalidTime,
+      );
+      // A refused newer field does not fall back to an older valid one.
+      const fixture = runtimeLogDriverFixture();
+      fixture.state.extraEvents = [
+        {
+          type: "Warning",
+          reason: "Series",
+          series: { count: 2, lastObservedTime: value },
+          lastTimestamp: new Date("2026-09-30T11:00:00Z"),
+        },
+      ];
+      await assert.rejects(describe(fixture), invalidTime);
+      // A log read re-reads the Pod status and refuses the same time.
+      const reader = withContainerState({ running: { startedAt: value } });
+      await assert.rejects(
+        reader.driver.readAgentRuntimeLogs(reader.binding, reader.request("gateway")),
+        invalidTime,
+      );
+    });
+  }
+  // Absent times stay absent rather than refused.
+  for (const running of [{ startedAt: null }, {}]) {
+    const absent = await describe(withContainerState({ running }));
+    for (const pod of absent.pods) {
+      assert.equal(pod.containers[0].startedAt, null, pod.role);
+    }
+  }
+});
 
 test("Kubernetes runtime description drops only a settled VolumeBinding conflict", async () => {
   const fixture = runtimeLogDriverFixture();

@@ -1,6 +1,6 @@
 ---
 created: 2026-08-28
-updated: 2026-10-05
+updated: 2026-10-11
 last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
 ---
 
@@ -163,9 +163,8 @@ When Compute requires stopped predecessors, a newer admission supersedes older
 active maintenance before Compute effects, even after candidate failure.
 Recovery uses a new revision.
 
-Agent-stop work rechecks current exact-Agent `operate`. Superseded desired state
-completes without shutdown. An absent active pointer does not prove candidates
-have no runtime resources, so stop still checks the captured revision history.
+Agent-stop work rechecks current exact-Agent `operate`; superseded desired state
+completes without shutdown.
 
 Agent-deletion work requires the Agent to remain `deleting` and stopped, then
 rechecks the original actor's exact-Agent `delete`. It loads every owned revision
@@ -197,14 +196,15 @@ against the immutable revision; the
 defines when warnings permit deployment.
 
 Agent-stop dispatch captures and validates the Agent's revisions owned by the
-current Compute. It stops the active revision first, then the rest, including
-terminal candidates and predecessors whose retirement failed. Historical
-revisions pinned to another Compute are excluded; an active revision pinned
-elsewhere fails closed. Before each shutdown, the worker rechecks the Agent
-owner and stopped desired state; later admissions are not added to this cleanup
-set. Partial failure retries
-the idempotent shutdowns without clearing the active pointer or deleting retained
-workspace data.
+current Compute. It stops the active revision first, then the rest, even without an
+active pointer, including terminal candidates and predecessors whose retirement
+failed. Other Computes' revisions are excluded, but an active one fails closed.
+Before each shutdown, the worker rechecks the Agent owner and stopped desired state;
+later admissions are not added. Partial failure retries idempotent shutdowns,
+keeping the active pointer and retained workspace data. Before the convergence
+deadline, a stopped Agent's Gateway drain, here or in revision work, yields to due
+work (`withYieldingGatewayDrain`), deferring as `AGENT_STOP_YIELDED` without
+spending an attempt.
 
 Before shutdown or retirement, including stopped-revision recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
@@ -385,7 +385,9 @@ failed retry keeps the active runtime.
   the following `worker.completed` retry.
 - [Revision](../../tests/integration/postgres-worker-agent-revision.test.mjs),
   [health](../../tests/integration/postgres-worker-agent-revision-health.test.mjs),
+  [replacement](../../tests/integration/postgres-worker-agent-revision-replacement.test.mjs),
   [refused-stop](../../tests/integration/postgres-worker-agent-revision-refused-stop.test.mjs),
+  [refused-wait](../../tests/integration/postgres-worker-agent-revision-refused-wait.test.mjs),
   [teardown](../../tests/integration/postgres-worker-agent-revision-teardown.test.mjs) and
   [stale-claim](../../tests/integration/postgres-worker-stale-claim.test.mjs) tests
   require PostgreSQL; none proves model execution.
@@ -415,6 +417,6 @@ failed retry keeps the active runtime.
 
 ## Changelog
 
-- 2026-10-10 16:40: Retry a stored refusal's stop first. (fix-1033-1034)
+- 2026-10-11 09:30: Yield an Agent stop's Gateway drain to due work. (fix-1088)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

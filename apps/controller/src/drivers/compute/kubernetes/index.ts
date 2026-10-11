@@ -108,6 +108,7 @@ import {
   runtimeFailureCause,
   ServiceAccountCredentialSecretExistsError,
   TransientDependencyError,
+  validRuntimeLogFrontierTime,
 } from "@openclaw-enterprise/occ";
 import {
   createKubernetesClientConfiguration,
@@ -2748,7 +2749,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         throw error;
       }
-      required(options.runtime.gatewayStorageClassName, "SQLite-compatible gateway storage class");
+      const gatewayStorageClassName = required(
+        options.runtime.gatewayStorageClassName,
+        "SQLite-compatible gateway storage class",
+      );
+      validateKubernetesResourceName(
+        gatewayStorageClassName,
+        "SQLite-compatible gateway storage class",
+      );
       const nativeOpenClawSessionCapacity = options.runtime.nativeOpenClawSessionCapacity;
       if (
         nativeOpenClawSessionCapacity !== undefined &&
@@ -6249,6 +6257,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
       await this.shutdownRevisionRuntime(revision, namespace);
       await this.waitForRevisionPodsToTerminate(revision, gatewayNamespace, "gateway");
     } else {
+      // The Gateway drains into the running Harness. An Agent stop's drain wait may yield
+      // (withYieldingGatewayDrain): the Harness then keeps running until a retry sees the
+      // Gateway's Pods gone (finding 1088).
       await this.removeStoppedGateway(revision, namespace);
       await this.shutdownRevisionRuntime(revision, namespace);
     }
@@ -6433,14 +6444,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
           "The AgentRevision workload Pods did not terminate before the deadline.",
         );
       }
-      // A refused candidate's stop does not hold the serial worker while its Pods terminate:
-      // other Work runs, and the next pass repeats the whole stop (finding 1022).
+      // A refused candidate's stop does not hold the serial worker while its Pods terminate, nor
+      // does an ordinary stop while its Gateway drains: other Work runs, and the next pass repeats
+      // the whole stop (findings 1022 and 1088).
       if (
         yieldCheckedAt === undefined ||
         Date.now() - yieldCheckedAt >= WORKLOAD_TERMINATION_YIELD_CHECK_MS
       ) {
         yieldCheckedAt = Date.now();
-        if (await computeStopShouldYield()) {
+        if (await computeStopShouldYield(role)) {
           throw new ComputeStopYieldedError(
             "The AgentRevision workload Pods are still terminating; other work is waiting.",
           );
@@ -8036,17 +8048,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw invalidObservation();
       }
       const deletedAt = metadata.deletionTimestamp;
-      if (
-        deletedAt !== undefined &&
-        !(
-          (deletedAt instanceof Date && Number.isFinite(deletedAt.getTime())) ||
-          (typeof deletedAt === "string" &&
-            /^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}(?:\.\d+)?(?:Z|[+-]\d{2}:\d{2})$/.test(
-              deletedAt,
-            ) &&
-            Number.isFinite(Date.parse(deletedAt)))
-        )
-      ) {
+      if (deletedAt !== undefined && validKubernetesTime(deletedAt) === undefined) {
         throw invalidObservation();
       }
       const conditionTypes = new Set<string>();
@@ -8421,7 +8423,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   private validIsoTimestamp(value: unknown): value is string {
-    return typeof value === "string" && !Number.isNaN(Date.parse(value));
+    if (typeof value !== "string") {
+      return false;
+    }
+    const canonical = RUNTIME_DIAGNOSTIC_TIMESTAMP.test(value)
+      ? value
+      : value.replace(/Z$/u, ".000Z");
+    if (!RUNTIME_DIAGNOSTIC_TIMESTAMP.test(canonical)) {
+      return false;
+    }
+    const parsed = new Date(value);
+    return !Number.isNaN(parsed.getTime()) && parsed.toISOString() === canonical;
   }
 
   private cachedRuntimeFailureEvidence(
@@ -8480,7 +8492,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
                 typeof terminated.finishedAt === "string" &&
                 this.validIsoTimestamp(terminated.finishedAt)
                   ? terminated.finishedAt
-                  : (kubernetesTime(terminated.finishedAt) ?? new Date().toISOString()),
+                  : (validKubernetesTime(terminated.finishedAt) ?? new Date().toISOString()),
             };
           }
         }
@@ -13887,13 +13899,26 @@ export function createKubernetesComputeDriver(
   return new KubernetesComputeDriver(options);
 }
 
-/** Kubernetes clients return `Date` objects or RFC 3339 strings for timestamps. */
-function kubernetesTime(value: unknown): string | null {
+/**
+ * Kubernetes clients return `Date` objects or RFC 3339 UTC strings for timestamps.
+ * A string must pass the runtime-log frontier rule (UTC, 0-9 fraction digits, a real
+ * calendar time), so an impossible date is refused rather than rolled over by `Date`.
+ */
+function validKubernetesTime(value: unknown): string | undefined {
   if (value instanceof Date) {
-    return Number.isNaN(value.getTime()) ? null : value.toISOString();
+    return Number.isNaN(value.getTime()) ? undefined : value.toISOString();
   }
-  if (typeof value === "string" && !Number.isNaN(Date.parse(value))) {
-    return new Date(value).toISOString();
+  return validRuntimeLogFrontierTime(value) ? new Date(value).toISOString() : undefined;
+}
+
+/** An absent time is `null`; a present, refused one makes the observation unavailable. */
+function kubernetesTime(value: unknown): string | null {
+  if (value === undefined || value === null) {
+    return null;
   }
-  return null;
+  const time = validKubernetesTime(value);
+  if (time === undefined) {
+    throw new DependencyUnavailableError("The Kubernetes client returned an invalid timestamp.");
+  }
+  return time;
 }
