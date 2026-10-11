@@ -1477,6 +1477,15 @@ export interface SandboxDriver extends Driver {
   harnessResource?(
     context: Pick<SandboxHarnessContext, "namespace" | "revision">,
   ): SandboxResourceRef;
+  /**
+   * Exact Pod labels of the provider Pods that open this revision's workspace-node connection to
+   * its Agent Gateway, in the Sandbox namespace, or `undefined` while the revision has no Sandbox.
+   * Compute admits only Pods with these labels to that Gateway's port, so they must select this
+   * revision's Sandbox alone, never another Sandbox in the namespace.
+   */
+  workspaceNodePeerLabels?(
+    context: SandboxNamespaceContext & { readonly revision: Readonly<AgentRevision> },
+  ): Promise<Readonly<Record<string, string>> | undefined>;
   /** Required for revision stop, retirement, and Namespace cleanup, independent of Harness ownership. */
   cleanup(
     context: SandboxNamespaceContext & { readonly revision?: Readonly<AgentRevision> },
