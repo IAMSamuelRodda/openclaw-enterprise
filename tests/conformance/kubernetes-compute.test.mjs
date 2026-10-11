@@ -1274,7 +1274,7 @@ function dedicatedFirstDeployFixture({ statusProxy = true, clock } = {}) {
                   ],
                 },
               }
-            : {}),
+            : { status: { phase: "Running", podIP: "10.42.0.12" } }),
         },
       ],
     };
@@ -7327,7 +7327,11 @@ test("Kubernetes runtime diagnostics read exact private Pod status without nativ
         "openclaw.dev/workload-role": role,
       },
     },
-    status: { containerStatuses: [{ name: role, containerID: `${role}-container-1` }] },
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.10",
+      containerStatuses: [{ name: role, containerID: `${role}-container-1` }],
+    },
   });
   const pods = { agent: pod("agent"), gateway: pod("gateway") };
   const proxyReads = [];
@@ -7598,7 +7602,11 @@ test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod rea
         "openclaw.dev/workload-role": "agent",
       },
     },
-    status: { containerStatuses: [{ name: "agent", containerID: "agent-container-1" }] },
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.11",
+      containerStatuses: [{ name: "agent", containerID: "agent-container-1" }],
+    },
   };
   let podLists = 0;
   driver.apiClients = Promise.resolve({
@@ -7652,6 +7660,8 @@ test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod rea
     ),
     undefined,
   );
+  // The proxy answered; the re-list after it saw the second Pod.
+  assert.equal(podLists, 2);
 
   // A status port that is not serving yet (503) is an answer, read once and not retried.
   podLists = 0;
@@ -7675,6 +7685,90 @@ test("Kubernetes runtime diagnostics reject missing timestamps and raced Pod rea
   );
   assert.equal(proxied, 1);
   assert.deepEqual(waits, []);
+});
+
+// f1103: a deleted Gateway Pod's replacement is Pending with no IP while the
+// Deployment still counts the old one ready. The apiserver refuses to proxy to
+// it (400 "address not allowed"), so the readback must not try.
+test("Kubernetes status readback skips a replacement Pod that is not Running with an IP", async () => {
+  const driver = createKubernetesComputeDriver(
+    options({
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+    }),
+  );
+  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const revision = routedRevision(driver, {
+    id: "revision-runtime-readback-replacement",
+    agentId: "agent-runtime-readback-replacement",
+    configurationId: "cfg_runtime_readback_replacement",
+    servicePrincipalId: "service-principal-runtime-readback-replacement",
+  });
+  const pod = (name, status, deletionTimestamp) => ({
+    apiVersion: "v1",
+    kind: "Pod",
+    metadata: {
+      name,
+      namespace: namespace.name,
+      uid: `${name}-uid`,
+      ...(deletionTimestamp === undefined ? {} : { deletionTimestamp }),
+      labels: {
+        "openclaw.dev/agent": revision.agentId,
+        "openclaw.dev/revision": revision.id,
+        "openclaw.dev/workload-role": "agent",
+      },
+    },
+    status: { ...status, containerStatuses: [{ name: "agent", containerID: `${name}-c` }] },
+  });
+  const terminating = pod(
+    "agent-terminating",
+    { phase: "Running", podIP: "10.42.0.40" },
+    "2026-10-11T10:18:57Z",
+  );
+  let items = [];
+  const proxied = [];
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespacedPod() {
+        return { apiVersion: "v1", kind: "PodList", items: structuredClone(items) };
+      },
+      async connectGetNamespacedPodProxyWithPath({ name }) {
+        proxied.push(name);
+        const target = items.find((candidate) => `${candidate.metadata.name}:18791` === name);
+        if (!target?.status?.podIP) {
+          throw Object.assign(new Error("address not allowed"), { code: 400, headers: {} });
+        }
+        return { revisionId: revision.id, container: "agent", podUid: target.metadata.uid };
+      },
+    },
+  });
+  const read = () =>
+    driver.privateStatusReadback(revision, namespace, "agent", "/openclaw/runtime/status");
+
+  for (const status of [
+    { phase: "Pending" },
+    { phase: "Pending", podIP: "10.42.0.41" },
+    { phase: "Running" },
+    { phase: "Running", podIP: "" },
+    { phase: "Succeeded", podIP: "10.42.0.41" },
+    {},
+  ]) {
+    items = [terminating, pod("agent-replacement", status)];
+    assert.equal(await read(), undefined, JSON.stringify(status));
+  }
+  assert.deepEqual(proxied, []);
+
+  // Once the replacement runs with an IP, the readback reaches exactly that Pod.
+  items = [terminating, pod("agent-replacement", { phase: "Running", podIP: "10.42.0.41" })];
+  assert.deepEqual(await read(), {
+    status: {
+      revisionId: revision.id,
+      container: "agent",
+      podUid: "agent-replacement-uid",
+    },
+    podUid: "agent-replacement-uid",
+    containerId: "agent-replacement-c",
+  });
+  assert.deepEqual(proxied, ["agent-replacement:18791"]);
 });
 
 test("runtime diagnostics proxy ingress remains available without enabled plugins", () => {
@@ -13973,6 +14067,7 @@ function workspaceSetupFixture(
                 uid: `gateway-uid-${revisionId}`,
                 labels,
               },
+              status: { phase: "Running", podIP: "10.42.0.14" },
             },
           ],
         };
@@ -15832,6 +15927,8 @@ test("runtime image provenance survives missing metadata but never crosses Pod o
                 initContainers: [{ name: "initialize", image: "runtime:mutable" }],
               },
               status: {
+                phase: "Running",
+                podIP: "10.42.0.13",
                 containerStatuses: [
                   { name: role, imageID: "sha256:runtime", containerID: `${role}-${generation}` },
                   { name: "sidecar", imageID: "sha256:sidecar", containerID: "sidecar" },
