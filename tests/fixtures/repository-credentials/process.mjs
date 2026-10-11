@@ -3,12 +3,22 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
+// Every fixture child, and every Git it starts (commit's and receive-pack's
+// `git maintenance run --auto --detach` included), inherits this allowlist and
+// nothing from the runner. The detached maintenance outlives the awaited command
+// and can repack .git/objects under a test or its temporary directory's removal
+// (ENOTEMPTY, ENOENT); Git 2.55, for one, repacks once objects/17 holds two loose
+// objects. The entry has command-line scope, so no repository or system config
+// turns it back on; launchers that build their own environment do not carry it.
 export function cleanEnvironment(extra = {}) {
   return {
     PATH: "/usr/local/bin:/usr/bin:/bin",
     LANG: "C.UTF-8",
     GIT_CONFIG_NOSYSTEM: "1",
     GIT_TERMINAL_PROMPT: "0",
+    GIT_CONFIG_COUNT: "1",
+    GIT_CONFIG_KEY_0: "maintenance.auto",
+    GIT_CONFIG_VALUE_0: "false",
     ...extra,
   };
 }
