@@ -46,11 +46,19 @@ function setting(name: string): string | undefined {
   return output.slice(0, -1) || undefined;
 }
 
+/**
+ * Whether a destination names none of the configured generation's origins. Operator
+ * sessions configure no manifest and stay refused. An agent can point these settings
+ * at its own material, but it can equally bypass hooks; the guard is not a boundary.
+ */
 async function isUnrelatedToManifest(destination: string): Promise<boolean> {
   try {
     const root = setting("manifestRoot");
+    const generation = setting("generation");
     return (
-      root !== undefined && isUnrelatedPushDestination(destination, await readManifestOrigins(root))
+      root !== undefined &&
+      generation !== undefined &&
+      isUnrelatedPushDestination(destination, await readManifestOrigins(root, generation))
     );
   } catch {
     return false;
@@ -270,12 +278,12 @@ async function run(): Promise<number> {
   }
   if (child.signal) {
     // Report a signal as Git reports its own hooks: 128 + N, silent for SIGINT,
-    // SIGQUIT and SIGPIPE.
-    const signal = osConstants.signals[child.signal];
+    // SIGQUIT and SIGPIPE. Git prints the hook's path; this prints only its name.
+    const signal = osConstants.signals[child.signal] ?? 0;
     if (!["SIGINT", "SIGQUIT", "SIGPIPE"].includes(child.signal)) {
       process.stderr.write(`error: hooks/${name} died of signal ${signal}\n`);
     }
-    return 128 + signal;
+    return signal ? 128 + signal : 1;
   }
   return child.status ?? 1;
 }

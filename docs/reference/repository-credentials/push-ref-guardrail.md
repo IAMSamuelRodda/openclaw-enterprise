@@ -79,10 +79,13 @@ allowlist. Choose an allowed branch. `repository-pre-push-guard-failed` means th
 guard could not safely check the push; a fixed reason code such as
 `invalid-repository-material` follows when one applies. Inspect the selected
 binding, session and hook configuration. Neither result forwards ref updates. Do
-not retry an uncertain remote mutation without inspecting its result. When
+not retry an uncertain remote mutation without inspecting its result. When a Pod's
 session material cannot be read, only pushes to plainly spelled HTTPS hosts other
-than every binding's gateway and canonical origin proceed.
+than every binding's gateway and canonical origin proceed; a single-session
+launcher refuses them all.
 
 Other dispatcher failures print `repository-hook-failed`, the hook name and a
-reason code. Push-to-checkout refusals use Git's own reasons, and a forwarded
-hook killed by a signal exits with 128 plus the signal number, as in Git.
+reason code. Push-to-checkout refusals print Git's own reason, while the ref
+status reads `push-to-checkout hook declined`. A forwarded hook killed by a
+signal exits with 128 plus the signal number, as in Git, and the message names
+the hook instead of its path.

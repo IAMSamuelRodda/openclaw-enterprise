@@ -417,6 +417,18 @@ describe("repository credential router", { concurrency: true }, () => {
       ...session,
       GIT_CONFIG_VALUE_0: join(sessionTarget, "absent"),
     });
+    // Without the manifest and generation the configuration names, nothing proceeds.
+    await settle(
+      ["manifestRoot", "generation"].map((name) =>
+        expect(unrelated, 1, guardFailed(), {
+          GIT_CONFIG_COUNT: "2",
+          GIT_CONFIG_KEY_0: "oce.repository.session",
+          GIT_CONFIG_VALUE_0: join(sessionTarget, "absent"),
+          GIT_CONFIG_KEY_1: `oce.repository.${name}`,
+          GIT_CONFIG_VALUE_1: name === "generation" ? "0".repeat(64) : "",
+        }),
+      ),
+    );
     // One session file outside its custody rules fails the whole generation.
     await chmod(join(material.manifest.bindings[1].directory, "bearer"), 0o640);
     await expect(unrelated, 0, "");
