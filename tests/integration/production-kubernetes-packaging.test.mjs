@@ -2105,6 +2105,12 @@ test(
         { "repositoryCredentials.image": `repository-credentials@sha256:${"B".repeat(64)}` },
         /immutable SHA-256/,
       ],
+      [
+        {
+          "repositoryCredentials.image": `registry.example.invalid/foo\u00a0bar@sha256:${"c".repeat(64)}`,
+        },
+        /immutable SHA-256/,
+      ],
       [{ "repositoryCredentials.backendId": "" }, /backendId is required/],
       [{ "repositoryCredentials.registryConfigMapName": "" }, /registryConfigMapName is required/],
       [
@@ -2844,6 +2850,10 @@ test(
     await assert.rejects(
       render(slackProxyValues, { strings: { "slackProxy.port": "9223372036854775808" } }),
       /slackProxy\.port must be an integer TCP port/,
+    );
+    await assert.rejects(
+      render({ ...slackProxyValues, "slackProxy.resources.requests.memory": "10MiB" }),
+      /slackProxy\.resources\.requests\.memory must be a Kubernetes quantity/,
     );
   },
 );
@@ -3851,6 +3861,11 @@ test(
       ["missing bootstrap admin email", { "bootstrap.adminEmail": "" }],
       ["missing bootstrap password claim", { "bootstrap.password.claimName": "" }],
       ["nested bootstrap password file", { "bootstrap.password.fileName": "nested/password" }],
+      [
+        "oversized bootstrap password basename",
+        { "bootstrap.password.fileName": "a".repeat(256) },
+        /bootstrap\.password\.fileName must be a simple basename of at most 255 characters/,
+      ],
       ["missing bootstrap service key file", { "bootstrap.serviceKey.fileName": "" }],
       ["nested bootstrap service key file", { "bootstrap.serviceKey.fileName": "nested/key.json" }],
       [
