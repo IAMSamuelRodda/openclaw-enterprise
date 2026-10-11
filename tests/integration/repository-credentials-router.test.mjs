@@ -37,16 +37,31 @@ const slots = Math.max(2, availableParallelism());
 const waiting = [];
 let active = 0;
 async function exec(command, args, options) {
-  while (active >= slots) {
+  if (active < slots) {
+    active += 1;
+  } else {
+    // A finishing child hands its slot straight to the oldest waiter.
     await new Promise((resolve) => waiting.push(resolve));
   }
-  active += 1;
   try {
     return await run(command, args, options);
   } finally {
-    active -= 1;
-    waiting.shift()?.();
+    const next = waiting.shift();
+    if (next) {
+      next();
+    } else {
+      active -= 1;
+    }
   }
+}
+/** Like Promise.all, but every sibling child settles before the first failure is thrown. */
+async function settle(promises) {
+  const results = await Promise.allSettled(promises);
+  const failed = results.find(({ status }) => status === "rejected");
+  if (failed) {
+    throw failed.reason;
+  }
+  return results.map(({ value }) => value);
 }
 const gitWith =
   (defaults = {}) =>
@@ -138,7 +153,7 @@ describe("repository credential router", { concurrency: true }, () => {
       ["write", { ...write, client: { ...write.client, gitUsername: "alternate-session" } }],
     );
     const readBinding = material.manifest.bindings[0];
-    await Promise.all([
+    await settle([
       fill(material).then(refused),
       ...material.manifest.bindings.flatMap((entry, index) =>
         [
@@ -265,7 +280,7 @@ describe("repository credential router", { concurrency: true }, () => {
       // Invalid hook input is an inspection failure, not an ordinary policy denial.
       [ref("permitted"), undefined, "malformed", 1, guardFailed],
     ];
-    await Promise.all(
+    await settle(
       cases.map(async ([extra, destination = restricted.client.gitRemote, input, code, stderr]) => {
         const result = await git(
           [
@@ -367,7 +382,7 @@ describe("repository credential router", { concurrency: true }, () => {
       '#!/bin/sh\nprintf "%s\\n" "$1" >> "$INIT_HOOK_MARKER"\n',
       { mode: 0o755 },
     );
-    await Promise.all(
+    await settle(
       [[], ["-b", "main"]].map(async (args, index) => {
         const ordinary = join(root, `ordinary-${index}`);
         const managed = join(root, `managed-${index}`);
@@ -379,7 +394,7 @@ describe("repository credential router", { concurrency: true }, () => {
         // before HEAD exists, and the managed dispatcher must delegate it too.
         const init = (directory, env) =>
           git(["init", "--template=" + template, ...args, directory], { env });
-        await Promise.all([
+        await settle([
           init(ordinary, clean({ INIT_HOOK_MARKER: expected })),
           init(managed, environment(material, { INIT_HOOK_MARKER: actual })),
         ]);
@@ -441,8 +456,8 @@ describe("repository credential router", { concurrency: true }, () => {
     const b = opened("b", { repository: "example/project.git" });
     const c = opened("c", { repository: "example/other" });
     const material = await nativeMaterial(t, ["a", a], ["b", b], ["c", c]);
-    await Promise.all([
-      fill(material).then((result) => assert.notEqual(result.code, 0)),
+    await settle([
+      fill(material).then(refused),
       fill(material, { OCE_REPOSITORY_REF: "a" }).then((result) => granted(result, a.bearer)),
       fill(material, { OCE_REPOSITORY_REF: "b" }).then((result) => granted(result, b.bearer)),
       fill(material, {}, "EXAMPLE/PROJECT.git.git").then((result) => granted(result, b.bearer)),
@@ -453,7 +468,7 @@ describe("repository credential router", { concurrency: true }, () => {
 
   test("embedded generation fails closed after replacement while local stock Git retains hooks and configuration", async (t) => {
     const replacement = opened("replacement");
-    const [material, next] = await Promise.all([
+    const [material, next] = await settle([
       nativeMaterial(t, ["project", opened("original")]),
       // New material is valid in isolation but cannot be selected by the old emitted helper command.
       nativeMaterial(t, ["project", replacement]),
@@ -490,7 +505,7 @@ describe("repository credential router", { concurrency: true }, () => {
     assert.equal(await subject("-C", linked), "Native removal");
     await local(["remote", "add", "origin", "https://github.com/ExAmPlE/PrOjEcT"]);
     await local(["remote", "set-url", "--push", "origin", "https://github.com/example/other.git"]);
-    const [fetchUrl, pushUrl, stale] = await Promise.all([
+    const [fetchUrl, pushUrl, stale] = await settle([
       local(["remote", "get-url", "origin"]),
       local(["remote", "get-url", "--push", "origin"]),
       fill(material, { OCE_REPOSITORY_SELECTION: env.OCE_REPOSITORY_SELECTION }),
@@ -515,7 +530,7 @@ describe("repository credential router", { concurrency: true }, () => {
     assert.equal(await readFile(join(material.root, "gitconfig"), "utf8"), oldConfig);
     const current = await readRuntimeRepositoryManifest(material.root);
     assert.equal(current.generation, next.manifest.generation);
-    const [acceptedNew, rejected, last] = await Promise.all([
+    const [acceptedNew, rejected, last] = await settle([
       exec(
         process.execPath,
         [material.helper, "manifest", material.root, current.generation, "get"],
@@ -606,7 +621,7 @@ describe("repository credential router", { concurrency: true }, () => {
       ["pr", "create", "--head", "other:branch"],
       ["pr", "create", "--fill"],
     ];
-    await Promise.all([
+    await settle([
       route(["git", "status"]).then((rejected) => {
         assert.notEqual(rejected.code, 0);
         assert.equal(rejected.stderr, "unsupported-client-command\n");
