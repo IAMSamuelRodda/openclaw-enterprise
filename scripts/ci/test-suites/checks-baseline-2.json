@@ -47,6 +47,7 @@
     "tests/integration/ci-download-pinned.test.mjs",
     "tests/conformance/slack-proxy-tunnel.test.mjs",
     "tests/conformance/native-admin-websocket-relay.test.mjs",
+    "tests/integration/qa-fixture-inputs.test.mjs",
     "tests/integration/repository-runtime-materialization.test.mjs",
     "tests/conformance/repository-credentials-contracts.test.mjs",
     "tests/integration/plugin-driver-startup.test.mjs",
