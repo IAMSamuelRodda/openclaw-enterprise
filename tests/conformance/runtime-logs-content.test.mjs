@@ -8,11 +8,16 @@ import {
   redactRuntimeLogText,
 } from "../../packages/occ/src/runtime-logs/redact.ts";
 import { sanitizeRuntimeLogChunk } from "../../packages/occ/src/runtime-logs/sanitize.ts";
-import { readRuntimeLogPage } from "../../packages/occ/src/runtime-logs/read.ts";
+import {
+  compareRuntimeLogTime,
+  readRuntimeLogPage,
+} from "../../packages/occ/src/runtime-logs/read.ts";
 import { cpuTimeMs } from "../helpers/cpu-time.mjs";
 import {
   createRuntimeLogCursorCodec,
   RUNTIME_LOG_CURSOR_TTL_MS,
+  runtimeLogLineHash,
+  validRuntimeLogFrontierTime,
 } from "../../packages/occ/src/runtime-logs/cursor.ts";
 
 const corpusUrl = new URL("../fixtures/runtime-logs/canary-corpus.txt", import.meta.url);
@@ -1821,6 +1826,114 @@ test("runtime log cursor without a frontier count keeps legacy cursors usable", 
     frontierCount: 1,
   });
   assert.equal(full.codec.decode(untimed, full.binding).status, "invalid");
+});
+
+function cursorCodecFixture() {
+  const codec = createRuntimeLogCursorCodec(randomBytes(32).toString("hex"));
+  const binding = {
+    principalId: "synthetic-person",
+    agentId: "agent-test",
+    revisionId: "revision-test",
+    source: "gateway",
+  };
+  const issuedAt = Date.parse("2026-09-30T12:10:00Z");
+  const position = {
+    viewId: "rlv_synthetic",
+    pod: "gateway-test-0",
+    podUid: "synthetic-pod-0",
+    restartCount: 0,
+    previous: false,
+    lastTime: "2026-09-30T12:00:00Z",
+    lastHashes: [runtimeLogLineHash("worker ready")],
+    frontierComplete: true,
+    frontierCount: 1,
+    issuedAt,
+  };
+  const status = (cursor, { now = issuedAt, bound = binding } = {}) =>
+    codec.decode(cursor, bound, now).status;
+  return { codec, binding, issuedAt, position, status };
+}
+
+test("runtime log cursor codec refuses other bindings, altered envelopes and future issue times", () => {
+  const { codec, binding, issuedAt, position, status } = cursorCodecFixture();
+  const cursor = codec.encode(binding, position);
+  assert.equal(status(cursor), "valid");
+  for (const [label, bound] of [
+    ["agent", { ...binding, agentId: "agent-other" }],
+    ["revision", { ...binding, revisionId: "revision-other" }],
+    ["source", { ...binding, source: "sandbox" }],
+    // Fields are delimited: moving text between them is another binding.
+    ["boundary", { ...binding, principalId: "synthetic-personagent", agentId: "-test" }],
+  ]) {
+    assert.equal(status(cursor, { bound }), "invalid", label);
+  }
+  // Only the exact three-part v1 envelope verifies; a short MAC is refused, not thrown.
+  const [, payload, mac] = cursor.split(".");
+  for (const [label, forged] of [
+    ["extra part", `${cursor}.extra`],
+    ["version", `v2.${payload}.${mac}`],
+    ["short MAC", `v1.${payload}.${mac.slice(0, -1)}`],
+  ]) {
+    assert.equal(status(forged), "invalid", label);
+  }
+  // Expiry starts strictly after the TTL; up to one minute of clock skew is tolerated.
+  assert.equal(status(cursor, { now: issuedAt + RUNTIME_LOG_CURSOR_TTL_MS }), "valid");
+  assert.equal(status(cursor, { now: issuedAt + RUNTIME_LOG_CURSOR_TTL_MS + 1 }), "expired");
+  assert.equal(status(cursor, { now: issuedAt - 60_000 }), "valid");
+  assert.equal(status(cursor, { now: issuedAt - 60_001 }), "invalid");
+});
+
+test("runtime log cursor codec keeps the newest 48 hashes, hashes raw lines exactly and needs a 32-character secret", () => {
+  const { codec, binding, issuedAt, position } = cursorCodecFixture();
+  const hashes = Array.from({ length: 49 }, (_, index) => runtimeLogLineHash(`worker ${index}`));
+  const many = codec.encode(binding, { ...position, lastHashes: hashes, frontierCount: 49 });
+  assert.deepEqual(codec.decode(many, binding, issuedAt).position.lastHashes, hashes.slice(-48));
+  // Frontier hashes compare raw lines exactly.
+  assert.notEqual(runtimeLogLineHash("worker ready"), runtimeLogLineHash("worker ready "));
+  assert.throws(() => createRuntimeLogCursorCodec("s".repeat(31)), TypeError);
+  assert.doesNotThrow(() => createRuntimeLogCursorCodec("s".repeat(32)));
+});
+
+test("runtime log cursor refuses signed positions with malformed fields", () => {
+  const { codec, binding, position, status } = cursorCodecFixture();
+  assert.equal(status(codec.encode(binding, position)), "valid");
+  for (const change of [
+    { viewId: 7 },
+    { podUid: null },
+    { restartCount: -1 },
+    { restartCount: 1.5 },
+    { previous: "false" },
+    { lastTime: 5 },
+    { lastHashes: ["short"] },
+    { issuedAt: String(position.issuedAt) },
+    { frontierComplete: "true" },
+    { frontierCount: "1" },
+    { pemOpen: false, pemAfterTime: [position.lastTime] },
+  ]) {
+    // Authenticated schema validation, separately from MAC tampering.
+    assert.equal(
+      status(codec.encode(binding, { ...position, ...change })),
+      "invalid",
+      JSON.stringify(change),
+    );
+  }
+});
+
+test("runtime log frontier times accept only kubelet UTC and order trimmed fractions", () => {
+  for (const [value, valid] of [
+    ["2026-09-30T12:00:00Z", true],
+    ["2026-09-30T12:00:00.123456789Z", true],
+    ["2026-09-30T12:00:00.1234567890Z", false],
+    ["2026-09-30T12:00:00+00:00", false],
+    ["+012026-09-30T12:00:00Z", false],
+    ["2026-02-30T12:00:00Z", false],
+    ["2026-13-01T12:00:00Z", false],
+  ]) {
+    assert.equal(validRuntimeLogFrontierTime(value), valid, value);
+  }
+  // Kubelet trims trailing zeros from the fraction.
+  assert.equal(compareRuntimeLogTime("2026-09-30T12:00:00Z", "2026-09-30T12:00:00.000Z"), 0);
+  assert.equal(compareRuntimeLogTime("2026-09-30T12:00:00.5Z", "2026-09-30T12:00:00.123Z"), 1);
 });
 
 test("runtime log route polling carries PEM masking through the serialized cursor", async () => {
