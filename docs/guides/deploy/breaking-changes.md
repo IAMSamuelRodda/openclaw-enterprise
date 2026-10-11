@@ -20,8 +20,8 @@ name. Such a value could never create a Gateway PVC.
 **Who is affected.** Hand-written `installation.yaml` files with an invalid value;
 profiles now refuse the same value before writing deployable files.
 
-**How to tell.** Startup or preflight names `runtime.gatewayStorageClassName` or
-the SQLite-compatible gateway storage class.
+**How to tell.** Preflight names `runtime.gatewayStorageClassName`; controller
+startup logs `GATEWAY_STORAGE_CLASS_INVALID`.
 
 **Steps.** Run `kubectl get storageclass`, copy the intended StorageClass name into
 the Installation input, rerender when using a profile, and restart the controller.

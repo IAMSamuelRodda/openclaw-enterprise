@@ -182,6 +182,23 @@ function assertPersistenceBoundary(output, event) {
   assert.doesNotMatch(output, /The platform persistence repository is unavailable/);
 }
 
+function assertStartupFailureCode(output, event, code) {
+  const diagnostic = output
+    .trim()
+    .split("\n")
+    .filter(Boolean)
+    .map((line) => {
+      try {
+        return JSON.parse(line);
+      } catch {
+        return undefined;
+      }
+    })
+    .find((line) => line?.event === event);
+  assert.ok(diagnostic, output);
+  assert.equal(diagnostic.code, code);
+}
+
 async function productionFixture(t) {
   const fixture = await mkdtemp(join(tmpdir(), "oce-production-image-"));
   await chmod(fixture, 0o755);
@@ -279,21 +296,7 @@ test(
         "OCC_AUTH_BASE_URL=https://occ.example.invalid",
         "-e",
         "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
-        "--entrypoint",
-        "node",
         image,
-        "--input-type=module",
-        "-e",
-        `try {
-          const { loadInstallationConfiguration, loadStartupConfigurationSnapshot } = await import(
-            "/app/apps/controller/src/composition/installation-config.ts"
-          );
-          const startupConfiguration = await loadStartupConfigurationSnapshot({ mode: "production" });
-          await loadInstallationConfiguration({ mode: "production", startupConfiguration });
-        } catch (error) {
-          process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
-          process.exit(1);
-        }`,
       ]);
     } catch (error) {
       failure = error;
@@ -302,10 +305,8 @@ test(
     assert.ok(failure, "invalid gateway StorageClass must stop startup");
     assert.equal(failure.code, 1);
     const output = imageFailureOutput(failure);
-    assert.match(
-      output,
-      /SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name/,
-    );
+    assertStartupFailureCode(output, "startup-error", "GATEWAY_STORAGE_CLASS_INVALID");
+    assert.doesNotMatch(output, /SQLite-compatible gateway storage class/);
     assert.doesNotMatch(output, /PERSISTENCE_UNAVAILABLE/);
     assertNoPackagingFailure(output);
   },

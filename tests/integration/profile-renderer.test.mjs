@@ -2133,10 +2133,7 @@ test("profiles refuse gateway storage class names the compute driver refuses", (
       baseInput({ runtime: { ...runtime, gatewayStorageClassName } }),
     );
     assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
-    assert.match(
-      output.installation,
-      new RegExp(`gatewayStorageClassName: ${gatewayStorageClassName}`),
-    );
+    assert.ok(output.installation.includes(`gatewayStorageClassName: ${gatewayStorageClassName}`));
   }
 });
 
