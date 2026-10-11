@@ -150,7 +150,8 @@ test("draft Agent offers deployment without a generated-credential step", async 
 });
 
 test("active Agent can deploy the current saved draft as a new version", async (t) => {
-  const fixture = await createConsoleAppFixture(t);
+  // The draft enables Slack, which deployment admits only with an Installation channel runtime.
+  const fixture = await createConsoleAppFixture(t, { channelRuntime: true });
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Agent redeployment", { ready: true });
   const agent = await fixture.createAgent(

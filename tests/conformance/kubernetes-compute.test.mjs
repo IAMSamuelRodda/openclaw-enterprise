@@ -6032,6 +6032,167 @@ test("dedicated Codex admission rejects settings its Gateway entrypoint cannot r
   );
 });
 
+test("deployment admission refuses Gateway breakers before a dedicated deployment stops its predecessors", () => {
+  // A dedicated deployment stops the running revision before preparing the next one, and
+  // nothing rolls back. Each shape below used to pass deployment admission and provisioning,
+  // then fail in preparation or crash-loop the Gateway entrypoint, taking a working Agent down
+  // (findings 1112-1115). Admission now refuses each and names the setting.
+  const runtime = { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" };
+  const codex = { id: "codex", version: "1.0.0", mode: "dedicated" };
+  const provisioning = { id: "codex", version: "provisioning", mode: "dedicated" };
+  const embedded = { id: "openclaw", version: "1.0.0", mode: "embedded" };
+  const base = { agents: { defaults: { model: "codex/gpt-5" } } };
+  const embeddedBase = { agents: { defaults: { model: "openai/gpt-5" } } };
+  const named = (setting, requirement) => (error) =>
+    error instanceof ConfigurationHarnessError &&
+    error.message === `Configuration setting ${setting} ${requirement}.`;
+  // An Installation with runtime storage, gateway routing and node enrollment: every dedicated
+  // Gateway hosts the Agent's workspace node.
+  const routed = new KubernetesComputeDriver(routedOptions({ runtime }), { nodeEnrollment: {} });
+  const sandboxDriver = {
+    id: "sandbox-openshell",
+    capability: "sandbox",
+    facets: ["networking", "filesystem", "process"],
+    provisionHarness() {},
+  };
+  const routedNative = new KubernetesComputeDriver(routedOptions({ runtime }), {
+    nodeEnrollment: {},
+    sandboxDriver,
+  });
+  const unrouted = new KubernetesComputeDriver(options());
+  // Without node enrollment or runtime storage no Gateway hosts a workspace node.
+  const withoutNode = [
+    unrouted,
+    new KubernetesComputeDriver(routedOptions({ runtime })),
+    new KubernetesComputeDriver(routedOptions(), { nodeEnrollment: {} }),
+  ];
+
+  // f1112: the entrypoint exits at every start without the file-transfer plugin.
+  const workspaceNode = "the Agent's workspace node requires the file-transfer plugin";
+  for (const [plugins, setting, requirement] of [
+    [{ deny: ["file-transfer"] }, "plugins.deny", `must not list file-transfer: ${workspaceNode}`],
+    [
+      { entries: { "file-transfer": { enabled: false } } },
+      "plugins.entries.file-transfer.enabled",
+      `must not be false: ${workspaceNode}`,
+    ],
+  ]) {
+    for (const harness of [codex, provisioning]) {
+      assert.throws(
+        () => routed.validateHarnessAuth(harness, apiKeyAuth, { ...base, plugins }),
+        named(setting, requirement),
+      );
+    }
+    assert.throws(
+      () =>
+        routedNative.validateHarnessAuth(
+          { id: "openclaw", version: "1.0.0", mode: "dedicated" },
+          apiKeyAuth,
+          { ...createHarnessConfiguration("openclaw", "gpt-4o-mini"), plugins },
+        ),
+      named(setting, requirement),
+    );
+    // A Gateway without a workspace node does not need the plugin.
+    for (const driver of withoutNode) {
+      driver.validateHarnessAuth(codex, apiKeyAuth, { ...base, plugins });
+    }
+    routed.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, plugins });
+  }
+  routed.validateHarnessAuth(codex, apiKeyAuth, {
+    ...base,
+    plugins: { deny: ["other"], entries: { "file-transfer": { enabled: true } } },
+  });
+
+  // f1113 and f1114: gateway settings preparation refused, now refused by deployment admission
+  // (validateGatewaySettings) and provisioning (validateAgentProvisioning) with the same text.
+  const approvalPolicy = "plugins.entries.codex.config.appServer.approvalPolicy";
+  const withPolicy = (policy) => ({
+    ...base,
+    plugins: { entries: { codex: { config: { appServer: { approvalPolicy: policy } } } } },
+  });
+  const passwordRule =
+    'must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates';
+  const withPassword = (password) => ({ ...base, gateway: { auth: { password } } });
+  for (const [configuration, setting, requirement] of [
+    [withPolicy("always"), approvalPolicy, 'must be "never", "on-request" or "on-failure"'],
+    [withPolicy("on_request"), approvalPolicy, 'must be "never", "on-request" or "on-failure"'],
+    [withPolicy(1), approvalPolicy, 'must be "never", "on-request" or "on-failure"'],
+    [
+      { ...base, plugins: { entries: { codex: { config: { appServer: "never" } } } } },
+      "plugins.entries.codex.config.appServer",
+      "must be an object",
+    ],
+    [withPassword("literal-gateway-password"), "gateway.auth.password", passwordRule],
+    [
+      withPassword({ source: "env", provider: "default", id: "MY_GATEWAY_PASSWORD" }),
+      "gateway.auth.password",
+      passwordRule,
+    ],
+    [withPassword("${OPENCLAW_GATEWAY_PASSWORD}"), "gateway.auth.password", passwordRule],
+  ]) {
+    const label = JSON.stringify(configuration);
+    for (const validate of [
+      () => routed.validateGatewaySettings(configuration),
+      () => routed.validateAgentProvisioning({ executionMode: "dedicated", configuration }),
+    ]) {
+      assert.throws(
+        validate,
+        (error) =>
+          error instanceof ComputeGatewaySettingError &&
+          error.message === `Configuration setting ${setting} ${requirement}.`,
+        label,
+      );
+    }
+  }
+  for (const configuration of [
+    withPolicy("never"),
+    withPolicy("on-request"),
+    withPolicy("on-failure"),
+    // The Gateway entrypoint replaces a null plugin config.
+    { ...base, plugins: { entries: { codex: { config: null } } } },
+    withPassword({ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+  ]) {
+    routed.validateGatewaySettings(configuration);
+    routed.validateAgentProvisioning({ executionMode: "dedicated", configuration });
+  }
+
+  // f1115: enabled channels need a dedicated workload and the Installation's channel runtime.
+  const slack = { channels: { slack: { enabled: true } } };
+  assert.throws(
+    () => unrouted.validateHarnessAuth(codex, apiKeyAuth, { ...base, ...slack }),
+    named(
+      "channels.slack",
+      "is enabled, but this Installation has no channel runtime: enabled channels require isolated credentials and a reviewed proxy",
+    ),
+  );
+  const withChannels = new KubernetesComputeDriver(
+    options({ runtime: { ...runtime, channels: { proxyUrl: "http://10.42.0.15:3128" } } }),
+  );
+  assert.throws(
+    () => withChannels.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, ...slack }),
+    named("channels.slack", "is enabled, but channels require a dedicated Agent workload"),
+  );
+  withChannels.validateHarnessAuth(codex, apiKeyAuth, { ...base, ...slack });
+  // A disabled channel, and channel defaults, need neither.
+  for (const channels of [{ slack: { enabled: false } }, { defaults: { groupPolicy: "open" } }]) {
+    unrouted.validateHarnessAuth(codex, apiKeyAuth, { ...base, channels });
+    unrouted.validateHarnessAuth(embedded, apiKeyAuth, { ...embeddedBase, channels });
+  }
+});
+
+test("preparation still refuses a gateway password Compute does not generate", async () => {
+  // Admission refuses it first; preparation runs the same rule on the revision it renders.
+  for (const password of ["literal-gateway-password", { source: "env", id: "OTHER" }]) {
+    const { driver, revision, context } = workspaceSetupFixture(false);
+    revision.configuration = structuredClone(revision.configuration);
+    revision.configuration.gateway.auth.password = password;
+    await assert.rejects(driver.prepareRevision(revision, context), {
+      message:
+        'Configuration setting gateway.auth.password must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates.',
+    });
+  }
+});
+
 test("credential-source authentication renders no model Secret and requires the paired gateway", () => {
   const sandboxDriver = {
     id: "sandbox-openshell",
