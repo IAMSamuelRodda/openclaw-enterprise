@@ -349,6 +349,8 @@ const publicLauncherSettings = new Set([
 const gatewayDrainLine =
   /draining active work|active-work drain|all active work drained|shutdown budget|shutdown drain|received SIG(TERM|INT)/i;
 const gatewayDrainLines = 40;
+// Extra worker reads (rollout Pods, previous containers) keep a shorter tail.
+const extraWorkerLogLines = 200;
 const platformEvents = 60;
 
 // Lifecycle fields only: which Pods ran, when they started and why they restarted.
@@ -377,8 +379,8 @@ function podRestarts({ metadata = {}, status = {} }) {
 // keep the API and worker log tails there, redacted, for the kubernetes control
 // plane (Compose runs them as containers outside the cluster), plus each worker
 // Pod during a rollout, a restarted worker's previous log, platform Pod restarts, recent
-// Events in the platform and remaining Agent Namespaces, and the drain lines of a
-// Gateway still terminating. Returns the file name.
+// Events in the platform and remaining Agent Namespaces, and the drain lines of each
+// remaining Gateway Pod. Returns the file name.
 async function recordPlatformLogs(f, label, remainingPods = []) {
   if (f.controlPlane !== "kubernetes") {
     return;
@@ -396,8 +398,9 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
     }
   };
   const platformNamespace = f.state.platformNamespace;
-  const containerTail = async (target, container, ...options) =>
-    tail(
+  const containerTail = async (target, container, ...options) => {
+    const lines = target.startsWith("deployment/") ? platformLogLines : extraWorkerLogLines;
+    return tail(
       await f.kubectl(
         "-n",
         platformNamespace,
@@ -407,10 +410,12 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
         container,
         ...options,
         "--timestamps",
-        `--tail=${platformLogLines}`,
+        `--tail=${lines}`,
         "--request-timeout=30s",
       ),
+      lines,
     );
+  };
   const logs = {};
   logs.api = await attempt(() => containerTail("deployment/openclaw-enterprise-api", "api"));
   logs.worker = await attempt(() =>

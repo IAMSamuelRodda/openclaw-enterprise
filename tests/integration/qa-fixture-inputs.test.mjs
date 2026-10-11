@@ -444,7 +444,7 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
         "worker",
         "--previous",
         "--timestamps",
-        "--tail=600",
+        "--tail=200",
         "--request-timeout=30s",
       ],
     ],
@@ -466,21 +466,36 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   });
   // Events from the platform and each other remaining Namespace, oldest first.
   assert.deepEqual(Object.keys(logs.events), ["oce-system", "oce-agent-1"]);
+  assert.equal(calls.filter((call) => call.includes("events")).length, 2);
   assert.deepEqual(
     logs.events["oce-agent-1"].map(({ object }) => object),
     ["Pod/undated", "Pod/worker-a", "Pod/agent-1-gateway-0"],
   );
-  // Only the terminating Gateway's own drain messages; the Agent Pod's log is not read.
+  // Only a remaining Gateway Pod's own drain messages; the Agent Pod's log is not read.
   assert.deepEqual(logs.gatewayDrain, {
     "agent-1-gateway-0": [
       "2026-10-11T01:32:40Z draining active work before stop with timeout 315000ms: 1 active chat run(s)",
     ],
   });
   assert.ok(!calls.some((call) => call.includes("agent-1-runtime-0")));
+  assert.deepEqual(calls.find((call) => call.includes("agent-1-gateway-0")).slice(1, 7), [
+    "-n",
+    "oce-agent-1",
+    "logs",
+    "agent-1-gateway-0",
+    "--container",
+    "gateway",
+  ]);
   assert.doesNotMatch(
     JSON.stringify(logs),
     /spec-private-value|QA_NATIVE_conversation-text|launcher-private-value/,
   );
+  // A single worker Pod is the Deployment read: no per-Pod copies.
+  platformPods.splice(0, 1);
+  await assert.rejects(
+    stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, { timeout: 10 }),
+  );
+  assert.equal(records.get("agent-3-stop-timeout-platform-logs").logs.workerPods, undefined);
 
   // A Compose control plane keeps the observation but has no in-cluster platform logs.
   records.clear();
