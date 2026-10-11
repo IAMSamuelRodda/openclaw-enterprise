@@ -45,8 +45,8 @@ import {
 
 // The two isolated cases mock child_process for the whole process, so they run
 // alone, first. Every other case owns its directories, servers and children and
-// mostly waits on stock Git; they register here and run concurrently in one
-// suite at the end of the file.
+// mostly waits on stock Git; they register here and run two at a time in one
+// suite at the end of the file, so the long push-policy case overlaps the rest.
 const cases = [];
 const test = (...registration) => cases.push(registration);
 
@@ -341,7 +341,9 @@ test("single-session launcher preserves native Git signal exit statuses", async 
     const timer = setTimeout(() => {
       readyReject(new Error("native Git signal test timed out"));
       stop();
-    }, 10000);
+      // A hang guard only: on a loaded host, 10 s could expire after readiness and
+      // kill Git before the process check below.
+    }, 30000);
     try {
       // A batch reply proves Git is alive, not that the launcher installed its handlers.
       // Signal the owned native child to exercise the launcher's child-exit mapping.
@@ -707,7 +709,7 @@ test("operator rejects unsafe or conflicting bound request files before admissio
 
 test(
   "native push policy protects every destination and preserves common-directory hooks",
-  { timeout: 60000 },
+  { timeout: 120000 },
   async (t) => {
     const origin = "https://localhost";
     const fixture = await startRegistryCredentialServiceFixture(t, {
@@ -832,7 +834,11 @@ test(
           allowFailure: true,
         });
         assert.notEqual(denied.code, 0, destinationAndRefs.join(" "));
-        assert.match(denied.stderr, /repository-push-ref-not-allowed/);
+        assert.match(
+          denied.stderr,
+          /repository-push-ref-not-allowed/,
+          destinationAndRefs.join(" "),
+        );
       }),
     );
     assert.equal(await snapshot(), before);
@@ -876,7 +882,7 @@ test(
   },
 );
 
-describe("repository credential client configuration", { concurrency: true }, () => {
+describe("repository credential client configuration", { concurrency: 2 }, () => {
   for (const registration of cases) {
     it(...registration);
   }
