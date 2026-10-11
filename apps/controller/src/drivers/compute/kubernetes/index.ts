@@ -11931,6 +11931,17 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   private workspaceNodeRelay(revision: AgentRevision): SandboxDriver | undefined {
     const sandboxDriver =
       revision.harness.mode === "dedicated" ? this.sandboxDriverForRevision(revision) : undefined;
+    if (
+      sandboxDriver?.harnessEndpoint !== undefined &&
+      sandboxDriver.implementation === "openshell" &&
+      sandboxDriver.workspaceNodePeerLabels === undefined
+    ) {
+      // Its supervisor opens the node connection; without exact peer labels the
+      // Gateway would admit none, and preparation would wait without a cause.
+      throw new ConfigurationFailure(
+        "An OpenShell SandboxDriver must implement workspaceNodePeerLabels.",
+      );
+    }
     return sandboxDriver?.harnessEndpoint !== undefined &&
       sandboxDriver.workspaceNodePeerLabels !== undefined &&
       this.options.executionCluster === undefined
@@ -11941,8 +11952,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   /**
    * The exact provider Pod labels of the revision's workspace-node relay and, while
    * preparation runs, of the serving predecessor's, so its node stays connected
-   * until activation pins the policy to this revision. A revision without a
-   * Sandbox contributes none.
+   * until activation pins the policy to this revision. Any activation pins it to
+   * the activated revision: a maintenance re-activation of the serving revision
+   * drops a prepared successor's relay until that successor's next preparation
+   * pass, as deleteUnwrittenAgentPolicies does for policy names. A revision
+   * without a Sandbox contributes none.
    */
   private async workspaceNodePeers(
     revision: AgentRevision,

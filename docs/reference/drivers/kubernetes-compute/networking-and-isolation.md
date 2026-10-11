@@ -184,10 +184,10 @@ revision: redeploy the Agent revision. For development, follow the
 [development recovery procedure](../../../guides/deploy/local-operations.md#build-images-for-local-kubernetes).
 
 The separately installed OpenShell gateway needs its own scoped DNS/API and
-callback policies. Its caller is the OpenShell supervisor Pod
-(`openshell.ai/managed-by=openshell`, `openshell.ai/boundary-role=supervisor`),
-which carries no `openclaw.dev` labels; supervisor-labelled peers admit it, not
-the ordinary profile. Platform services retain their existing Helm policy selectors.
+callback policies. Its caller, the OpenShell supervisor Pod
+(`openshell.ai/boundary-role=supervisor`), carries no `openclaw.dev` labels, so
+supervisor-labelled peers admit it; an Agent Gateway admits only its Sandbox's.
+Platform services keep their Helm policy selectors.
 
 Profile assignment is a trusted controller decision. The label qualifies a Pod
 for network grants but does not supply workload identity or authorization to

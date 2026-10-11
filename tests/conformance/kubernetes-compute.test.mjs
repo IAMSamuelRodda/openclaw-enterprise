@@ -10339,6 +10339,25 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     }
   }
   driver.apiClients = Promise.resolve(clients);
+  // What the workspace-node policy admitted each time Compute observed the
+  // provider Harness after provisioning: the relay must already be admitted.
+  const relayPeersAtHarnessObservation = [];
+  const listPods = core.listNamespacedPod;
+  core.listNamespacedPod = async (request) => {
+    if (
+      provisions.length > 0 &&
+      !request.labelSelector.includes("openclaw.dev/workload-role=gateway")
+    ) {
+      const latest = writes
+        .filter(
+          ({ metadata }) =>
+            metadata.name === `allow-gateway-workspace-node-${digest(revision.agentId)}`,
+        )
+        .at(-1);
+      relayPeersAtHarnessObservation.push(latest?.spec.ingress[0]?.from.length ?? 0);
+    }
+    return listPods(request);
+  };
   const expected = { namespaceId: tenant.id, agentId: revision.agentId, revisionId: revision.id };
 
   // The Agent Gateway must be available to mint node setup material. Its first
@@ -10461,6 +10480,8 @@ test("provider Harness endpoint owns Gateway transport through preparation and a
     ({ metadata }) => metadata.name === `allow-gateway-workspace-node-${digest(revision.agentId)}`,
   );
   assert.deepEqual(workspaceNodeWrites[0].spec.ingress, []);
+  assert.ok(relayPeersAtHarnessObservation.length > 0);
+  assert.ok(relayPeersAtHarnessObservation.every((peers) => peers === 1));
   assert.ok(peerLookups.every((id) => id === revision.id));
   const gatewayContainer = objects.get(key("Deployment", gatewayName, gatewayNamespace)).spec
     .template.spec.containers[0];
@@ -13466,7 +13487,7 @@ test("an OpenShell supervisor reaches only its own Agent's Gateway", async () =>
           "openshell.ai/boundary-role": "supervisor",
         }
       : undefined;
-  const driver = new KubernetesComputeDriver(
+  const installation = () =>
     options({
       runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
       network: {
@@ -13478,25 +13499,24 @@ test("an OpenShell supervisor reaches only its own Agent's Gateway", async () =>
           port: 8080,
         },
       },
-    }),
-    {
-      sandboxDriver: {
-        id: "sandbox-provider",
-        implementation: "openshell",
-        async provisionHarness() {
-          assert.fail("rendering policies must not provision a Harness");
-        },
-        async harnessEndpoint() {
-          return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
-        },
-        async workspaceNodePeerLabels(context) {
-          assert.equal(context.namespace.id, context.revision.namespaceId);
-          return peerLabels(context);
-        },
-        async cleanup() {},
+    });
+  const driver = new KubernetesComputeDriver(installation(), {
+    sandboxDriver: {
+      id: "sandbox-provider",
+      implementation: "openshell",
+      async provisionHarness() {
+        assert.fail("rendering policies must not provision a Harness");
       },
+      async harnessEndpoint() {
+        return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
+      },
+      async workspaceNodePeerLabels(context) {
+        assert.equal(context.namespace.id, context.revision.namespaceId);
+        return peerLabels(context);
+      },
+      async cleanup() {},
     },
-  );
+  });
   driver.apiClients = Promise.resolve({ objects: {} });
   const d = routedRevision(driver, {
     id: "revision-d1",
@@ -13584,6 +13604,25 @@ test("an OpenShell supervisor reaches only its own Agent's Gateway", async () =>
   await assert.rejects(render(d), /Workspace-node peer Pod labels cannot be empty/);
   peerLabels = () => ({ "not a key": "x" });
   await assert.rejects(render(d), /Workspace-node peer label keys/);
+
+  // An OpenShell Driver that cannot name its relay fails closed with a cause.
+  const unnamed = new KubernetesComputeDriver(installation(), {
+    sandboxDriver: {
+      id: "sandbox-provider",
+      implementation: "openshell",
+      async provisionHarness() {
+        assert.fail("rendering policies must not provision a Harness");
+      },
+      async harnessEndpoint() {
+        return { url: "ws://tenant--sandbox.openshell.localhost:8080/" };
+      },
+      async cleanup() {},
+    },
+  });
+  assert.throws(
+    () => unnamed.agentNetworkPolicies(d, target),
+    /OpenShell SandboxDriver must implement workspaceNodePeerLabels/,
+  );
 });
 
 // Finding 861: the Agent-scoped policies share one name per Agent and each revision
