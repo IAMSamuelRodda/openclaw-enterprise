@@ -960,6 +960,34 @@ test("kubernetes-secret-driver deletes the exact Secret a refused create stored"
   }
 });
 
+test("kubernetes-secret-driver refuses a create answered under another name", async () => {
+  // A nonconforming API server answers the create with exact OCC ownership but another
+  // metadata.name. No backendRef names that object: the create is refused and the object it
+  // stored under this create's name is deleted, pinned to the answered uid (finding 1121).
+  const { client, create } = webhookClient({
+    answer: (answered) => {
+      answered.metadata.name = "secret-someone-else";
+    },
+  });
+  await assert.rejects(create, ownershipRefused);
+  assert.equal(client.secrets.size, 0);
+  assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
+  assert.deepEqual(client.deleted, client.requested);
+
+  // Nothing under this create's name does not prove nothing was stored: the object may live
+  // under the name it was answered with, so the outcome is reported as unknown.
+  {
+    const { client, create } = webhookClient({
+      answer: (answered) => {
+        answered.metadata.name = "secret-someone-else";
+      },
+      afterStore: (fake, key) => fake.secrets.delete(key),
+    });
+    await assert.rejects(create, cleanupFailed);
+    assert.equal(client.calls.deleteNamespacedSecret, 1);
+  }
+});
+
 test("kubernetes-secret-driver leaves an object that is no longer the refused answer alone", async () => {
   // An object that is no longer the one answered (replaced under that name, or rewritten
   // since) fails the delete preconditions and is left alone, and the driver reports that it
