@@ -14,10 +14,21 @@ test(
     // the parent owns. `longest` mirrors createServiceConfiguration's
     // socketDirectory(t, "rcs-") in the child, so that call keeps its directory here
     // instead of falling back to /tmp.
+    // After hooks run in registration order, and on a timeout they run while the body
+    // is still waiting. Register the kill first so the child has exited before
+    // socketDirectory's hook removes its TMPDIR.
+    let child;
+    t.after(async () => {
+      if (child && child.exitCode === null && child.signalCode === null) {
+        const exited = once(child, "exit");
+        child.kill("SIGKILL");
+        await exited;
+      }
+    });
     const temporaryRoot = await socketDirectory(t, "rcs-uncertain-", {
       longest: "rcs-XXXXXX/control-relay.sock",
     });
-    const child = fork(
+    child = fork(
       new URL("../fixtures/repository-credentials/metadata-uncertain-child.mjs", import.meta.url),
       [],
       {
@@ -26,20 +37,13 @@ test(
         stdio: ["ignore", "ignore", "ignore", "ipc"],
       },
     );
-    try {
-      const message = await Promise.race([
-        once(child, "message").then(([value]) => value),
-        once(child, "exit").then(() => {
-          throw new Error("metadata fixture exited before its report");
-        }),
-      ]);
-      assert.notEqual(message.type, "error", message.message);
-      assert.deepEqual(message, { type: "result", graceExpired: true, pendingCredentials: 1 });
-    } finally {
-      if (child.exitCode === null && child.signalCode === null) {
-        child.kill("SIGKILL");
-        await once(child, "exit");
-      }
-    }
+    const message = await Promise.race([
+      once(child, "message").then(([value]) => value),
+      once(child, "exit").then(() => {
+        throw new Error("metadata fixture exited before its report");
+      }),
+    ]);
+    assert.notEqual(message.type, "error", message.message);
+    assert.deepEqual(message, { type: "result", graceExpired: true, pendingCredentials: 1 });
   },
 );
