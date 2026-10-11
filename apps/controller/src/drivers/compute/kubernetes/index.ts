@@ -3396,13 +3396,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     this.validateChannelSecretBindings(configuration, secretBindings);
   }
 
+  // The Installation's runtime storage, which preparation also needs, is not the caller's to
+  // fix, so it stays with preparation.
   validateWorkspaceSetup(
     harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
-    if (this.options.runtime === undefined) {
-      throw new ConfigurationFailure("Workspace setup requires durable native runtime storage.");
-    }
     requireWorkspaceSetupConfiguration(configuration, harness.mode, callerSettingError);
   }
 

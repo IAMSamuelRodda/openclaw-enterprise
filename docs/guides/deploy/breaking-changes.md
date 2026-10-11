@@ -11,6 +11,29 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-11: Agent and Configuration saves refuse what deployment refuses
+
+**What breaks.** On Kubernetes Compute, Configuration create and update,
+provisioning and Preset saves answer `400` for an enabled unsupported
+`channels.<provider>`, a non-empty `auth`, an `env` or `env.vars` name starting
+`OPENAI_` or `ANTHROPIC_` (or a Codex login variable), and an authorization
+header on a selected model provider. Agent create and update refuse what
+deployment refused for the same Agent and Configuration: an Agent that is not
+`dedicated` (including an omitted `executionMode`) when a Sandbox Driver is
+selected (`400`; deployment answered `404`), a Harness the Configuration
+selects for the other execution mode (`400`), a Harness authentication,
+repository or initial workspace file setup the Compute Driver cannot deliver
+(`400` naming the setting, or `409`). Deployment names those Kubernetes
+settings too, instead of answering with fixed Harness authentication text.
+
+**Who is affected.** Clients that saved such values and fixed them before
+deploying. Stored Configurations and Agents still read.
+
+**How to tell.** The `400` names the setting or the execution mode.
+
+**Steps.** Fix the named setting or the Agent's `executionMode`, then save
+again.
+
 ## 2026-10-11: settings that took dedicated Agents down are refused earlier
 
 **What breaks.** Configuration create and update answer `400` for

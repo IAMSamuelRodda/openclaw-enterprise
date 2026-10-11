@@ -207,6 +207,7 @@ its optional integration is skipped.
 
 ## Changelog
 
+- 2026-10-11 15:00: Kubernetes deployment admission names the caller's Configuration setting for channel, credential and dedicated OpenClaw catalog refusals; Configuration save, provisioning and Preset save run the topology-independent ones through `validateConfiguration`; Agent create and update run deployment's Agent checks. (fix-1116-1117, findings 1116-1117)
 - 2026-10-11 13:00: Configuration save refuses a Codex approval policy the Gateway refuses and a literal `gateway.auth.password`; Kubernetes deployment admission and provisioning refuse the gateway password, channel topology and workspace-node plugin settings that preparation or the Gateway refused only after predecessors stopped. (fix-1112-1115, findings 1112-1115)
 - 2026-10-11 12:00: Configuration POST/PATCH admit every Configuration the Kubernetes Driver stores (6 x (1 MiB + 32 KiB) body) and check the create or update grant before reading the body. (fix-1118, finding 1118)
 

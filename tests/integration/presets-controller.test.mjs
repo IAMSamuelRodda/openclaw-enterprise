@@ -879,7 +879,6 @@ describe("Presets", { concurrency: 2 }, () => {
           models: {
             providers: {
               codex: {
-                apiKey: { source: "env", provider: "default", id: "OPENAI_API_KEY" },
                 models: [{ id: "{{ vars.model }}", name: "{{ vars.model }}" }],
               },
             },
@@ -1120,8 +1119,10 @@ describe("Presets", { concurrency: 2 }, () => {
     assert.deepEqual(configuration.data.values.gateway.auth, { password: gatewayPassword });
   });
 
-  test("SWE Agent Preset defaults to Astra and reuses an existing service-account Secret", async () => {
-    const fixture = await shared();
+  test("SWE Agent Preset defaults to Astra and reuses an existing service-account Secret", async (t) => {
+    // The SWE Preset enables Slack, which Agent save refuses without an Installation channel
+    // runtime, as deployment does.
+    const fixture = await createFixture(t, { channelRuntime: true });
     const namespace = await fixture.createNamespace("SWE Agent service account", { ready: true });
     const serviceAccount = await fixture.createSecret(
       namespace.id,
@@ -1169,7 +1170,22 @@ describe("Presets", { concurrency: 2 }, () => {
     assert.equal(retained.status, 200, JSON.stringify(retained.body));
     assert.deepEqual(retained.data.template, originalTemplate);
 
-    const configuration = await createAgentConfiguration(fixture, namespace.id, rendered);
+    // The channel editor binds the Slack tokens before the Agent is saved; Agent save refuses
+    // Slack references without bindings, as deployment does.
+    const slackSecrets = [
+      await fixture.createSecret(namespace.id, "SWE Slack app token", "synthetic-slack-app"),
+      await fixture.createSecret(namespace.id, "SWE Slack bot token", "synthetic-slack-bot"),
+    ];
+    const configuration = await createAgentConfiguration(fixture, namespace.id, {
+      ...rendered,
+      configuration: {
+        ...rendered.configuration,
+        secretBindings: {
+          SLACK_APP_TOKEN: { source: slackSecrets[0].ref },
+          SLACK_BOT_TOKEN: { source: slackSecrets[1].ref },
+        },
+      },
+    });
     assert.deepEqual(configuration.data.values.channels.slack.replyToModeByChatType, {
       channel: "all",
     });
@@ -1179,7 +1195,8 @@ describe("Presets", { concurrency: 2 }, () => {
       (await fixture.request("GET", `/namespaces/${namespace.id}/secrets`)).data.map(
         (secret) => secret.id,
       );
-    assert.deepEqual(await secretIds(), [serviceAccount.id]);
+    const existingSecretIds = [serviceAccount.id, ...slackSecrets.map((secret) => secret.id)];
+    assert.deepEqual((await secretIds()).sort(), existingSecretIds.toSorted());
     const created = [];
     for (const name of ["SWE existing service account", "SWE existing service account reuse"]) {
       const agent = await postAgent(fixture, namespace.id, rendered, configuration, { name });
@@ -1191,7 +1208,7 @@ describe("Presets", { concurrency: 2 }, () => {
       });
       created.push(agent);
     }
-    assert.deepEqual(await secretIds(), [serviceAccount.id]);
+    assert.deepEqual((await secretIds()).sort(), existingSecretIds.toSorted());
     for (const body of [installed.body, created[0].body]) {
       assert.equal(
         JSON.stringify(body).includes("synthetic-existing-service-account-token"),
