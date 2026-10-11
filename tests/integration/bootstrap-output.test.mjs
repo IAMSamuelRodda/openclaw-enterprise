@@ -44,7 +44,11 @@ test("protected bootstrap output rejects relative paths, existing files, symlink
 test("protected bootstrap output rejects oversized basenames", () => {
   const longBasename = "a".repeat(256);
   assert.throws(
-    () => bootstrapOutputPath(`/var/lib/openclaw/bootstrap/${longBasename}`, "OCC_BOOTSTRAP_PASSWORD_FILE"),
+    () =>
+      bootstrapOutputPath(
+        `/var/lib/openclaw/bootstrap/${longBasename}`,
+        "OCC_BOOTSTRAP_PASSWORD_FILE",
+      ),
     /255 characters/,
   );
 });
