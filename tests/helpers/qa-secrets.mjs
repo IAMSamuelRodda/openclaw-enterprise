@@ -1,7 +1,7 @@
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
-import { types } from "node:util";
+import { inspect, types } from "node:util";
 import {
   failureSecrets,
   maskPrivateKeyLines,
@@ -41,8 +41,7 @@ export function registerQaSecret(value) {
 
 // How deep redaction follows nested values (a cause chain, AggregateError
 // errors, a parsed response body). node:test prints only a few levels; a deeper
-// value is cut to "[Truncated]" rather than left unredacted. A value reached
-// twice is redacted once, at the depth it was first reached.
+// value is cut to "[Truncated]" rather than left unredacted.
 const maxErrorDepth = 8;
 // Read even when inherited: a DOMException's message, name and code are getters
 // on its prototype.
@@ -59,15 +58,20 @@ function isError(value) {
 // arrays, Maps, Sets and objects inside them. A thrown string is redacted too.
 // A value that holds no registered secret is returned untouched.
 //
-// Errors are updated in place. Any other object an error refers to (an
-// assertion's `actual`, a shared fixture) is never written: a redacted copy
-// takes its place in the error. When an error's field cannot be written (a
+// Errors are updated in place, including an Error that is only referenced (an
+// assertion's `expected`). Any other object an error refers to (an assertion's
+// `actual`, a shared fixture) is never written: a redacted copy takes its place
+// in the error. An object whose printed form comes from hidden state (a URL,
+// Headers, a Promise) is replaced by its redacted inspect text when that text
+// holds a secret. When an error's field cannot be written (a
 // DOMException's getter-only `message`, an own getter, a frozen error, a
 // throwing setter), a plain Error carrying the redacted fields replaces it. A
 // replacement keeps only redacted values, never the original. A value that
 // points back up its own chain becomes "[Circular]", so no cycle leads from a
 // replacement to an unredacted original. If redaction itself throws (a proxy
-// trap), a bare Error carrying only the redacted message is returned.
+// trap), a bare Error carrying only the redacted message is returned. Getters
+// run once per pass; one that returns a secret only on a later call can slip
+// past the first pass.
 export function redactQaError(error) {
   // Longest first, so a value containing another is replaced whole.
   const secrets = [...protectedValues].sort((a, b) => b.length - a.length);
@@ -119,11 +123,13 @@ export function redactQaError(error) {
       const bytes = redactBytes(new Uint8Array(value));
       return bytes instanceof Buffer ? bytes : value;
     }
-    if (done.has(value)) {
-      return done.get(value);
-    }
     if (active.has(value)) {
       return "[Circular]";
+    }
+    // A value first reached deeper may have been cut there; walk it again.
+    const cached = done.get(value);
+    if (cached && cached.depth <= depth) {
+      return cached.result;
     }
     if (depth > maxErrorDepth) {
       return "[Truncated]";
@@ -135,7 +141,7 @@ export function redactQaError(error) {
     } finally {
       active.delete(value);
     }
-    done.set(value, result);
+    done.set(value, { result, depth });
     return result;
   };
 
@@ -159,8 +165,21 @@ export function redactQaError(error) {
 
   // Arrays, Maps, Sets and other objects: the original when nothing changed,
   // otherwise a copy holding the redacted values (a plain object for anything
-  // that is not an array, Map or Set). Functions are left out of a copy.
+  // that is not an array, Map or Set). Functions are left out of a copy. An
+  // unchanged object that is not a plain one is checked through its printed
+  // form too: hidden state, a custom inspect method, a Map's own properties.
   const copyRedacted = (value, depth) => {
+    const copy = copyFields(value, depth);
+    const prototype = Object.getPrototypeOf(value);
+    if (copy !== value || prototype === Object.prototype || prototype === null) {
+      return copy;
+    }
+    const text = inspect(value, { depth: 2, getters: true });
+    const redacted = redactText(text);
+    return redacted === text ? value : redacted;
+  };
+
+  const copyFields = (value, depth) => {
     if (Array.isArray(value)) {
       const items = value.map((item) => redactValue(item, depth + 1));
       return items.every((item, index) => item === value[index]) ? value : items;

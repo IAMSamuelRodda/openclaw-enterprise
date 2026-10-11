@@ -967,6 +967,9 @@ test("QA error redaction covers causes, AggregateError errors and command output
     seen: new Set([`set ${value}`]),
     detail: new Detail(),
     actual: shared,
+    url: new URL(`https://registry.example.test/v2/?token=${value}`),
+    requestHeaders: new Headers({ authorization: `Bearer ${value}` }),
+    labels: Object.assign(new Map([["team", "qa"]]), { extra: `extra ${value}` }),
     loop,
     [symbol]: `symbol ${value}`,
     stdout: Buffer.concat([Buffer.from([0xff, 0x00]), Buffer.from(value), Buffer.from([0xfe])]),
@@ -980,6 +983,9 @@ test("QA error redaction covers causes, AggregateError errors and command output
   assert.equal(String(objects.detail.raw), "[REDACTED]");
   assert.equal(objects.actual.token, "[REDACTED]");
   assert.equal(shared.token, value);
+  assert.match(objects.url, /token=\[REDACTED\]/);
+  assert.match(objects.requestHeaders, /Bearer \[REDACTED\]/);
+  assert.match(objects.labels, /extra \[REDACTED\]/);
   assert.equal(objects.loop[0], "loop [REDACTED]");
   assert.equal(objects.loop[1], "[Circular]");
   assert.equal(objects[symbol], "symbol [REDACTED]");
@@ -1023,6 +1029,19 @@ test("QA error redaction covers causes, AggregateError errors and command output
   const fromHostile = redactQaError(hostile);
   assert.equal(fromHostile.message, "proxy [REDACTED]");
   assertClean(fromHostile);
+
+  // A value first reached at the depth bound (its fields cut there) is walked
+  // again when it is reached higher up, so the cut copy is not reused.
+  const reused = { body: { token: value } };
+  let chain = Object.assign(new Error("bottom"), { ref: reused });
+  for (let i = 0; i < 6; i += 1) {
+    chain = new Error(`link ${i}`, { cause: chain });
+  }
+  const reusedTop = Object.assign(new Error("reused", { cause: chain }), { ref: reused });
+  assert.equal(redactQaError(reusedTop), reusedTop);
+  assert.deepEqual(reusedTop.ref, { body: { token: "[REDACTED]" } });
+  assert.equal(reused.body.token, value);
+  assertClean(reusedTop);
 
   // An error without a secret is left as it is, cycle included.
   const clean = new Error("clean");
