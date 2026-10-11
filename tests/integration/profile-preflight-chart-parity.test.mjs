@@ -94,28 +94,33 @@ const oidcEndpoints = {
 // Long values are labelled by their length.
 const short = (value, max = 40) => (value.length > max ? `${value.length} characters` : value);
 
+const escape = (text) => text.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
 const namespaceRefusal = (field) =>
   new RegExp(
-    `${field} must be a Kubernetes namespace name \\(a DNS label of at most 63 characters\\)`,
+    `${escape(field)} must be a Kubernetes namespace name \\(a DNS label of at most 63 characters\\)`,
   );
 
-// Each case spawns its renderer and helm children in turn. Cases run in at most one worker
-// per CPU (and at least two), and the tests themselves run one after another, so the file
-// never runs more children than that.
+// Each case spawns its renderer and helm children in turn. A test runs its cases in at most
+// one worker per CPU (and at least two), and the tests run one after another, so this file
+// runs at most that many children at once (the CI lane may run other files beside it).
 const slots = Math.max(2, availableParallelism());
 async function each(cases, check) {
   let next = 0;
-  const results = await Promise.allSettled(
+  let failure;
+  await Promise.all(
     Array.from({ length: slots }, async () => {
-      while (next < cases.length) {
-        await check(cases[next++]);
+      while (failure === undefined && next < cases.length) {
+        try {
+          await check(cases[next++]);
+        } catch (error) {
+          failure ??= { error };
+        }
       }
     }),
   );
-  // Every worker has finished, so no child outlives its test; report the first failure.
-  const failed = results.find((result) => result.status === "rejected");
-  if (failed) {
-    throw failed.reason;
+  // Every worker has stopped, so no child outlives its test; report the first failure.
+  if (failure) {
+    throw failure.error;
   }
 }
 
@@ -135,17 +140,22 @@ function run(command, args) {
 
 async function renderProfile(profileInput, profile = "openclaw") {
   const directory = mkdtempSync(join(tmpdir(), "oce-profile-parity-"));
-  writeFileSync(join(directory, "input.json"), JSON.stringify(profileInput));
-  const renderer = await run(process.execPath, [
-    "scripts/render-installation-profile.mjs",
-    "--profile",
-    profile,
-    "--input",
-    join(directory, "input.json"),
-    "--out-dir",
-    directory,
-  ]);
-  return { directory, renderer };
+  try {
+    writeFileSync(join(directory, "input.json"), JSON.stringify(profileInput));
+    const renderer = await run(process.execPath, [
+      "scripts/render-installation-profile.mjs",
+      "--profile",
+      profile,
+      "--input",
+      join(directory, "input.json"),
+      "--out-dir",
+      directory,
+    ]);
+    return { directory, renderer };
+  } catch (error) {
+    rmSync(directory, { recursive: true, force: true });
+    throw error;
+  }
 }
 
 // Renders a profile, hands `{ directory, renderer }` to `check`, then removes the output.
@@ -321,7 +331,7 @@ test(
         controlPlane: { envoyNamespace },
         values: { gatewayRouting: { envoyNamespace } },
         accepted,
-        chartError: namespaceRefusal("gatewayRouting\\.envoyNamespace"),
+        chartError: namespaceRefusal("gatewayRouting.envoyNamespace"),
       });
       assertCompute(
         { network, gatewayRouting: { ...routing, envoyNamespace } },
@@ -364,7 +374,7 @@ test(
   { skip: helmSkip },
   () => {
     const podLabels = { app: "occ-operator" };
-    const dnsRefusal = namespaceRefusal("dns\\.namespace");
+    const dnsRefusal = namespaceRefusal("dns.namespace");
     return each(namespaceCases, async ([namespace, accepted]) => {
       const label = short(namespace);
       await assertParity({
@@ -372,7 +382,7 @@ test(
         controlPlane: { apiClients: [{ namespace, podLabels }] },
         values: { api: { clients: [{ namespace, podLabels }] } },
         accepted,
-        chartError: namespaceRefusal("api\\.clients\\[0\\]\\.namespace"),
+        chartError: namespaceRefusal("api.clients[0].namespace"),
       });
       const dns = { namespace, podLabels: { "k8s-app": "kube-dns" } };
       await assertParity({
@@ -465,9 +475,13 @@ test("node selectors get the same verdict from preflight and the chart", { skip:
       profile.runtime[field] = nodeSelector;
     }
     await withProfile(profile, ({ renderer }) => {
-      assert.equal(renderer.ok, accepted, `runtime selectors ${label}`);
+      assert.equal(renderer.ok, accepted, `runtime selectors ${label}\n${renderer.output}`);
       for (const field of accepted ? [] : fields) {
-        assert.match(renderer.output, new RegExp(`runtime\\.${field} (keys|values) must be`));
+        assert.match(
+          renderer.output,
+          new RegExp(`runtime\\.${field} (keys|values) must be`),
+          `runtime.${field} ${label}`,
+        );
       }
     });
   });
@@ -516,6 +530,7 @@ test("peer Pod selectors get Compute's verdict in preflight, and the chart rende
     const label = JSON.stringify(podLabels);
     admitDns({ namespace: "kube-system", podLabels }, accepted, label);
     const profile = input({});
+    // Each path names the field to set and, below, the field the refusal must name.
     for (const path of peers) {
       const keys = path.split(".");
       const field = keys.pop();
@@ -525,8 +540,11 @@ test("peer Pod selectors get Compute's verdict in preflight, and the chart rende
       assert.equal(renderer.ok, accepted, `${label}: renderer\n${renderer.output}`);
       if (!accepted) {
         for (const path of peers) {
-          const field = path.replaceAll(".", "\\.");
-          assert.match(renderer.output, new RegExp(`${field} (?:keys|values) must be`), label);
+          assert.match(
+            renderer.output,
+            new RegExp(`${escape(path)} (?:keys|values) must be`),
+            label,
+          );
         }
         return;
       }
@@ -576,7 +594,6 @@ test(
   },
 );
 
-const digest = `@sha256:${"a".repeat(64)}`;
 fieldParity("controller image references get the same verdict from preflight and the chart", {
   cases: [
     ["registry.example.invalid/controller", true],
@@ -588,8 +605,8 @@ fieldParity("controller image references get the same verdict from preflight and
     ["_registry.example.invalid/controller", false],
   ],
   label: (name) => name,
-  controlPlane: (name) => ({ controllerImage: name + digest }),
-  values: (name) => ({ images: { controller: name + digest } }),
+  controlPlane: (name) => ({ controllerImage: `${name}@sha256:${"a".repeat(64)}` }),
+  values: (name) => ({ images: { controller: `${name}@sha256:${"a".repeat(64)}` } }),
   chartError: /images\.controller must be an approved immutable SHA-256 image reference/,
 });
 
@@ -655,13 +672,12 @@ test(
   },
 );
 
-const label63 = "a".repeat(63);
 fieldParity("bootstrap password claim names get the same verdict from preflight and the chart", {
   cases: [
     ["occ-bootstrap-admin-password", true],
-    [label63, true],
-    [`${label63}.${label63}.${label63}.${"a".repeat(61)}`, true],
-    [`${label63}.${label63}.${label63}.${"a".repeat(62)}`, false],
+    ["a".repeat(63), true],
+    [`${"a".repeat(63)}.`.repeat(3) + "a".repeat(61), true],
+    [`${"a".repeat(63)}.`.repeat(3) + "a".repeat(62), false],
     // Kubernetes admits a long single-segment DNS-subdomain name.
     ["a".repeat(64), true],
     ["a".repeat(253), true],
@@ -909,7 +925,7 @@ test(
       controlPlane: { databaseCa: { secretName } },
       values: { database: { caSecretName: secretName } },
       accepted: refusal === undefined,
-      chartError: new RegExp(refusal?.replace(/[.*+?^${}()|[\]\\]/g, "\\$&") ?? "^$"),
+      chartError: new RegExp(refusal === undefined ? "^$" : escape(refusal)),
     }));
     // Finding 1059: the database and repository public CA settings may share one trust bundle,
     // but the bundle stays apart from the repository credentials.
