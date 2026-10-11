@@ -857,6 +857,18 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
     ],
   },
   {
+    name: "preflight refuses ChatGPT admin Secret names that Kubernetes refuses",
+    profile: "codex",
+    input: managedCodexInput,
+    cases: [
+      [
+        "codex.managedServiceAccounts.adminSecretName",
+        ["Bad_Name", "-chatgpt-admin", "c".repeat(254)],
+        "must be a Kubernetes resource name",
+      ],
+    ],
+  },
+  {
     name: "preflight refuses ChatGPT admin and repository Secrets that hold other credentials",
     profile: "codex",
     input: () => managedCodexInput({ repository: repositoryConfiguration() }),
