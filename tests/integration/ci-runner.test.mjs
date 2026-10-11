@@ -20,6 +20,11 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 
+// Fixtures live under tmpdir(), which may itself sit inside an unrelated Git
+// checkout. Stop Git's repository search at tmpdir() so the runner never reads
+// that checkout's HEAD as the fixture's source SHA.
+const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "ci-runner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -41,6 +46,7 @@ function runnerEnv(env = {}) {
     CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
     // Fixture failures quote this value; the reporter must redact env values.
     CI_RUNNER_FIXTURE_CREDENTIAL: "secretauthvalue",
+    ...fixtureGitEnv,
     ...env,
   };
 }
@@ -2740,7 +2746,12 @@ test("run keeps bounded Agent namespace activity from passing k3d files, alone a
     {
       cwd: repositoryRoot,
       encoding: "utf8",
-      env: { ...process.env, GITHUB_SHA: currentSha(), OCC_KUBECTL_BIN: kubectl },
+      env: {
+        ...process.env,
+        ...fixtureGitEnv,
+        GITHUB_SHA: currentSha(),
+        OCC_KUBECTL_BIN: kubectl,
+      },
       timeout: 30_000,
     },
   );

@@ -41,10 +41,21 @@ export function fixturePreparationMetrics(stderr) {
   });
 }
 
+// The CLI watchdogs catch a preparation that never ends: one whose own timeouts failed
+// to stop a hung command. The asynchronous one is generous because it only fires on a
+// hang, and concurrent cases on a loaded host stretch a passing preparation (up to about
+// 40 s at four copies of the k3d file on four CPUs). The synchronous one runs a single
+// preparation at a time and keeps 30 s, so a file of sequential hung cases still fails
+// within its CI file timeout. A hung fake command exits on its own only after both have
+// fired, so a preparation that waits for it still fails on the watchdog.
+const asyncWatchdogMs = 90_000;
+const syncWatchdogMs = 30_000;
+const hungCommandExitMs = asyncWatchdogMs + 30_000;
+
 // spawnSync's result shape and watchdog, asynchronously: it resolves once the child has
-// exited and closed its output. A child still running after 30 s gets SIGTERM and an
-// ETIMEDOUT error, and its output pipes are closed, as spawnSync does. Unlike spawnSync,
-// output is not capped at 1 MiB (these scripts write a few kilobytes).
+// exited and closed its output. A child still running after the watchdog gets SIGTERM and
+// an ETIMEDOUT error, and its output pipes are closed, as spawnSync does. Unlike
+// spawnSync, output is not capped at 1 MiB (these scripts write a few kilobytes).
 function runAsync(env, script, args) {
   return new Promise((resolve) => {
     const child = spawn(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
@@ -63,7 +74,7 @@ function runAsync(env, script, args) {
       child.kill("SIGTERM");
       child.stdout.destroy();
       child.stderr.destroy();
-    }, 30_000);
+    }, asyncWatchdogMs);
     child.on("error", (spawnError) => (error ??= spawnError));
     child.on("close", (status, signal) => {
       clearTimeout(timer);
@@ -152,9 +163,9 @@ function finish(stdout = "") {
   process.exit(0);
 }
 // An engine or node command that does not answer; preparation must time it out. It exits
-// on its own later, so a regression cannot leave it running.
+// on its own after the CLI watchdogs, so a regression cannot leave it running.
 async function hang() {
-  setTimeout(() => process.exit(124), 40_000);
+  setTimeout(() => process.exit(124), ${hungCommandExitMs});
   await new Promise(() => {});
 }
 async function readInput() {
@@ -573,7 +584,7 @@ if (command === "k3d") {
       if (escaped) process.on("SIGTERM", () => {});
       // A descendant that shares the output pipes, as a credential helper would.
       // The timeout must reach it, or "close" never comes.
-      const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, 40_000)"], {
+      const descendant = spawn(process.execPath, ["-e", "setTimeout(() => {}, ${hungCommandExitMs})"], {
         stdio: ["ignore", "inherit", "inherit"],
         detached: escaped,
       });
@@ -752,7 +763,7 @@ throw new Error("Unexpected external command: " + command + " " + JSON.stringify
     spawnSync(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
       cwd: repositoryRoot,
       encoding: "utf8",
-      timeout: 30_000,
+      timeout: syncWatchdogMs,
       env,
     });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
