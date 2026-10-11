@@ -303,8 +303,8 @@ test("Secret storage requires a ready Namespace and no Agent owner before any ga
 });
 
 test("Secret bindings freeze public refs in revisions while value-only updates keep bindings unchanged", async () => {
-  const f = await fixture();
-  const { agent, configure, createSecret, deploy, reconfigure, secretDriver } = f;
+  const { agent, configure, createSecret, deploy, reconfigure, secretDriver, ...f } =
+    await fixture();
   const secret = await createSecret("model-key", "sk-test-v1");
   f.grantAgentSecretOperate(agent, secret);
   const secretBindings = gatewayBinding(secret.ref);
@@ -376,8 +376,8 @@ test("Secret bindings can be shared inside a Namespace and still deny cross-Name
 });
 
 test("Secret material, metadata, and binding permissions stay separate", async () => {
-  const f = await fixture();
-  const { configure, controller, createAgent, namespace, reconfigure, updateAgent } = f;
+  const { configure, controller, createAgent, namespace, reconfigure, updateAgent, ...f } =
+    await fixture();
   const secret = await f.createSecret("permission-boundary-key", "sk-test-boundary");
 
   await assert.rejects(
@@ -525,8 +525,7 @@ test("deploying a bound Secret requires both the caller and Agent service princi
 });
 
 test("Secret binding admission fails closed for missing selection and backend identity drift", async () => {
-  const f = await fixture();
-  const { agent, controller, deploy, namespace, secretDriver } = f;
+  const { agent, controller, deploy, namespace, secretDriver, ...f } = await fixture();
   const secret = await f.createSecret("model-key", "sk-test-backend");
   f.grantAgentSecretOperate(agent, secret);
   await f.assignBound(secret);
@@ -552,8 +551,7 @@ test("Secret binding admission fails closed for missing selection and backend id
 });
 
 test("bound Secrets block deletion across current Configuration and admitted deployment dependencies", async () => {
-  const f = await fixture();
-  const { agent, controller, namespace, secretDriver } = f;
+  const { agent, controller, namespace, secretDriver, ...f } = await fixture();
   const secret = await f.createSecret("model-key", "sk-test-delete");
   f.grantAgentSecretOperate(agent, secret);
   const configuration = await f.configure(gatewayBinding(secret.ref));
@@ -631,10 +629,10 @@ test("channel directory lookup refuses saved IDs with C0 controls or DEL before 
     "U\u00802",
     "U\u00852",
     "U\u009f2",
-    "U 2",
-    "U 2",
-    "U 2",
-    "U﻿2",
+    "U\u00a02",
+    "U\u20282",
+    "U\u20292",
+    "U\ufeff2",
     "U\ud8002",
     "U\u{1f600}2",
   ]) {
@@ -666,7 +664,7 @@ test("Secret values are checked before the Secret Driver sees them, on create an
     ["bad\u0000value", "INVALID_VALUE"],
     ["lone \ud800 surrogate", "INVALID_VALUE"],
     [`${largest}x`, "TOO_LONG"],
-    ["é".repeat(32_769), "TOO_LONG"],
+    ["\u00e9".repeat(32_769), "TOO_LONG"],
   ]) {
     const invalid = (error) => error instanceof SecretValueError && error.code === code;
     await assert.rejects(createSecret(`rejected-${code}`, value), invalid);
