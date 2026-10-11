@@ -141,12 +141,13 @@ describe("repository credential router", { concurrency: true }, () => {
       ),
       ["A", "Z", "a"],
     );
+    const duplicated = [...material.manifest.bindings, ...(await relocated(material, reused))];
     for (const manifest of [
       { ...material.manifest, generation: "0".repeat(64) },
       // A self-consistent digest cannot authorize noncanonical binding order
       // or one session bound to two references.
       manifestOf([...material.manifest.bindings].reverse()),
-      manifestOf([...material.manifest.bindings, ...(await relocated(material, reused))]),
+      manifestOf(duplicated),
     ]) {
       await writeManifest(material, manifest);
       await assert.rejects(readRuntimeRepositoryManifest(material.root), {
@@ -479,6 +480,7 @@ describe("repository credential router", { concurrency: true }, () => {
     });
     assert.notEqual(deniedUntouched.code, 0);
     assert.equal(await targetHead(), head);
+    assert.equal(await tracked(target), "second\n");
     assert.equal(await readFile(join(target, "untouched"), "utf8"), "local changes\n");
     await native(["-C", target, "checkout", "--", "untouched"]);
     for (const staged of [false, true]) {
