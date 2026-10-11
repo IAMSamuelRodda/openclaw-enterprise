@@ -404,7 +404,7 @@ test("QA log redaction hides JSON-escaped, base64 and percent-encoded copies of 
   const encoded = [
     json,
     // Go's encoding/json (kube API errors) also escapes <, > and &.
-    json.replace("<", "\\u003c").replace(">", "\\u003e").replace("&", "\\u0026"),
+    json.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026"),
     Buffer.from(value).toString("base64"),
     Buffer.from(value).toString("base64url"),
     encodeURIComponent(value),

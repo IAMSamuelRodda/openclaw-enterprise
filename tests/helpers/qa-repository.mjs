@@ -338,10 +338,11 @@ export function describeStopObservation(observation) {
 
 const platformLogLines = 600;
 const platformLogLineChars = 2_000;
-// Fixed launcher settings, not secrets: the generated cluster name, its state
-// directory and the public k3s image appear on many lines, and replacing them (or
-// "kubernetes") would garble the logs. Image overrides and anything secret-bearing
-// stay private.
+// Fixed launcher settings, not secrets: the generated cluster and project name,
+// its state directory (under the runner's temp directory), the k3s image the
+// workflows pin and the driver names appear on many lines, and replacing them (or
+// "kubernetes") would garble the logs. The controller, runtime and repository
+// image overrides and anything secret-bearing stay private.
 const publicLauncherSettings = new Set([
   "OCC_DEVELOPMENT_COMPOSE_PROJECT",
   "OCC_DEVELOPMENT_COMPUTE_DRIVER",

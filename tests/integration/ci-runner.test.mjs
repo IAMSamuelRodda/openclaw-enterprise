@@ -2014,6 +2014,18 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
       "[redacted credential-bearing line]",
     );
   }
+  // A password with both "@" and "/", and a user part with "?" or "#", lose it all.
+  const mixed = syntheticCredentialUrl({
+    username: "u",
+    password: "p@ss/w0rd-tail",
+    host: "host",
+    port: 1,
+    pathname: "/db",
+  });
+  assert.equal(redactLogLine(mixed, secrets, 1_000), "https://[redacted]@host:1/db");
+  for (const odd of ["https://user?x@host/p", "https://user#x@host/p"]) {
+    assert.equal(redactLogLine(odd, secrets, 1_000), "https://[redacted]@host/p");
+  }
   // A path "@" (an npm scope) is not userinfo, and plain URLs stay readable.
   for (const line of [
     "stdout: GET https://registry.npmjs.org/@openclaw/cli 404",
@@ -2058,6 +2070,33 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
     ),
     [marker, marker, marker, marker, "end"],
   );
+  // A PGP key block counts; an element holding "\n" itself keeps the mapping.
+  assert.deepEqual(
+    redactOutputLines(
+      [
+        "x\ny",
+        "-----BEGIN PGP PRIVATE KEY BLOCK-----",
+        ...body,
+        "-----END PGP PRIVATE KEY BLOCK-----",
+        "after",
+      ],
+      secrets,
+      "",
+      1_000,
+    ),
+    ["x\ny", marker, marker, marker, marker, "after"],
+  );
+  // An orphan END masks a bounded number of lines above it, not the whole tail.
+  const orphan = redactOutputLines(
+    [...Array.from({ length: 300 }, (_, index) => `line ${index}`), ...key.slice(1)],
+    secrets,
+    "",
+    1_000,
+  );
+  assert.equal(orphan.length, 303);
+  assert.equal(orphan[0], "line 0");
+  assert.equal(orphan[299], marker);
+  assert.equal(orphan.filter((line) => line === marker).length, 257);
   // Lines without a key keep the per-line behaviour.
   assert.deepEqual(redactOutputLines(["plain", "key jobonlyopaque123"], secrets, "", 1_000), [
     "plain",
@@ -2067,12 +2106,21 @@ test("the redactor removes URL userinfo of any shape and multi-line private keys
   // The container log projection follows the same rules.
   const projected = projectContainerLog(
     {
-      lines: ["ready", ...key, `dial ${slash}`, "done"],
+      lines: ["ready", ...key, `dial ${slash}`, "Authori\u0000zation: synthetic-xyz123", "done"],
       stream: { error: ["follow failed", ...key].join("\n") },
     },
     secrets,
   );
-  assert.deepEqual(projected.lines, ["ready", marker, marker, marker, marker, marker, "done"]);
+  assert.deepEqual(projected.lines, [
+    "ready",
+    marker,
+    marker,
+    marker,
+    marker,
+    marker,
+    marker,
+    "done",
+  ]);
   assert.doesNotMatch(JSON.stringify(projected), /synthetic|pa\/ss/);
 });
 

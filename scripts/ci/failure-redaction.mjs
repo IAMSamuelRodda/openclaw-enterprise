@@ -26,8 +26,9 @@ const publicEnvNames = new Set([
   "TMPDIR",
   "USER",
 ]);
+// PEM keys, and PGP's "PRIVATE KEY BLOCK" armor.
 const privateKeyShape =
-  /-----BEGIN [A-Z ]*PRIVATE KEY-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY-----|$)/gu;
+  /-----BEGIN [A-Z ]*PRIVATE KEY(?: BLOCK)?-----[\s\S]*?(?:-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----|$)/gu;
 const secretShapes = [
   privateKeyShape,
   /\b(?:[Bb]earer|BEARER|Basic|Token)\s+\S{8,}/gu,
@@ -37,10 +38,13 @@ const secretShapes = [
   /\b(?:xox[abposr]|xapp)-[A-Za-z0-9-]{8,}/gu,
   /\bA[KS]IA[A-Z0-9]{16}\b/gu,
 ];
-// URL userinfo, after the controller's URL_CREDENTIAL (apps/controller/src/logging.ts):
-// a user part without "/", then an optional password that may hold "/" (or an
-// unescaped "@", whose remainder the trailing group takes).
-const urlCredentialSource = String.raw`:\/\/[^\s/?#@:]*(?::[^\s@]*)?@(?:[^\s/?#@]*@)*`;
+// URL userinfo, broader than the controller's URL_CREDENTIAL (apps/controller/src/logging.ts)
+// on purpose: a user part without "/", then an optional password that may hold any
+// non-space character but "@" (so "/", "?" and "#" too), and a trailing group that
+// takes the rest of a password with unescaped "@"s. A path "@" (an npm scope) after
+// a plain host is not userinfo; after "host:port/" it is redacted anyway, which is
+// the safe side.
+const urlCredentialSource = String.raw`:\/\/[^\s/@:]*(?::[^\s@]*)?@(?:[^\s@]*@)*`;
 const urlCredential = new RegExp(urlCredentialSource, "gu");
 const secretAssignment =
   /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?["']?\s*[:=]\s*["']?)[^\s"',;}&]+/giu;
@@ -141,7 +145,7 @@ export function redactFailure(error, secrets, root) {
 // Value-level redaction cannot see every credential, so lines that name one are
 // dropped whole, as for followed container logs (k3d-diagnostics.mjs).
 // Any scheme's userinfo counts (postgresql://, redis://, git+ssh://).
-export const credentialLine = new RegExp(
+const credentialLine = new RegExp(
   String.raw`authorization|bearer\s|private.?key|-----BEGIN|${urlCredentialSource}`,
   "i",
 );
@@ -150,6 +154,11 @@ const credentialToken = /\b(?:Basic|Token)\s+\S{8,}/;
 const namesCredential = (line) => credentialLine.test(line) || credentialToken.test(line);
 // Control characters can split a keyword or a private key header.
 const stripControl = (text) => stripVTControlCharacters(text).replace(/[^\P{Cc}\n\t]/gu, "");
+
+// Whether a raw line names a credential once control characters are gone.
+export function isCredentialLine(line) {
+  return namesCredential(stripControl(line));
+}
 
 function dropCredentialLines(text) {
   return text
@@ -185,24 +194,45 @@ export function redactFailureDetail(error, secrets, root) {
   return message === undefined && stack === undefined ? undefined : { message, stack };
 }
 
-const privateKeyEnd = /-----END [A-Z ]*PRIVATE KEY-----/u;
+const privateKeyEnd = /-----END [A-Z ]*PRIVATE KEY(?: BLOCK)?-----/u;
 const privateKeyLine = "[redacted credential-bearing line]";
+// Longer than any PEM key; an orphan END masks at most this many lines above it.
+const orphanKeyLines = 256;
 
 // Output is redacted line by line, so a plain-text private key spread over lines
 // would keep its body. This replaces every line of a key with a marker, keeping
 // the line count: privateKeyShape runs over the joined text, an unterminated key
 // runs to the end, and an END line with no BEGIN before it (a tail that starts
-// inside a key) takes every line above it.
+// inside a key) takes the lines above it.
 export function maskPrivateKeyLines(lines) {
   const clean = lines.map((line) => stripControl(String(line)));
   const text = clean.join("\n");
+  // Each element's start offset in the joined text; an element may hold "\n" itself.
+  const starts = [];
+  let offset = 0;
+  for (const line of clean) {
+    starts.push(offset);
+    offset += line.length + 1;
+  }
+  const lineAt = (position) => {
+    let low = 0;
+    let high = starts.length - 1;
+    while (low < high) {
+      const middle = Math.ceil((low + high) / 2);
+      if (starts[middle] <= position) {
+        low = middle;
+      } else {
+        high = middle - 1;
+      }
+    }
+    return low;
+  };
   const masked = [...lines];
   const mask = (from, to) => {
-    for (let index = from; index <= to && index < masked.length; index += 1) {
+    for (let index = Math.max(0, from); index <= to && index < masked.length; index += 1) {
       masked[index] = privateKeyLine;
     }
   };
-  const lineAt = (offset) => text.slice(0, offset).split("\n").length - 1;
   const end = privateKeyEnd.exec(text);
   let first = text.length;
   for (const match of text.matchAll(privateKeyShape)) {
@@ -210,7 +240,8 @@ export function maskPrivateKeyLines(lines) {
     mask(lineAt(match.index), lineAt(match.index + match[0].length));
   }
   if (end && end.index < first) {
-    mask(0, lineAt(end.index));
+    const endLine = lineAt(end.index);
+    mask(endLine - orphanKeyLines, endLine);
   }
   return masked;
 }

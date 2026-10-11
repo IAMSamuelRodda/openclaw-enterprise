@@ -4,24 +4,30 @@ import { open } from "node:fs/promises";
 import {
   failureSecrets,
   maskPrivateKeyLines,
-  redactOutputLines,
+  redactOutputLine,
 } from "../../scripts/ci/failure-redaction.mjs";
 
 const protectedValues = new Set();
 
 // The forms a registered value takes in logs and API errors besides itself:
 // JSON-escaped (pino's JSON lines, and Go's, which also escapes <, > and &),
-// base64 (a Secret's `data` in a kube API error) and percent-encoded.
+// base64 (a Secret's `data` in a kube API error) and percent-encoded. Values
+// shorter than 8 characters register only themselves.
 export function qaSecretVariants(value) {
+  if (value.length < 8) {
+    return [value];
+  }
   const json = JSON.stringify(value).slice(1, -1);
+  const goJson = json.replace(
+    /[<>&\u2028\u2029]/gu,
+    (character) => `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`,
+  );
   const bytes = Buffer.from(value, "utf8");
   return [
     ...new Set([
       value,
       json,
-      json.replace(/[<>&\u2028\u2029]/gu, (character) => {
-        return `\\u${character.charCodeAt(0).toString(16).padStart(4, "0")}`;
-      }),
+      goJson,
       bytes.toString("base64"),
       bytes.toString("base64url"),
       encodeURIComponent(value),
@@ -75,12 +81,13 @@ export function redactedQaTail(text, env, { lines, lineChars }) {
   ].sort(([a], [b]) => b.length - a.length);
   // A private key's body lines are found across the whole text, so a key that
   // starts above the tail still loses the lines inside it.
-  const tail = maskPrivateKeyLines(
+  return maskPrivateKeyLines(
     String(text ?? "")
       .trimEnd()
       .split("\n"),
-  ).slice(-lines);
-  return redactOutputLines(tail, secrets, "", lineChars);
+  )
+    .slice(-lines)
+    .map((line) => redactOutputLine(line, secrets, "", lineChars));
 }
 
 export async function protectedText(path, label) {

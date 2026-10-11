@@ -5,10 +5,11 @@ import { mkdir, open, readdir, readFile, rm, statfs, writeFile } from "node:fs/p
 import { join } from "node:path";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
 import {
-  credentialLine,
   failureSecrets,
+  isCredentialLine,
   maskPrivateKeyLines,
   redactLogLine,
+  redactOutputLine,
 } from "./failure-redaction.mjs";
 
 export async function k3dHostMetrics(directory) {
@@ -416,9 +417,6 @@ const MAX_CONTAINER_LOG_RECORDS = 8;
 const MAX_CONTAINER_LOG_INPUT_BYTES = 4 * 1024 * 1024;
 const CONTAINER_LOG_LINES = 1_500;
 const CONTAINER_LOG_LINE_CHARS = 1_000;
-// Value-level redaction keeps the credential lifecycle lines a slow stop needs;
-// these lines (failure-redaction.mjs's credentialLine) are dropped whole.
-const CONTAINER_LOG_SECRET_LINE = credentialLine;
 
 function eventStatus(object) {
   return {
@@ -451,11 +449,9 @@ export function projectContainerLog(value, secrets = []) {
   const lines = maskPrivateKeyLines(value.lines.filter((line) => typeof line === "string"));
   const kept = lines
     .slice(-CONTAINER_LOG_LINES)
-    .map((line) =>
-      CONTAINER_LOG_SECRET_LINE.test(line)
-        ? "[redacted credential-bearing line]"
-        : redactLogLine(line, secrets, CONTAINER_LOG_LINE_CHARS),
-    );
+    // Value-level redaction keeps the credential lifecycle lines a slow stop
+    // needs; lines that name a credential are dropped whole.
+    .map((line) => redactOutputLine(line, secrets, "", CONTAINER_LOG_LINE_CHARS));
   const stream = record(value.stream) ? value.stream : {};
   const markers = (Array.isArray(value.markers) ? value.markers : []).filter(record);
   return {
@@ -479,9 +475,7 @@ export function projectContainerLog(value, secrets = []) {
           ? text(
               maskPrivateKeyLines(stream.error.split("\n"))
                 .map((line) =>
-                  CONTAINER_LOG_SECRET_LINE.test(line)
-                    ? "[redacted credential-bearing line]"
-                    : line,
+                  isCredentialLine(line) ? "[redacted credential-bearing line]" : line,
                 )
                 .join("\n"),
               2_000,
