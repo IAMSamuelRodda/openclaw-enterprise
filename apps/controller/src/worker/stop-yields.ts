@@ -1,4 +1,10 @@
-// Bookkeeping for stops whose Gateway drain yielded to other Work (AGENT_STOP_YIELDED).
+// Bookkeeping for stops whose Gateway drain yielded to other Work (AGENT_STOP_YIELDED,
+// PREDECESSOR_STOP_YIELDED).
+
+import {
+  ComputeStopYieldedError,
+  withYieldingGatewayDrain,
+} from "../drivers/compute/operation-context.ts";
 
 const STOP_YIELD_RECHECK_MIN_MS = 1_000;
 const STOP_YIELD_RECHECK_MAX_MS = 5_000;
@@ -85,4 +91,45 @@ export class StopYields {
       }
     }
   }
+}
+
+/**
+ * Exclusive replacement's stop of a predecessor yielded during its Gateway drain: the pass ends
+ * pending as `PREDECESSOR_STOP_YIELDED` before the candidate is prepared (finding 1090).
+ */
+export class PredecessorStopYieldedError extends ComputeStopYieldedError {
+  constructor(cause: ComputeStopYieldedError) {
+    super(cause.message);
+    this.name = "PredecessorStopYieldedError";
+  }
+}
+
+/** Whether `code` is the pending code of revision work whose stop yielded during a drain. */
+export function isStopYieldedCode(code: string): boolean {
+  return code === "AGENT_STOP_YIELDED" || code === "PREDECESSOR_STOP_YIELDED";
+}
+
+/** The pending code of a pass whose stop yielded with `error`, if it did. */
+export function stopYieldedCode(
+  error: unknown,
+): "AGENT_STOP_YIELDED" | "PREDECESSOR_STOP_YIELDED" | undefined {
+  if (error instanceof PredecessorStopYieldedError) {
+    return "PREDECESSOR_STOP_YIELDED";
+  }
+  return error instanceof ComputeStopYieldedError ? "AGENT_STOP_YIELDED" : undefined;
+}
+
+/**
+ * Runs a Compute stop for work `ageMs` old. Before the convergence deadline its Gateway drain
+ * wait ends once other Work is due (ComputeStopYieldedError), and the caller defers the work to
+ * repeat the stop; the Harness's own waits never yield, so the Harness is deleted only after the
+ * Gateway's Pods are gone. From the deadline on, the stop keeps its full bounded wait, so a drain
+ * that never ends cannot defer the work forever (finding 1088).
+ */
+export function stopWithDrainYield<Result>(
+  ageMs: number,
+  convergenceTimeoutMs: number,
+  stop: () => Promise<Result>,
+): Promise<Result> {
+  return ageMs < convergenceTimeoutMs ? withYieldingGatewayDrain(stop) : stop();
 }

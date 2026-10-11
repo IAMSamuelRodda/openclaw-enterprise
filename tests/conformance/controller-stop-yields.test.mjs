@@ -2,10 +2,20 @@ import assert from "node:assert/strict";
 import test from "node:test";
 
 import {
+  ComputeStopYieldedError,
+  computeStopShouldYield,
+  withComputeWorkWaiting,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
+import {
+  isStopYieldedCode,
+  PredecessorStopYieldedError,
   STOP_YIELD_LOG_INTERVAL_MS,
   StopYields,
+  stopWithDrainYield,
+  stopYieldedCode,
   stopYieldRecheckMs,
 } from "../../apps/controller/src/worker/stop-yields.ts";
+import { deploymentProgressForWork } from "../../packages/occ/src/state/controller-work.ts";
 
 // Findings 1093 and 1094: stops that yield during their Gateway drain (#2145) are rechecked on
 // a faster-growing cadence, do not count as due Work for another draining stop, and log their
@@ -94,4 +104,92 @@ test("a yielded stop this worker has not run for ten minutes is forgotten", () =
   assert.deepEqual(yields.waiting(), ["stop-a"]);
   now.value += 59_000;
   assert.deepEqual(yields.waiting(), []);
+});
+
+// Finding 1090: a redeploy's predecessor stop (exclusive replacement) yields during the Gateway
+// drain like a stopped Agent's. The worker integration tests run it against PostgreSQL; these
+// pin the stop's yield mode and the pending code the deployment then shows.
+
+// A stop as Kubernetes runs it: the Gateway's Pods drain first, then the Harness's terminate.
+// Each wait asks whether it may end now; the Harness is deleted only after the Gateway wait.
+async function drainingStop(steps) {
+  for (const role of ["gateway", "agent"]) {
+    if (await computeStopShouldYield(role)) {
+      throw new ComputeStopYieldedError(`${role} Pods are still terminating`);
+    }
+    steps.push(role);
+  }
+}
+
+async function stopRun(ageMs, deadlineMs, workDue = true) {
+  const steps = [];
+  try {
+    await withComputeWorkWaiting(
+      async () => workDue,
+      () => stopWithDrainYield(ageMs, deadlineMs, () => drainingStop(steps)),
+    );
+    return { yielded: false, steps };
+  } catch (error) {
+    assert.ok(error instanceof ComputeStopYieldedError);
+    return { yielded: true, steps };
+  }
+}
+
+test("a stop yields only its Gateway drain, only to due Work, and only before the deadline", async () => {
+  // Before the deadline the Gateway wait ends when other Work is due; the Harness is untouched.
+  assert.deepEqual(await stopRun(0, 900_000), { yielded: true, steps: [] });
+  assert.deepEqual(await stopRun(899_999, 900_000), { yielded: true, steps: [] });
+  // Nothing due: the stop waits as before and stops the Harness after the Gateway.
+  assert.deepEqual(await stopRun(0, 900_000, false), {
+    yielded: false,
+    steps: ["gateway", "agent"],
+  });
+  // From the deadline on the stop keeps its full bounded wait, so it cannot defer forever.
+  assert.deepEqual(await stopRun(900_000, 900_000), {
+    yielded: false,
+    steps: ["gateway", "agent"],
+  });
+  // The Harness's own wait never yields, even when the Gateway's is already done.
+  const harnessOnly = [];
+  await withComputeWorkWaiting(
+    async () => true,
+    () =>
+      stopWithDrainYield(0, 900_000, async () => {
+        assert.equal(await computeStopShouldYield("agent"), false);
+        harnessOnly.push("agent");
+      }),
+  );
+  assert.deepEqual(harnessOnly, ["agent"]);
+});
+
+test("a yielded predecessor stop defers as PREDECESSOR_STOP_YIELDED", () => {
+  const yielded = new ComputeStopYieldedError("draining");
+  assert.equal(stopYieldedCode(yielded), "AGENT_STOP_YIELDED");
+  const predecessor = new PredecessorStopYieldedError(yielded);
+  assert.ok(predecessor instanceof ComputeStopYieldedError);
+  assert.equal(stopYieldedCode(predecessor), "PREDECESSOR_STOP_YIELDED");
+  assert.equal(stopYieldedCode(new Error("failed")), undefined);
+  // Both codes are yields: the deadline does not expire them, and they are rechecked as yields.
+  assert.equal(isStopYieldedCode("AGENT_STOP_YIELDED"), true);
+  assert.equal(isStopYieldedCode("PREDECESSOR_STOP_YIELDED"), true);
+  assert.equal(isStopYieldedCode("REVISION_INCOMPLETE"), false);
+  assert.equal(isStopYieldedCode("REFUSED_CANDIDATE_STOP_PENDING"), false);
+});
+
+test("a deployment waiting for its predecessor's drain says so in its progress", () => {
+  const at = new Date("2026-10-11T10:00:00.000Z");
+  const availableAt = new Date("2026-10-11T10:00:05.000Z");
+  const progress = deploymentProgressForWork(
+    { state: "queued", availableAt },
+    { at, code: "PREDECESSOR_STOP_YIELDED" },
+  );
+  assert.deepEqual(progress, {
+    lastAttempt: {
+      at: at.toISOString(),
+      code: "PREDECESSOR_STOP_YIELDED",
+      message:
+        "Waiting for the previous version's gateway to finish its active work before this version starts.",
+    },
+    nextAttemptAt: availableAt.toISOString(),
+  });
 });
