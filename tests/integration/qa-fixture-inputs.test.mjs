@@ -264,10 +264,30 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
       name: "agent-1-gateway-0",
       deletionTimestamp: "2026-10-11T01:37:00Z",
       finalizers: ["openclaw.dev/runtime"],
-      labels: { "openclaw.dev/agent": "agent-1" },
+      labels: { "openclaw.dev/agent": "agent-1", "openclaw.dev/workload-role": "gateway" },
     },
     spec: { containers: [{ env: [{ name: "GATEWAY_PASSWORD", value: "spec-private-value" }] }] },
     status: { phase: "Running" },
+  };
+  const workerPod = {
+    metadata: {
+      name: "worker-a",
+      labels: { "app.kubernetes.io/component": "worker" },
+    },
+    spec: { containers: [{ env: [{ name: "DATABASE_URL", value: "spec-private-value" }] }] },
+    status: {
+      phase: "Running",
+      startTime: "2026-10-11T01:30:00Z",
+      containerStatuses: [
+        {
+          name: "worker",
+          restartCount: 1,
+          lastState: {
+            terminated: { reason: "Error", exitCode: 1, finishedAt: "2026-10-11T01:33:00Z" },
+          },
+        },
+      ],
+    },
   };
   const calls = [];
   const records = new Map();
@@ -289,8 +309,34 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
       if (args[0] === "get") {
         return JSON.stringify({ items: [pod] });
       }
-      if (args.includes("deployment/openclaw-enterprise-worker")) {
+      if (args.includes("pods")) {
+        return JSON.stringify({ items: [workerPod] });
+      }
+      if (args.includes("events")) {
+        return JSON.stringify({
+          items: [
+            {
+              lastTimestamp: "2026-10-11T01:36:30Z",
+              type: "Normal",
+              reason: "Killing",
+              involvedObject: { kind: "Pod", name: "agent-1-gateway-0" },
+              count: 1,
+              message: "Stopping container gateway; launcher-private-value",
+            },
+          ],
+        });
+      }
+      if (args.includes("--previous")) {
         throw new Error("kubectl failed (exit 1); stderr: launcher-private-value unreachable");
+      }
+      if (args.includes("gateway")) {
+        return (
+          "2026-10-11T01:32:40Z draining active work before stop with timeout 315000ms: 1 active chat run(s)\n" +
+          "2026-10-11T01:32:41Z assistant reply QA_NATIVE_conversation-text\n"
+        );
+      }
+      if (args.includes("-l")) {
+        return "[pod/worker-a/worker] 2026-10-11T01:36:00Z worker.completed\n";
       }
       return (
         "2026-10-11T01:36:00Z kubernetes compute: stop requested for agent-1\n" +
@@ -350,7 +396,42 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     /stop-fixture-service-key|abcdefghijklmnop|launcher-private-value/,
   );
   assert.equal(logs.api.length, 3);
-  assert.match(logs.worker.unavailable.join("\n"), /unreachable/);
+  // Every worker Pod, by label, each line naming its Pod.
+  const workerCall = calls.find((call) => call.includes("logs") && call.includes("-l"));
+  assert.ok(workerCall.includes("--prefix"));
+  assert.ok(
+    workerCall.includes(
+      "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/component=worker",
+    ),
+  );
+  assert.deepEqual(logs.worker, ["[pod/worker-a/worker] 2026-10-11T01:36:00Z worker.completed"]);
+  // A restarted worker's previous container is read; a failed read is kept, redacted.
+  assert.match(logs.workerPrevious["worker-a"].unavailable.join("\n"), /unreachable/);
+  assert.deepEqual(logs.platformPods, [
+    {
+      name: "worker-a",
+      component: "worker",
+      phase: "Running",
+      startTime: "2026-10-11T01:30:00Z",
+      deletionTimestamp: null,
+      containers: [
+        {
+          name: "worker",
+          restartCount: 1,
+          lastTerminated: { reason: "Error", exitCode: 1, finishedAt: "2026-10-11T01:33:00Z" },
+        },
+      ],
+    },
+  ]);
+  assert.deepEqual(Object.keys(logs.events), ["oce-system", "oce-agent-1"]);
+  assert.equal(logs.events["oce-agent-1"][0].object, "Pod/agent-1-gateway-0");
+  // Only the terminating Gateway's drain lines, never conversation content.
+  assert.deepEqual(logs.gatewayDrain, {
+    "agent-1-gateway-0": [
+      "2026-10-11T01:32:40Z draining active work before stop with timeout 315000ms: 1 active chat run(s)",
+    ],
+  });
+  assert.doesNotMatch(JSON.stringify(logs), /spec-private-value|QA_NATIVE_conversation-text/);
   assert.equal(describeStopObservation(undefined), "none");
 
   // A Compose control plane keeps the observation but has no in-cluster platform logs.
