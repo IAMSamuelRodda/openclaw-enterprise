@@ -1735,6 +1735,7 @@ function buildRendered(profile, parsed, diagnostics) {
             managedServiceAccounts,
             ["codex", "managedServiceAccounts", "adminSecretName"],
             diagnostics,
+            resourceNameRule,
           ),
           key:
             optionalString(
