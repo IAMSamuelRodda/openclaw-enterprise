@@ -130,6 +130,12 @@ export function deploymentProgressForWork(
       message =
         "The previous worker claim expired after this version was published. The controller will finish activating it.";
       break;
+    case "PREDECESSOR_STOP_RECOVERY":
+      // Its predecessor stop had started; failing without a pass would leave it half stopped.
+      code = attempt.code;
+      message =
+        "The previous worker claim expired on the last attempt while the previous version was stopping. The controller will try once more.";
+      break;
   }
   return Object.freeze({
     lastAttempt:

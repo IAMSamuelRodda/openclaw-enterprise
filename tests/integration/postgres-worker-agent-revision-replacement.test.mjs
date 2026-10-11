@@ -851,3 +851,62 @@ revisionTest(
     assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
   },
 );
+
+// Finding 1107: a yielded redeploy whose worker crashes on its last attempt is not ended by lease
+// recovery in SQL, which would leave the predecessor's Harness and workspace with no Gateway and
+// nothing to stop them. Recovery grants one more attempt, and that pass finishes the stop.
+for (const refused of [false, true]) {
+  test(
+    refused
+      ? "a yielded redeploy refused on the extra attempt after its last claim expired finishes its predecessor stop"
+      : "a yielded redeploy whose last claim expires gets one more attempt, which finishes its predecessor stop",
+    { ...requiresPostgres, timeout: 60_000 },
+    async (context) => {
+      const fixture = await setup(context, { maxAttempts: 1 });
+      const { owner, driver, first, replacement } = await yieldedRedeploy(
+        fixture,
+        `drain-predecessor-crash-${refused}`,
+        { drainMs: 8_000 },
+      );
+      // The worker dies during the deployment's last (only) attempt; its claim expires.
+      await fixture.stop();
+      await fixture.observerPool.query(
+        `UPDATE occ.controller_work
+         SET state = 'claimed', attempt_count = 1,
+           claim_token = COALESCE(claim_token, gen_random_uuid()),
+           lease_expires_at = clock_timestamp() - interval '1 second'
+         WHERE idempotency_key = $1`,
+        [replacement.idempotencyKey],
+      );
+      const queue = new fixture.PostgresWorkQueue(fixture.observerPool, {
+        leaseDurationMs: 30_000,
+        maxAttempts: 1,
+        random: () => 0,
+      });
+      await queue.recoverStale();
+      const row = await fixture.observerPool.query(
+        "SELECT state, attempt_count FROM occ.controller_work WHERE idempotency_key = $1",
+        [replacement.idempotencyKey],
+      );
+      assert.deepEqual(row.rows[0], { state: "queued", attempt_count: 0 });
+      if (refused) {
+        await denyDeploy(fixture, owner);
+      }
+      await fixture.start(driver.compute);
+      if (refused) {
+        await assertWorkEnds(fixture, replacement, "failed_permanent", "AUTHORIZATION_DENIED");
+      } else {
+        await assertWorkEnds(fixture, replacement, "succeeded", "REVISION_ACTIVATED");
+      }
+      // Hard invariant: the predecessor's Harness stopped once, before anything prepared the
+      // replacement, and no Harness is left without its Gateway.
+      assert.deepEqual(driver.overlaps, []);
+      assert.deepEqual(driver.harnessStops, [first.id]);
+      assert.deepEqual(runningFor(driver, owner), refused ? [] : [replacement.id]);
+      assert.equal(
+        (await fixture.activePointer(owner)).rows[0].active_revision_id,
+        refused ? first.id : replacement.id,
+      );
+    },
+  );
+}

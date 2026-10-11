@@ -2489,3 +2489,160 @@ test(
     await completeCleanupWork(queue, owner.revisionId, sourceKey);
   },
 );
+
+// Finding 1107: a deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) removed the
+// serving revision's Gateway; only a worker pass finishes that stop before the deployment fails.
+// Recovery that would end it on its attempt limit without a pass requeues it once instead.
+async function predecessorDeployment(pool, queue, namespaceId, agentId, { yielded, failures }) {
+  const revisionId = await createQueueRevision(pool, namespaceId, agentId);
+  const key = `agent_revision:${revisionId}:reconcile`;
+  await queue.enqueue(revisionWork(namespaceId, key, agentId, revisionId));
+  if (yielded) {
+    // The yield refunds its attempt; later passes fail for real.
+    const claim = await claimExpected(queue, key);
+    await queue.defer(claim, { code: "PREDECESSOR_STOP_YIELDED" }, { delayMs: 1 });
+    await delay(5);
+  }
+  for (let failure = 0; failure < failures; failure += 1) {
+    await queue.retry(await claimExpected(queue, key), { code: "DEPENDENCY_UNAVAILABLE" });
+  }
+  return key;
+}
+
+async function workState(pool, key) {
+  const row = await pool.query(
+    `SELECT state, attempt_count, reason_code FROM occ.controller_work
+     WHERE idempotency_key = $1`,
+    [key],
+  );
+  return row.rows[0];
+}
+
+async function workEvidence(pool, key) {
+  const evidence = await pool.query(
+    `SELECT details->>'reasonCode' AS reason, details->'final' AS final
+     FROM occ.audit_events
+     WHERE kind = 'mutation' AND action = 'reconcile' AND details->>'workId' = $1
+     ORDER BY occurred_at, id`,
+    [key],
+  );
+  return evidence.rows.map(({ reason, final }) => [reason, final]);
+}
+
+const failedOn = (recovery, key) =>
+  recovery.failed.some(({ idempotencyKey }) => idempotencyKey === key);
+
+test(
+  "an expired last claim of a deployment whose predecessor stop yielded gets one more attempt, once",
+  requiresPostgres,
+  async (context) => {
+    const { pool, queue } = await dependencies(context, { leaseDurationMs: 40, maxAttempts: 2 });
+    const { namespaceId, agents } = await createResources(pool, 2);
+    const crash = async (key) => {
+      const claim = await claimExpected(queue, key);
+      assert.equal(claim.attemptCount, 2);
+      await delay(80);
+      return queue.recoverStale();
+    };
+    const yielded = await predecessorDeployment(pool, queue, namespaceId, agents[0], {
+      yielded: true,
+      failures: 1,
+    });
+
+    // Invariant: such a deployment never ends in SQL on its first limit; it is requeued with one
+    // more attempt, so a worker pass finishes the predecessor's stop (or deploys).
+    let recovery = await crash(yielded);
+    assert.ok(!failedOn(recovery, yielded));
+    assert.ok(recovery.requeued >= 1);
+    assert.deepEqual(await workState(pool, yielded), {
+      state: "queued",
+      attempt_count: 1,
+      reason_code: null,
+    });
+    assert.deepEqual((await workEvidence(pool, yielded)).slice(-1), [
+      ["PREDECESSOR_STOP_RECOVERY", null],
+    ]);
+    // Bounded: the extra attempt is granted once, so a pass that keeps crashing ends as before.
+    recovery = await crash(yielded);
+    assert.ok(failedOn(recovery, yielded));
+    assert.deepEqual(await workState(pool, yielded), {
+      state: "failed_permanent",
+      attempt_count: 2,
+      reason_code: "LEASE_EXPIRED",
+    });
+    assert.deepEqual((await workEvidence(pool, yielded)).slice(-2), [
+      ["PREDECESSOR_STOP_RECOVERY", null],
+      ["LEASE_EXPIRED", true],
+    ]);
+
+    // Work without that evidence never started a predecessor stop: it fails as before.
+    const plain = await predecessorDeployment(pool, queue, namespaceId, agents[1], {
+      yielded: false,
+      failures: 1,
+    });
+    assert.ok(failedOn(await crash(plain), plain));
+    assert.deepEqual(await workState(pool, plain), {
+      state: "failed_permanent",
+      attempt_count: 2,
+      reason_code: "LEASE_EXPIRED",
+    });
+    assert.deepEqual(await workEvidence(pool, plain), [
+      ["DEPENDENCY_UNAVAILABLE", null],
+      ["LEASE_EXPIRED", true],
+    ]);
+  },
+);
+
+test(
+  "queued exhaustion of a deployment whose predecessor stop yielded gets one more attempt, once",
+  requiresPostgres,
+  async (context) => {
+    // A lower attempt limit after a restart leaves queued work at the limit.
+    const { pool, queue, PostgresWorkQueue } = await dependencies(context, { maxAttempts: 3 });
+    const { namespaceId, agents } = await createResources(pool, 2);
+    const park = (key) =>
+      pool.query(
+        `UPDATE occ.controller_work SET available_at = clock_timestamp() + interval '1 hour'
+         WHERE idempotency_key = $1`,
+        [key],
+      );
+    const yielded = await predecessorDeployment(pool, queue, namespaceId, agents[0], {
+      yielded: true,
+      failures: 2,
+    });
+    await park(yielded);
+    const plain = await predecessorDeployment(pool, queue, namespaceId, agents[1], {
+      yielded: false,
+      failures: 2,
+    });
+    await park(plain);
+    const restarted = new PostgresWorkQueue(pool, { maxAttempts: 2, random: () => 0 });
+    const recovery = await restarted.recoverStale();
+    assert.ok(!failedOn(recovery, yielded));
+    assert.ok(failedOn(recovery, plain));
+    assert.deepEqual(await workState(pool, yielded), {
+      state: "queued",
+      attempt_count: 1,
+      reason_code: null,
+    });
+    assert.deepEqual((await workEvidence(pool, yielded)).slice(-1), [
+      ["PREDECESSOR_STOP_RECOVERY", null],
+    ]);
+    assert.deepEqual(await workState(pool, plain), {
+      state: "failed_permanent",
+      attempt_count: 2,
+      reason_code: "MAX_ATTEMPTS_EXHAUSTED",
+    });
+    // Once: back at the limit, it ends as before.
+    await pool.query(
+      "UPDATE occ.controller_work SET attempt_count = 2 WHERE idempotency_key = $1",
+      [yielded],
+    );
+    assert.ok(failedOn(await restarted.recoverStale(), yielded));
+    assert.deepEqual(await workState(pool, yielded), {
+      state: "failed_permanent",
+      attempt_count: 2,
+      reason_code: "MAX_ATTEMPTS_EXHAUSTED",
+    });
+  },
+);

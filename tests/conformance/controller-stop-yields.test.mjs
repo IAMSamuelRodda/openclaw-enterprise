@@ -176,6 +176,28 @@ test("a yielded predecessor stop defers as PREDECESSOR_STOP_YIELDED", () => {
   assert.equal(isStopYieldedCode("REFUSED_CANDIDATE_STOP_PENDING"), false);
 });
 
+// Finding 1107: lease recovery gives a deployment whose predecessor stop started one more attempt
+// instead of failing it on its limit; its progress says why.
+test("a deployment recovered to finish its predecessor stop says so in its progress", () => {
+  const at = new Date("2026-10-11T10:00:00.000Z");
+  const availableAt = new Date("2026-10-11T10:00:01.000Z");
+  assert.deepEqual(
+    deploymentProgressForWork(
+      { state: "queued", availableAt },
+      { at, code: "PREDECESSOR_STOP_RECOVERY" },
+    ),
+    {
+      lastAttempt: {
+        at: at.toISOString(),
+        code: "PREDECESSOR_STOP_RECOVERY",
+        message:
+          "The previous worker claim expired on the last attempt while the previous version was stopping. The controller will try once more.",
+      },
+      nextAttemptAt: availableAt.toISOString(),
+    },
+  );
+});
+
 test("a deployment waiting for its predecessor's drain says so in its progress", () => {
   const at = new Date("2026-10-11T10:00:00.000Z");
   const availableAt = new Date("2026-10-11T10:00:05.000Z");

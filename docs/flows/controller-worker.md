@@ -359,10 +359,10 @@ waits for the loop, closes PostgreSQL, and emits `worker.stopped`.
 
 Each `PostgresWorkQueue.recoverStale()` statement atomically publishes exhausted
 work, failure of a still-provisioning Namespace targeted for `ready`, and audit
-evidence for expired claims and exhausted queued work, so final-attempt crashes
-cannot strand provisioning. A deployment whose last claim expires after it
-published its revision gets one more attempt (`ACTIVE_REVISION_RECOVERY`); a
-failed retry keeps the active runtime.
+evidence, so final-attempt crashes cannot strand provisioning. Such a crash gives one more
+attempt to a deployment that published its revision (`ACTIVE_REVISION_RECOVERY`;
+a failed retry keeps the active runtime) or whose predecessor stop yielded
+(`PREDECESSOR_STOP_RECOVERY`).
 
 ## Debugging and Verification
 
