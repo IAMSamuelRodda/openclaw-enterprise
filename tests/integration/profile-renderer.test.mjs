@@ -2131,6 +2131,30 @@ test("profiles refuse gateway namespaces the compute driver refuses", () => {
   assert.doesNotThrow(() => admit({ ...routing, gatewayNamespace: namespace, envoyNamespace }));
 });
 
+test("profiles refuse gateway storage class names the compute driver refuses", () => {
+  const runtime = baseInput().runtime;
+  for (const gatewayStorageClassName of [
+    "Bad_Class",
+    "bad class",
+    "-local-path",
+    "a".repeat(254),
+  ]) {
+    assertPreflightFailure(
+      "openclaw",
+      baseInput({ runtime: { ...runtime, gatewayStorageClassName } }),
+      /runtime\.gatewayStorageClassName must be a Kubernetes resource name of at most 253 characters/,
+    );
+  }
+  for (const gatewayStorageClassName of ["a".repeat(253), "gp3.encrypted"]) {
+    const output = render(
+      "openclaw",
+      baseInput({ runtime: { ...runtime, gatewayStorageClassName } }),
+    );
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+    assert.ok(output.installation.includes(`gatewayStorageClassName: ${gatewayStorageClassName}`));
+  }
+});
+
 test("preflight rejects Codex seccomp paths the compute driver refuses", () => {
   const message =
     /runtime\.codexSeccompProfile must be a relative localhost profile path without traversal or unconfined mode/;

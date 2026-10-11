@@ -2748,7 +2748,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         }
         throw error;
       }
-      required(options.runtime.gatewayStorageClassName, "SQLite-compatible gateway storage class");
+      const gatewayStorageClassName = required(
+        options.runtime.gatewayStorageClassName,
+        "SQLite-compatible gateway storage class",
+      );
+      validateKubernetesResourceName(
+        gatewayStorageClassName,
+        "SQLite-compatible gateway storage class",
+      );
       const nativeOpenClawSessionCapacity = options.runtime.nativeOpenClawSessionCapacity;
       if (
         nativeOpenClawSessionCapacity !== undefined &&
