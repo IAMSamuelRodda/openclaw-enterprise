@@ -176,8 +176,15 @@ async function main() {
   let cleanupFailed = false;
   let cleanupError;
   try {
+    // receipt.sock and control.sock have the same length; 103 bytes binds on Linux and macOS.
+    const receiptSocket = join(control, "receipt.sock");
+    if (Buffer.byteLength(receiptSocket) > 103) {
+      throw new Error(
+        `socket path ${receiptSocket} is ${Buffer.byteLength(receiptSocket)} bytes, over the ` +
+          "103-byte Unix socket limit; set TMPDIR to a shorter directory",
+      );
+    }
     await mkdir(control, { mode: 0o700 });
-    assert.ok(Buffer.byteLength(join(control, "receipt.sock")) <= 103);
     await run("openssl", [
       "genpkey",
       "-algorithm",
