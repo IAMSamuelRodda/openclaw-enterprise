@@ -166,7 +166,7 @@ func (r *runner) waitDevelopmentGatewayAPICRDs(ctx context.Context, timeout time
 
 func (r *runner) installDevelopmentRoutingControllers(ctx context.Context, state *developmentState, timeout time.Duration) (string, error) {
 	for _, controller := range developmentRoutingControllers {
-		data, err := downloadDevelopmentRoutingManifest(ctx, r.opts.Err, controller.url, controller.sha256, developmentRoutingManifestRetry)
+		data, err := downloadDevelopmentRoutingManifest(ctx, r.opts.Err, controller.name, controller.url, controller.sha256, developmentRoutingManifestRetry)
 		if err != nil {
 			return "", fmt.Errorf("%s: %w", controller.name, err)
 		}

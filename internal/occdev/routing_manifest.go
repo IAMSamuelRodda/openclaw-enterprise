@@ -3,13 +3,13 @@ package occdev
 import (
 	"context"
 	"crypto/sha256"
+	"crypto/tls"
+	"crypto/x509"
 	"encoding/hex"
 	"errors"
 	"fmt"
 	"io"
-	"net"
 	"net/http"
-	"syscall"
 	"time"
 )
 
@@ -37,13 +37,13 @@ var developmentRoutingManifestRetry = routingManifestRetry{
 const developmentRoutingManifestLimit = 32 * 1024 * 1024
 
 // downloadDevelopmentRoutingManifest fetches a pinned manifest and verifies its
-// checksum. Transient failures (a timed-out, reset or refused connection, a cut
-// transfer, HTTP 408, 429 or 5xx) are retried; any other status, an oversized
-// body and a checksum mismatch fail at once.
+// checksum. Network failures and HTTP 408, 429 and 5xx are retried; any other
+// status, a refused certificate, an oversized body and a checksum mismatch fail
+// at once.
 func downloadDevelopmentRoutingManifest(
 	ctx context.Context,
 	log io.Writer,
-	url, expected string,
+	name, url, expected string,
 	policy routingManifestRetry,
 ) ([]byte, error) {
 	client := &http.Client{}
@@ -61,7 +61,7 @@ func downloadDevelopmentRoutingManifest(
 		if !transient || attempt >= policy.attempts || time.Since(started)+delay > policy.budget {
 			return nil, fmt.Errorf("%w (after %d attempt(s))", err, attempt)
 		}
-		fmt.Fprintf(log, "%v; retrying in %s (attempt %d/%d)\n", err, delay, attempt+1, policy.attempts)
+		fmt.Fprintf(log, "%s: %v; retrying in %s (attempt %d/%d)\n", name, err, delay, attempt+1, policy.attempts)
 		timer := time.NewTimer(delay)
 		select {
 		case <-ctx.Done():
@@ -105,36 +105,21 @@ func fetchDevelopmentRoutingManifest(
 	return data, false, nil
 }
 
-// A failure of one attempt that another attempt may not repeat: its own
-// timeout, a network timeout, a DNS failure, a refused or reset connection, or
-// a transfer cut short. The caller's cancellation or deadline is never retried,
-// nor are TLS certificate errors or malformed URLs.
+// Any failure of one attempt may pass on the next: its own timeout, a DNS
+// failure, a refused, reset or aborted connection, an HTTP/2 stream reset or
+// GOAWAY, a transfer cut short. So everything is retried except the caller's
+// cancellation or deadline and a certificate the client refuses, which another
+// attempt would only repeat. The attempt and time budget bound the rest.
 func transientRoutingManifestError(ctx context.Context, err error) bool {
 	if ctx.Err() != nil {
 		return false
 	}
-	if errors.Is(err, context.DeadlineExceeded) || errors.Is(err, io.ErrUnexpectedEOF) || errors.Is(err, io.EOF) {
-		return true
-	}
-	var netErr net.Error
-	if errors.As(err, &netErr) && netErr.Timeout() {
-		return true
-	}
-	var dnsErr *net.DNSError
-	if errors.As(err, &dnsErr) {
-		return true
-	}
-	for _, errno := range []syscall.Errno{
-		syscall.ECONNREFUSED,
-		syscall.ECONNRESET,
-		syscall.EPIPE,
-		syscall.ETIMEDOUT,
-		syscall.ENETUNREACH,
-		syscall.EHOSTUNREACH,
-	} {
-		if errors.Is(err, errno) {
-			return true
-		}
-	}
-	return false
+	var verification *tls.CertificateVerificationError
+	var unknownAuthority x509.UnknownAuthorityError
+	var hostname x509.HostnameError
+	var invalid x509.CertificateInvalidError
+	return !errors.As(err, &verification) &&
+		!errors.As(err, &unknownAuthority) &&
+		!errors.As(err, &hostname) &&
+		!errors.As(err, &invalid)
 }
