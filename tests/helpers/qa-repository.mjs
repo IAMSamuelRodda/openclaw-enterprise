@@ -338,17 +338,18 @@ export function describeStopObservation(observation) {
 
 const platformLogLines = 600;
 const platformLogLineChars = 2_000;
+// Fixed launcher settings, not secrets; redacting "kubernetes" would garble the logs.
+const publicLauncherSettings = new Set([
+  "OCC_DEVELOPMENT_COMPUTE_DRIVER",
+  "OCC_DEVELOPMENT_CONTROL_PLANE",
+]);
+
 // The Gateway drains in-flight work for up to 315 s on SIGTERM and logs what it
 // waits for. Keep only its own drain and shutdown messages.
 const gatewayDrainLine =
   /draining active work|active-work drain|all active work drained|shutdown budget|shutdown drain|received SIG(TERM|INT)/i;
 const gatewayDrainLines = 40;
 const platformEvents = 60;
-// Fixed launcher settings, not secrets; redacting "kubernetes" would garble the logs.
-const publicLauncherSettings = new Set([
-  "OCC_DEVELOPMENT_COMPUTE_DRIVER",
-  "OCC_DEVELOPMENT_CONTROL_PLANE",
-]);
 
 // Lifecycle fields only: which Pods ran, when they started and why they restarted.
 function podRestarts({ metadata = {}, status = {} }) {
@@ -428,7 +429,7 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
   logs.platformPods = platformPods;
   // `logs deployment/...` reads one Pod and never its previous container; a
   // rollout or restart can leave the stop's worker elsewhere, so read each worker
-  // Pod by name (the Deployment only when the Pods cannot be listed).
+  // Pod by name (the Deployment when no worker Pod is listed).
   const workerPods = Array.isArray(platformPods)
     ? platformPods.filter(({ component }) => component === "worker")
     : [];

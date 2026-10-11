@@ -354,10 +354,9 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
       if (target === "agent-1-gateway-0") {
         return (
           "2026-10-11T01:32:40Z draining active work before stop with timeout 315000ms: 1 active chat run(s)\n" +
-          "2026-10-11T01:32:41Z assistant reply QA_NATIVE_conversation-text\n"
+          "2026-10-11T01:32:41Z assistant reply QA_NATIVE_conversation-text: drain the shutdown queue\n"
         );
       }
-      assert.equal(target, "deployment/openclaw-enterprise-api");
       return (
         "2026-10-11T01:36:00Z kubernetes compute: stop requested for agent-1\n" +
         "2026-10-11T01:36:01Z authenticated with stop-fixture-service-key\n" +
@@ -431,8 +430,21 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   });
   const previousCalls = calls.filter((call) => call.includes("--previous"));
   assert.deepEqual(
-    previousCalls.map((call) => call.slice(1, 7)),
-    [["-n", "oce-system", "logs", "worker-a", "--container", "worker"]],
+    previousCalls.map((call) => call.slice(1)),
+    [
+      [
+        "-n",
+        "oce-system",
+        "logs",
+        "worker-a",
+        "--container",
+        "worker",
+        "--previous",
+        "--timestamps",
+        "--tail=600",
+        "--request-timeout=30s",
+      ],
+    ],
   );
   assert.deepEqual(Object.keys(logs.workerPrevious), ["worker-a"]);
   assert.match(logs.workerPrevious["worker-a"].unavailable.join("\n"), /unreachable/);
