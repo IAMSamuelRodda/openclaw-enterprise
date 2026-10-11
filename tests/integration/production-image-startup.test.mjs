@@ -279,7 +279,21 @@ test(
         "OCC_AUTH_BASE_URL=https://occ.example.invalid",
         "-e",
         "OCC_DATABASE_URL=postgresql://127.0.0.1:1/openclaw_enterprise",
+        "--entrypoint",
+        "node",
         image,
+        "--input-type=module",
+        "-e",
+        `try {
+          const { loadInstallationConfiguration, loadStartupConfigurationSnapshot } = await import(
+            "/app/apps/controller/src/composition/installation-config.ts"
+          );
+          const startupConfiguration = await loadStartupConfigurationSnapshot({ mode: "production" });
+          await loadInstallationConfiguration({ mode: "production", startupConfiguration });
+        } catch (error) {
+          process.stderr.write((error instanceof Error ? error.message : String(error)) + "\\n");
+          process.exit(1);
+        }`,
       ]);
     } catch (error) {
       failure = error;
