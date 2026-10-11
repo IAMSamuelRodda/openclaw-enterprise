@@ -106,6 +106,17 @@ export function redactQaError(error) {
     found ||= changed;
     return changed ? bytes : view;
   };
+  // How inspect escapes a secret inside a quoted string, which differs from JSON
+  // for quotes and control characters (a multi-line JSON key file), with the
+  // single quote escaped too for when the string holds every quote kind.
+  const printOptions = { breakLength: Infinity, maxStringLength: Infinity };
+  const printedForms = secrets
+    .flatMap((secret) => {
+      const body = inspect(secret, printOptions).slice(1, -1);
+      return [body, body.replaceAll("'", "\\'")];
+    })
+    .filter((form) => form.length > 0)
+    .sort((a, b) => b.length - a.length);
   let done = new Map();
   const active = new Set();
 
@@ -176,19 +187,17 @@ export function redactQaError(error) {
     }
     let text;
     try {
-      // On one line and uncut, so a multi-line secret (a PEM key) stays whole
-      // in its JSON-escaped form.
-      text = inspect(value, {
-        depth: 2,
-        getters: true,
-        breakLength: Infinity,
-        maxStringLength: Infinity,
-      });
+      // On one line and uncut, so a multi-line secret (a PEM key) stays whole.
+      text = inspect(value, { ...printOptions, depth: 2, getters: true });
     } catch {
       // A throwing custom inspect method: the runner can't print it either.
       return value;
     }
-    const redacted = redactText(text);
+    const redacted = printedForms.reduce(
+      (current, form) => current.replaceAll(form, "[REDACTED]"),
+      redactText(text),
+    );
+    found ||= redacted !== text;
     return redacted === text ? value : redacted;
   };
 

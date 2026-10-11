@@ -1055,6 +1055,17 @@ test("QA error redaction covers causes, AggregateError errors and command output
   assert.equal(redactQaError(pending), pending);
   assert.ok(!printed(pending).includes("c3ludGhldGljLXFhLWtleS1saW5l"), printed(pending));
 
+  // A multi-line JSON key file: inspect escapes its quotes unlike JSON does.
+  const keyFile = JSON.stringify(
+    { type: "service_account", private_key: "synthetic-qa-key-file-body-2026\u0001" },
+    null,
+    2,
+  );
+  registerQaSecret(keyFile);
+  const keyed = Object.assign(new Error("keyed"), { file: Promise.resolve(keyFile) });
+  assert.equal(redactQaError(keyed), keyed);
+  assert.ok(!printed(keyed).includes("synthetic-qa-key-file-body"), printed(keyed));
+
   // An error without a secret is left as it is, cycle included.
   const clean = new Error("clean");
   clean.cause = clean;
