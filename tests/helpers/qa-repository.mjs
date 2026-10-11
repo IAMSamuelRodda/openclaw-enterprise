@@ -1,3 +1,4 @@
+import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { cleanupRepositoryJourney } from "./repository-remote-cleanup.mjs";
 import assert from "node:assert/strict";
 import { chmod, mkdir, readFile, writeFile, stat } from "node:fs/promises";
@@ -270,9 +271,32 @@ export async function prepareQaRepository(f) {
   await f.saveInstallation(f.configuration);
 }
 
-export async function stopQaAgent(f, agent, { timeout } = {}) {
+// The serial worker waits for the Gateway's whole active-work drain, bounded by
+// GATEWAY_STOP_TIMEOUT_MS plus one Kubernetes request, before it deletes the
+// Harness and clears activeRevisionId (finding 1088). Allow that bound plus three
+// minutes for the Harness to terminate and the API to observe it, as
+// first-agent-smoke does. This is a QA allowance, not a product bound. While
+// ordinary stops hold the serial worker, a stop queued behind another Agent's
+// full drain (OCC_TEST_QA_CONCURRENCY > 1) can still exceed it; the slow-stop
+// evidence below then names the drain.
+export const QA_STOP_TIMEOUT_MS = GATEWAY_STOP_TIMEOUT_MS + 10_000 + 3 * 60_000;
+// A stop slower than this passes, but leaves evidence. One still running past it
+// captures the platform logs once, while the Gateway is still draining: its drain
+// lines name the work it waits for (finding 1076).
+export const QA_SLOW_STOP_MS = 60_000;
+
+export async function stopQaAgent(
+  f,
+  agent,
+  { timeout = QA_STOP_TIMEOUT_MS, slowAfter = QA_SLOW_STOP_MS, now = Date.now } = {},
+) {
+  // Evidence files are created exclusively: a repeated stop of one Agent gets its own names.
+  agent.stopCalls = (agent.stopCalls ?? 0) + 1;
+  const label = agent.stopCalls === 1 ? agent.id : `${agent.id}-${agent.stopCalls}`;
+  const startedAt = now();
   await f.api("POST", `/namespaces/${agent.namespaceId}/agents/${agent.id}/stop`);
   let last;
+  let slow;
   try {
     await waitFor(
       "ordinary Agent stop removes every runtime Pod",
@@ -290,11 +314,14 @@ export async function stopQaAgent(f, agent, { timeout } = {}) {
           ),
         ).items;
         last = { current, pods };
-        return (
+        const done =
           current.desiredRuntimeState === "stopped" &&
           !current.activeRevisionId &&
-          pods.length === 0
-        );
+          pods.length === 0;
+        if (!done && !slow && now() - startedAt > slowAfter) {
+          slow = await captureSlowStop(f, label, last, now() - startedAt, slowAfter);
+        }
+        return done;
       },
       timeout,
       { describe: () => describeStopObservation(last) },
@@ -302,17 +329,49 @@ export async function stopQaAgent(f, agent, { timeout } = {}) {
   } catch (error) {
     if (last && /^Timed out: /.test(error.message)) {
       try {
-        const file = await recordPlatformLogs(f, `${agent.id}-stop-timeout`, last.pods);
+        const file = await recordPlatformLogs(f, `${label}-stop-timeout`, last.pods);
         if (file) {
           error.message += `; API and worker logs: ${file}`;
         }
       } catch (logError) {
         error.message += `; API and worker logs unavailable (${logError.message})`;
       }
+      if (slow?.platformLogs) {
+        error.message += `; drain evidence after ${Math.round(slow.observedAfterMs / 1000)} s: ${slow.platformLogs}`;
+      }
     }
     throw error;
   }
+  const elapsedMs = now() - startedAt;
+  if (slow || elapsedMs > slowAfter) {
+    try {
+      await f.record(`${label}-slow-stop`, { thresholdMs: slowAfter, ...slow, elapsedMs });
+    } catch {
+      // Diagnostic only: a stop that completed must not fail on its evidence.
+    }
+    process.stderr.write(
+      `QA slow stop (diagnostic, not a failure): Agent ${agent.id} took ${Math.round(elapsedMs / 1000)} s` +
+        `${slow?.platformLogs ? `; drain evidence: ${slow.platformLogs}` : ""}\n`,
+    );
+  }
   agent.stopped = true;
+}
+
+async function captureSlowStop(f, label, observation, elapsedMs, thresholdMs) {
+  const slow = {
+    thresholdMs,
+    observedAfterMs: elapsedMs,
+    observation: JSON.parse(describeStopObservation(observation)),
+  };
+  try {
+    slow.platformLogs = await recordPlatformLogs(f, `${label}-slow-stop`, observation.pods);
+  } catch (error) {
+    slow.platformLogsUnavailable = redactedQaTail(error.message, qaLogEnv(f), {
+      lines: 4,
+      lineChars: 400,
+    });
+  }
+  return slow;
 }
 
 // Only identifiers and lifecycle fields: no specs, environments or Secret data.
@@ -385,6 +444,12 @@ function podRestarts({ metadata = {}, status = {} }) {
   };
 }
 
+function qaLogEnv(f) {
+  return Object.fromEntries(
+    Object.entries(f.env ?? {}).filter(([name]) => !publicLauncherSettings.has(name)),
+  );
+}
+
 // The QA evidence artifact is uploaded on every run, and only its *.json files;
 // keep the API and worker log tails there, redacted, for the kubernetes control
 // plane (Compose runs them as containers outside the cluster), plus each worker
@@ -395,9 +460,7 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
   if (f.controlPlane !== "kubernetes") {
     return;
   }
-  const env = Object.fromEntries(
-    Object.entries(f.env ?? {}).filter(([name]) => !publicLauncherSettings.has(name)),
-  );
+  const env = qaLogEnv(f);
   const tail = (text, lines = platformLogLines, lineChars = platformLogLineChars) =>
     redactedQaTail(text, env, { lines, lineChars });
   const attempt = async (read) => {
