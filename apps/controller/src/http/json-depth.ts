@@ -46,8 +46,8 @@ export function tooDeepJsonPath(
   const keyStart: number[] = [];
   const keyEnd: number[] = [];
   let depth = 0;
+  // Whether a string here would be an object key (after "{" or "," in an object).
   let expectKey = false;
-  let readingKey = false;
   for (let at = 0; at < text.length; at += 1) {
     const code = text.charCodeAt(at);
     switch (code) {
@@ -72,14 +72,13 @@ export function tooDeepJsonPath(
         expectKey = false;
         continue;
     }
-    if (code === QUOTE && expectKey && depth > 0) {
-      // An object key: its value follows the colon.
-      keyStart[depth - 1] = at;
-      readingKey = true;
-    } else if (depth > maxDepth) {
+    // A key is not a value: the value after its colon is checked.
+    const key = code === QUOTE && expectKey && depth > 0;
+    if (!key && depth > maxDepth) {
       return pathAt(text, depth, isArray, index, keyStart, keyEnd);
     }
     if (code === QUOTE) {
+      const start = at;
       for (at += 1; at < text.length; at += 1) {
         const inner = text.charCodeAt(at);
         if (inner === BACKSLASH) {
@@ -88,14 +87,13 @@ export function tooDeepJsonPath(
           break;
         }
       }
-      if (readingKey) {
+      if (key) {
+        keyStart[depth - 1] = start;
         keyEnd[depth - 1] = at + 1;
-        readingKey = false;
       }
     } else if (code === OPEN_OBJECT || code === OPEN_ARRAY) {
       isArray[depth] = code === OPEN_ARRAY;
       index[depth] = 0;
-      keyStart[depth] = -1;
       depth += 1;
       expectKey = code === OPEN_OBJECT;
     }
@@ -117,10 +115,9 @@ function pathAt(
     if (isArray[level] === true) {
       segment = String(index[level]);
     } else {
-      const start = keyStart[level]!;
-      const end = keyEnd[level]!;
-      // Invalid text can hold an object entry without a key.
-      const raw = start >= 0 && end > start ? text.slice(start, end) : '""';
+      // Invalid text can hold an object entry without a key; never parse more than one string.
+      const start = keyStart[level];
+      const raw = start === undefined ? '""' : text.slice(start, keyEnd[level]);
       try {
         segment = JSON.parse(raw) as string;
       } catch {
