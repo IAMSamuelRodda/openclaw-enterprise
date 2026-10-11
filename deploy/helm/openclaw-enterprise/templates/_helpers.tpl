@@ -314,13 +314,10 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if .Values.backend.chatgpt.enabled -}}
 {{- $chatgpt := .Values.backend.chatgpt -}}
-{{- if or (not $chatgpt.secretName) (not $chatgpt.key) -}}{{- fail "backend.chatgpt requires a dedicated admin Secret name and key" -}}{{- end -}}
-{{- if or (gt (len (toString $chatgpt.secretName)) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" (toString $chatgpt.secretName))) -}}
+{{- if and $chatgpt.secretName (or (gt (len (toString $chatgpt.secretName)) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" (toString $chatgpt.secretName)))) -}}
 {{- fail "backend.chatgpt.secretName must be a Kubernetes resource name of at most 253 characters" -}}
 {{- end -}}
-{{- if or (eq (toString $chatgpt.key) ".") (hasPrefix ".." (toString $chatgpt.key)) (gt (len (toString $chatgpt.key)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString $chatgpt.key))) -}}
-{{- fail "backend.chatgpt.key must be a Kubernetes Secret key of at most 253 characters" -}}
-{{- end -}}
+{{- if $chatgpt.key -}}{{- include "openclaw.validateSecretKey" (dict "label" "backend.chatgpt.key" "value" $chatgpt.key) -}}{{- end -}}
 {{- end -}}
 {{- if .Values.database.caSecretName -}}
 {{- if or (not .Values.database.caKey) (not .Values.database.caMountPath) -}}

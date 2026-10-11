@@ -179,8 +179,7 @@ to keep the `admin-key` default.
 
 `workspaceId` must be a UUID the controller accepts at startup: version digit
 1–8 and variant 8, 9, a, or b, as in the example. Any other spelling, including
-a nil UUID, is a preflight error. `adminSecretName` must be a Kubernetes resource
-name of at most 253 characters. Managed issuance is separate from the default
+a nil UUID, is a preflight error. Managed issuance is separate from the default
 `codex_pat` path. The rendered Backend and ServiceAccount Driver wiring does not
 prove that live service-account creation works. Optional `credentialTtlSeconds`
 must be an integer from 1 through 2592000, the lifetime the API accepts; omit it
