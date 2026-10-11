@@ -23,16 +23,33 @@ export function redactQaError(error) {
 // Command arguments and stdout can contain API payloads. Publish only a bounded
 // stderr tail, using the CI redactor plus dynamically generated fixture secrets.
 export function qaCommandFailureDetail(stderr, env) {
+  return redactedQaTail(stderr, env, { lines: 8, lineChars: 800 }).join("\n");
+}
+
+// The last `lines` lines of `text` (a command's stderr or a component log),
+// each cut to `lineChars` after the same redaction: environment values, every
+// registered fixture secret, common token shapes, and whole credential-bearing lines.
+export function redactedQaTail(text, env, { lines, lineChars }) {
   const secrets = [
     ...failureSecrets([env]),
-    ...[...protectedValues].map((value) => [value, "qa-secret"]),
+    // Text is redacted line by line, so each line of a multi-line value (a PEM
+    // key) is a value of its own, as failureSecrets does for the environment.
+    ...[...protectedValues].flatMap((value) => [
+      [value, "qa-secret"],
+      ...(value.includes("\n")
+        ? value
+            .split("\n")
+            .map((line) => line.trim())
+            .filter((line) => line.length >= 8)
+            .map((line) => [line, "qa-secret"])
+        : []),
+    ]),
   ].sort(([a], [b]) => b.length - a.length);
-  return String(stderr ?? "")
+  return String(text ?? "")
     .trimEnd()
     .split("\n")
-    .slice(-8)
-    .map((line) => redactOutputLine(line, secrets, "", 800))
-    .join("\n");
+    .slice(-lines)
+    .map((line) => redactOutputLine(line, secrets, "", lineChars));
 }
 
 export async function protectedText(path, label) {

@@ -8,7 +8,7 @@ import {
   readInstalledCredentialSession,
 } from "./repository-credentials-installed.mjs";
 import { loadYaml, dumpYaml, waitFor } from "./qa-utils.mjs";
-import { protectedText, registerQaSecret } from "./qa-secrets.mjs";
+import { protectedText, redactedQaTail, registerQaSecret } from "./qa-secrets.mjs";
 
 export async function prepareQaRepository(f) {
   const input = f.repositoryInput;
@@ -270,18 +270,115 @@ export async function prepareQaRepository(f) {
   await f.saveInstallation(f.configuration);
 }
 
-export async function stopQaAgent(f, agent) {
+export async function stopQaAgent(f, agent, { timeout } = {}) {
   await f.api("POST", `/namespaces/${agent.namespaceId}/agents/${agent.id}/stop`);
-  await waitFor("ordinary Agent stop removes every runtime Pod", async () => {
-    const current = await f.api("GET", `/namespaces/${agent.namespaceId}/agents/${agent.id}`);
-    const pods = JSON.parse(
-      await f.kubectl("get", "pods", "-A", "-l", `openclaw.dev/agent=${agent.id}`, "-o", "json"),
-    ).items;
-    return (
-      current.desiredRuntimeState === "stopped" && !current.activeRevisionId && pods.length === 0
+  let last;
+  try {
+    await waitFor(
+      "ordinary Agent stop removes every runtime Pod",
+      async () => {
+        const current = await f.api("GET", `/namespaces/${agent.namespaceId}/agents/${agent.id}`);
+        const pods = JSON.parse(
+          await f.kubectl(
+            "get",
+            "pods",
+            "-A",
+            "-l",
+            `openclaw.dev/agent=${agent.id}`,
+            "-o",
+            "json",
+          ),
+        ).items;
+        last = { current, pods };
+        return (
+          current.desiredRuntimeState === "stopped" &&
+          !current.activeRevisionId &&
+          pods.length === 0
+        );
+      },
+      timeout,
+      { describe: () => describeStopObservation(last) },
     );
-  });
+  } catch (error) {
+    if (last && /^Timed out: /.test(error.message)) {
+      try {
+        const file = await recordPlatformLogs(f, `${agent.id}-stop-timeout`);
+        if (file) {
+          error.message += `; API and worker logs: ${file}`;
+        }
+      } catch (logError) {
+        error.message += `; API and worker logs unavailable (${logError.message})`;
+      }
+    }
+    throw error;
+  }
   agent.stopped = true;
+}
+
+// Only identifiers and lifecycle fields: no specs, environments or Secret data.
+export function describeStopObservation(observation) {
+  if (!observation) {
+    return "none";
+  }
+  const { current, pods } = observation;
+  const remaining = pods.slice(0, 10).map(({ metadata = {}, status = {} }) => ({
+    namespace: metadata.namespace,
+    name: metadata.name,
+    phase: status.phase,
+    deletionTimestamp: metadata.deletionTimestamp ?? null,
+    finalizers: metadata.finalizers ?? [],
+  }));
+  return JSON.stringify({
+    desiredRuntimeState: current?.desiredRuntimeState,
+    activeRevisionId: current?.activeRevisionId ?? null,
+    pods: remaining,
+    ...(pods.length > remaining.length ? { omittedPods: pods.length - remaining.length } : {}),
+  });
+}
+
+const platformLogLines = 600;
+const platformLogLineChars = 2_000;
+// Fixed launcher settings, not secrets; redacting "kubernetes" would garble the logs.
+const publicLauncherSettings = new Set([
+  "OCC_DEVELOPMENT_COMPUTE_DRIVER",
+  "OCC_DEVELOPMENT_CONTROL_PLANE",
+]);
+
+// The QA evidence artifact is uploaded on every run, and only its *.json files;
+// keep the API and worker log tails there, redacted, for the kubernetes control
+// plane (Compose runs them as containers outside the cluster). Returns the file name.
+async function recordPlatformLogs(f, label) {
+  if (f.controlPlane !== "kubernetes") {
+    return;
+  }
+  const env = Object.fromEntries(
+    Object.entries(f.env ?? {}).filter(([name]) => !publicLauncherSettings.has(name)),
+  );
+  const logs = {};
+  for (const component of ["api", "worker"]) {
+    try {
+      const text = await f.kubectl(
+        "-n",
+        f.state.platformNamespace,
+        "logs",
+        `deployment/openclaw-enterprise-${component}`,
+        "--container",
+        component,
+        "--timestamps",
+        `--tail=${platformLogLines}`,
+        "--request-timeout=30s",
+      );
+      logs[component] = redactedQaTail(text, env, {
+        lines: platformLogLines,
+        lineChars: platformLogLineChars,
+      });
+    } catch (error) {
+      logs[component] = {
+        unavailable: redactedQaTail(error.message, env, { lines: 12, lineChars: 800 }),
+      };
+    }
+  }
+  return f.record(`${label}-platform-logs`, { capturedAt: new Date().toISOString(), logs });
 }
 
 export async function verifyQaRepository(f, agent, profile = "git-full") {
