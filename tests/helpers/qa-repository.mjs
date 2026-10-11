@@ -1,3 +1,4 @@
+import { GATEWAY_STOP_TIMEOUT_MS } from "../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts";
 import { cleanupRepositoryJourney } from "./repository-remote-cleanup.mjs";
 import assert from "node:assert/strict";
 import { chmod, mkdir, readFile, writeFile, stat } from "node:fs/promises";
@@ -270,9 +271,25 @@ export async function prepareQaRepository(f) {
   await f.saveInstallation(f.configuration);
 }
 
-export async function stopQaAgent(f, agent, { timeout } = {}) {
+// The serial worker waits for the Gateway's whole active-work drain, bounded by
+// GATEWAY_STOP_TIMEOUT_MS plus one Kubernetes request, before it deletes the
+// Harness and clears activeRevisionId (finding 1088). Allow that bound plus three
+// minutes for the Harness to terminate and the API to observe it, as
+// first-agent-smoke does. This is a QA allowance, not a product bound.
+export const QA_STOP_TIMEOUT_MS = GATEWAY_STOP_TIMEOUT_MS + 10_000 + 3 * 60_000;
+// A slower stop passes, but leaves evidence: while the Gateway is still draining,
+// its drain lines name the work it waits for (finding 1076).
+export const QA_SLOW_STOP_MS = 60_000;
+
+export async function stopQaAgent(
+  f,
+  agent,
+  { timeout = QA_STOP_TIMEOUT_MS, slowAfter = QA_SLOW_STOP_MS, now = Date.now } = {},
+) {
+  const startedAt = now();
   await f.api("POST", `/namespaces/${agent.namespaceId}/agents/${agent.id}/stop`);
   let last;
+  let slow;
   try {
     await waitFor(
       "ordinary Agent stop removes every runtime Pod",
@@ -290,11 +307,14 @@ export async function stopQaAgent(f, agent, { timeout } = {}) {
           ),
         ).items;
         last = { current, pods };
-        return (
+        const done =
           current.desiredRuntimeState === "stopped" &&
           !current.activeRevisionId &&
-          pods.length === 0
-        );
+          pods.length === 0;
+        if (!done && !slow && now() - startedAt > slowAfter) {
+          slow = await recordSlowStop(f, agent, last, now() - startedAt, slowAfter);
+        }
+        return done;
       },
       timeout,
       { describe: () => describeStopObservation(last) },
@@ -312,7 +332,34 @@ export async function stopQaAgent(f, agent, { timeout } = {}) {
     }
     throw error;
   }
+  if (slow) {
+    const elapsedMs = now() - startedAt;
+    try {
+      await f.record(`${agent.id}-slow-stop`, { ...slow, elapsedMs });
+    } catch {
+      // Diagnostic only: a stop that completed must not fail on its evidence.
+    }
+    process.stderr.write(
+      `QA slow stop (diagnostic, not a failure): Agent ${agent.id} took ${Math.round(elapsedMs / 1000)} s` +
+        `${slow.platformLogs ? `; drain evidence: ${slow.platformLogs}` : ""}\n`,
+    );
+  }
   agent.stopped = true;
+}
+
+// Captured once, while the Gateway is still draining, so its drain lines survive.
+async function recordSlowStop(f, agent, observation, elapsedMs, thresholdMs) {
+  const slow = {
+    thresholdMs,
+    observedAfterMs: elapsedMs,
+    observation: JSON.parse(describeStopObservation(observation)),
+  };
+  try {
+    slow.platformLogs = await recordPlatformLogs(f, `${agent.id}-slow-stop`, observation.pods);
+  } catch (error) {
+    slow.platformLogsUnavailable = redactedQaTail(error.message, {}, { lines: 4, lineChars: 400 });
+  }
+  return slow;
 }
 
 // Only identifiers and lifecycle fields: no specs, environments or Secret data.

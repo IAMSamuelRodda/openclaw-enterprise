@@ -509,6 +509,128 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   assert.equal(records.size, 0);
 });
 
+test("a QA Agent stop waits for the Gateway stop bound and records a slow stop without failing", async (t) => {
+  const { GATEWAY_STOP_TIMEOUT_MS } =
+    await import("../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts");
+  const { stopQaAgent, QA_STOP_TIMEOUT_MS, QA_SLOW_STOP_MS } =
+    await import("../helpers/qa-repository.mjs");
+  // The worker's own Gateway wait (grace plus one request) fits, with room for
+  // the Harness and the API; the old 300 s default did not.
+  assert.equal(QA_STOP_TIMEOUT_MS, GATEWAY_STOP_TIMEOUT_MS + 10_000 + 180_000);
+  assert.ok(QA_STOP_TIMEOUT_MS > GATEWAY_STOP_TIMEOUT_MS + 10_000 + 60_000);
+  assert.equal(QA_SLOW_STOP_MS, 60_000);
+
+  const gateway = {
+    metadata: {
+      namespace: "oce-agent-4",
+      name: "agent-4-gateway-0",
+      deletionTimestamp: "2026-10-11T07:23:42Z",
+      labels: { "openclaw.dev/agent": "agent-4", "openclaw.dev/workload-role": "gateway" },
+    },
+    status: { phase: "Running" },
+  };
+  let clock = 0;
+  const fixture = (observations) => {
+    const records = new Map();
+    let reads = 0;
+    const f = {
+      controlPlane: "kubernetes",
+      env: {},
+      state: { platformNamespace: "oce-system" },
+      async api(method) {
+        if (method !== "GET") {
+          return undefined;
+        }
+        clock += observations[Math.min(reads, observations.length - 1)];
+        reads += 1;
+        return reads < observations.length
+          ? { desiredRuntimeState: "stopped", activeRevisionId: "revision-4" }
+          : { desiredRuntimeState: "stopped", activeRevisionId: null };
+      },
+      async kubectl(...args) {
+        if (args[0] === "get") {
+          return JSON.stringify({ items: reads < observations.length ? [gateway] : [] });
+        }
+        const [verb, target] = args.slice(2);
+        if (verb === "get") {
+          return JSON.stringify({ items: [] });
+        }
+        if (target === "agent-4-gateway-0") {
+          return "2026-10-11T07:18:13Z draining active work before stop with timeout 315000ms: 1 active chat run(s)\n";
+        }
+        return "2026-10-11T07:18:12Z worker.completed\n";
+      },
+      async record(name, value) {
+        records.set(name, value);
+        return `${this.controlPlane}-${name}.json`;
+      },
+    };
+    return { f, records };
+  };
+  const written = [];
+  t.mock.method(process.stderr, "write", (text) => {
+    written.push(String(text));
+    return true;
+  });
+
+  // A fast stop leaves no evidence.
+  const fast = fixture([0, 5_000]);
+  const fastAgent = { id: "agent-4", namespaceId: "namespace-1" };
+  await stopQaAgent(fast.f, fastAgent, { now: () => clock });
+  assert.equal(fastAgent.stopped, true);
+  assert.equal(fast.records.size, 0);
+  assert.deepEqual(written, []);
+
+  // Past 60 s with the Gateway still draining: its drain lines are captured
+  // once, then the completed stop records its total time and passes.
+  clock = 0;
+  const slow = fixture([61_000, 200_000]);
+  const slowAgent = { id: "agent-4", namespaceId: "namespace-1" };
+  await stopQaAgent(slow.f, slowAgent, { now: () => clock });
+  assert.equal(slowAgent.stopped, true);
+  assert.deepEqual(
+    slow.records.get("agent-4-slow-stop-platform-logs").logs.gatewayDrain["agent-4-gateway-0"],
+    [
+      "2026-10-11T07:18:13Z draining active work before stop with timeout 315000ms: 1 active chat run(s)",
+    ],
+  );
+  assert.deepEqual(slow.records.get("agent-4-slow-stop"), {
+    thresholdMs: 60_000,
+    observedAfterMs: 61_000,
+    observation: {
+      desiredRuntimeState: "stopped",
+      activeRevisionId: "revision-4",
+      pods: [
+        {
+          namespace: "oce-agent-4",
+          name: "agent-4-gateway-0",
+          phase: "Running",
+          deletionTimestamp: "2026-10-11T07:23:42Z",
+          finalizers: [],
+        },
+      ],
+    },
+    platformLogs: "kubernetes-agent-4-slow-stop-platform-logs.json",
+    elapsedMs: 261_000,
+  });
+  assert.equal(written.length, 1);
+  assert.match(
+    written[0],
+    /^QA slow stop \(diagnostic, not a failure\): Agent agent-4 took 261 s; /,
+  );
+
+  // Evidence that cannot be written never fails a completed stop.
+  clock = 0;
+  const unwritable = fixture([61_000, 1_000]);
+  unwritable.f.record = async () => {
+    throw new Error("EEXIST: evidence file exists");
+  };
+  const unwritableAgent = { id: "agent-4", namespaceId: "namespace-1" };
+  await stopQaAgent(unwritable.f, unwritableAgent, { now: () => clock });
+  assert.equal(unwritableAgent.stopped, true);
+  assert.match(written[1], /took 62 s\n$/);
+});
+
 test("QA log redaction hides each line of a registered multi-line secret", async () => {
   const { redactedQaTail, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
   const body = ["MIIEfixtureLineOneAAAAAAAA", "fixtureLineTwoBBBBBBBBBBBB"];
