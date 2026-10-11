@@ -860,7 +860,7 @@ revisionTest(
       fixture,
       "drain-predecessor-stopped",
       {
-        drainMs: 4_000,
+        drainMs: 6_000,
         start: {
           transformDrivers: proxiedIAM(async (iam, request) => {
             const decision = await iam.authorize(request);
@@ -885,10 +885,22 @@ revisionTest(
     // A stop keeps the pointer and the workspace; only a deployment moves the pointer.
     assert.equal((await fixture.activePointer(owner)).rows[0].active_revision_id, first.id);
     // Its finishing drain yielded like the stopped Agent's own drain, not as a deployment
-    // waiting to start.
+    // waiting to start: deployment status read AGENT_STOP_YIELDED meanwhile.
     const codes = workPasses(events, replacement).map(({ code }) => code);
     assert.equal(codes.at(-1), "REVISION_STOPPED");
     assert.ok(!codes.includes("DEPENDENCY_UNAVAILABLE"), codes.join(", "));
+    const evidence = await fixture.observerPool.query(
+      `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
+       WHERE kind = 'mutation' AND action = 'reconcile' AND details->>'workId' = $1
+       ORDER BY occurred_at, id`,
+      [replacement.idempotencyKey],
+    );
+    assert.deepEqual(
+      evidence.rows
+        .map(({ reason_code: code }) => code)
+        .filter((code) => code.endsWith("_YIELDED")),
+      ["PREDECESSOR_STOP_YIELDED", "AGENT_STOP_YIELDED"],
+    );
   },
 );
 
