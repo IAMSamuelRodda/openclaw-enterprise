@@ -212,16 +212,19 @@ test("QA waits report the last observation when they time out", async () => {
   const { waitFor } = await import("../helpers/qa-utils.mjs");
   let observations = 0;
   let last;
+  // A fake clock that each observation advances by 100 ms: two observations, no real wait.
+  let clock = 0;
   await assert.rejects(
     waitFor(
       "fake condition",
       async () => {
         observations += 1;
+        clock += 100;
         last = { observation: observations, pods: ["runtime-0"] };
         return false;
       },
       200,
-      { describe: () => JSON.stringify(last), interval: 5 },
+      { describe: () => JSON.stringify(last), interval: 0, now: () => clock },
     ),
     (error) => {
       assert.equal(
@@ -313,6 +316,9 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   });
   const calls = [];
   const records = new Map();
+  // Each GET advances the fake clock past the 10 ms timeout: one read, then the timeout.
+  let clock = 0;
+  const timing = { timeout: 10, interval: 0, now: () => clock };
   const f = {
     controlPlane: "kubernetes",
     env: {
@@ -326,9 +332,11 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     state: { platformNamespace: "oce-system" },
     async api(method, path) {
       calls.push(["api", method, path]);
-      return method === "GET"
-        ? { desiredRuntimeState: "stopped", activeRevisionId: "revision-1" }
-        : undefined;
+      if (method !== "GET") {
+        return undefined;
+      }
+      clock += 1_000;
+      return { desiredRuntimeState: "stopped", activeRevisionId: "revision-1" };
     },
     async kubectl(...args) {
       calls.push(["kubectl", ...args]);
@@ -375,7 +383,7 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
       return `${this.controlPlane}-${name}.json`;
     },
   };
-  await assert.rejects(stopQaAgent(f, agent, { timeout: 10 }), (error) => {
+  await assert.rejects(stopQaAgent(f, agent, timing), (error) => {
     assert.match(error.message, /^Timed out: ordinary Agent stop removes every runtime Pod; /);
     const observation = JSON.parse(
       /; last observation: (\{.*\}); API and worker logs: /.exec(error.message)[1],
@@ -502,16 +510,14 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   );
   // A single worker Pod is the Deployment read: no per-Pod copies.
   platformPods.splice(0, 1);
-  await assert.rejects(
-    stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, { timeout: 10 }),
-  );
+  await assert.rejects(stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, timing));
   assert.equal(records.get("agent-3-stop-timeout-platform-logs").logs.workerPods, undefined);
 
   // A Compose control plane keeps the observation but has no in-cluster platform logs.
   records.clear();
   const composeAgent = { id: "agent-2", namespaceId: "namespace-1" };
   await assert.rejects(
-    stopQaAgent({ ...f, controlPlane: "compose" }, composeAgent, { timeout: 10 }),
+    stopQaAgent({ ...f, controlPlane: "compose" }, composeAgent, timing),
     (error) =>
       /; last observation: \{.*"pods":\[\{/.test(error.message) &&
       !/API and worker logs/.test(error.message),
@@ -539,8 +545,11 @@ test("a QA Agent stop waits for the Gateway stop bound and records a slow stop w
     },
     status: { phase: "Running" },
   };
+  // A fake clock for both the slow-stop threshold and the timeout, and no sleep between
+  // reads: each GET advances the clock by the next step; the last step's read finds
+  // the stop done.
   let clock = 0;
-  // Each GET advances the clock by the next step; the last step's read finds the stop done.
+  const now = () => clock;
   const fixture = (steps, { done = true } = {}) => {
     const records = new Map();
     let reads = 0;
@@ -595,7 +604,7 @@ test("a QA Agent stop waits for the Gateway stop bound and records a slow stop w
   // A fast stop leaves no evidence.
   const fast = fixture([0, 5_000]);
   const fastAgent = { id: "agent-4", namespaceId: "namespace-1" };
-  await stopQaAgent(fast.f, fastAgent, { now: () => clock });
+  await stopQaAgent(fast.f, fastAgent, { now, interval: 0 });
   assert.equal(fastAgent.stopped, true);
   assert.equal(fast.records.size, 0);
   assert.deepEqual(written, []);
@@ -605,7 +614,7 @@ test("a QA Agent stop waits for the Gateway stop bound and records a slow stop w
   clock = 0;
   const slow = fixture([61_000, 1_000, 1_000, 200_000]);
   const slowAgent = { id: "agent-4", namespaceId: "namespace-1" };
-  await stopQaAgent(slow.f, slowAgent, { now: () => clock });
+  await stopQaAgent(slow.f, slowAgent, { now, interval: 0 });
   assert.equal(slowAgent.stopped, true);
   assert.deepEqual([...slow.records.keys()].sort(), [
     "agent-4-slow-stop",
@@ -644,7 +653,7 @@ test("a QA Agent stop waits for the Gateway stop bound and records a slow stop w
   // Stopping the same Agent again gets its own evidence names.
   clock = 0;
   const late = fixture([61_000]);
-  await stopQaAgent(late.f, slowAgent, { now: () => clock });
+  await stopQaAgent(late.f, slowAgent, { now, interval: 0 });
   assert.deepEqual(late.records.get("agent-4-2-slow-stop"), {
     thresholdMs: 60_000,
     elapsedMs: 61_000,
@@ -660,7 +669,7 @@ test("a QA Agent stop waits for the Gateway stop bound and records a slow stop w
     throw new Error("EEXIST: launcher-private-value exists");
   };
   const unwritableAgent = { id: "agent-4", namespaceId: "namespace-1" };
-  await stopQaAgent(unwritable.f, unwritableAgent, { now: () => clock });
+  await stopQaAgent(unwritable.f, unwritableAgent, { now, interval: 0 });
   assert.equal(unwritableAgent.stopped, true);
   assert.deepEqual(failures, ["agent-4-slow-stop-platform-logs", "agent-4-slow-stop"]);
   assert.match(written[2], /took 62 s\n$/);
@@ -670,7 +679,7 @@ test("a QA Agent stop waits for the Gateway stop bound and records a slow stop w
   const stuck = fixture([1_000], { done: false });
   const stuckAgent = { id: "agent-5", namespaceId: "namespace-1" };
   await assert.rejects(
-    stopQaAgent(stuck.f, stuckAgent, { slowAfter: 0, timeout: 10, now: () => clock }),
+    stopQaAgent(stuck.f, stuckAgent, { slowAfter: 0, timeout: 10, now, interval: 0 }),
     (error) => {
       assert.match(
         error.message,
@@ -685,6 +694,27 @@ test("a QA Agent stop waits for the Gateway stop bound and records a slow stop w
     "agent-5-stop-timeout-platform-logs",
   ]);
   assert.equal(written.length, 3);
+
+  // The default timeout is that bound on the same clock: a stop that completes once the
+  // Gateway wait plus three minutes has passed still passes; one still running when
+  // the timeout is reached fails.
+  const bound = GATEWAY_STOP_TIMEOUT_MS + 10_000 + 3 * 60_000;
+  clock = 0;
+  const atBoundAgent = { id: "agent-6", namespaceId: "namespace-1" };
+  await stopQaAgent(fixture([bound - 1, 1]).f, atBoundAgent, { now, interval: 0 });
+  assert.equal(atBoundAgent.stopped, true);
+  assert.equal(written.length, 4);
+  assert.ok(written[3].includes(`Agent agent-6 took ${Math.round(bound / 1000)} s`));
+  clock = 0;
+  const pastBoundAgent = { id: "agent-7", namespaceId: "namespace-1" };
+  await assert.rejects(
+    stopQaAgent(fixture([QA_STOP_TIMEOUT_MS], { done: false }).f, pastBoundAgent, {
+      now,
+      interval: 0,
+    }),
+    { message: /^Timed out: ordinary Agent stop removes every runtime Pod; / },
+  );
+  assert.equal(pastBoundAgent.stopped, undefined);
 });
 
 test("QA log redaction hides each line of a registered multi-line secret", async () => {
