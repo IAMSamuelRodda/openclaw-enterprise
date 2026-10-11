@@ -1760,6 +1760,7 @@ function buildRendered(profile, parsed, diagnostics) {
               managedServiceAccounts,
               ["codex", "managedServiceAccounts", "adminSecretKey"],
               diagnostics,
+              secretKeyRule,
             ) ?? "admin-key",
           providerCidr: asString(
             managedServiceAccounts,
