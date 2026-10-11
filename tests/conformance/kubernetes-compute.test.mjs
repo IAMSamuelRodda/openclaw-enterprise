@@ -5960,7 +5960,9 @@ test("Harness authentication method admission names the Agent setting for its to
   const openclawConfiguration = createHarnessConfiguration("openclaw", "gpt-4o-mini");
   const codexConfiguration = { agents: { defaults: { model: "codex/gpt-5" } } };
   const message = (accepted) =>
-    `Agent setting harnessAuth.method must be ${accepted} on Kubernetes Compute: change harnessAuth or executionMode.`;
+    `Agent setting harnessAuth.method must be ${accepted} on Kubernetes Compute: change harnessAuth${
+      accepted.endsWith("Dedicated Codex") ? "" : " or executionMode"
+    }.`;
   for (const [harness, configuration, accepted, refused] of [
     [
       embedded,
@@ -11416,8 +11418,14 @@ test("revision lifecycle rejects another driver or missing identity before clust
 
   // Operator credentials do not weaken either managed Kubernetes topology.
   for (const [mode, accepted] of [
-    ["embedded", "api_key for embedded OpenClaw"],
-    ["dedicated", "api_key, codex_pat, oauth or credential_source for Dedicated Codex"],
+    [
+      "embedded",
+      "api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode",
+    ],
+    [
+      "dedicated",
+      "api_key, codex_pat, oauth or credential_source for Dedicated Codex on Kubernetes Compute: change harnessAuth",
+    ],
   ]) {
     await assert.rejects(
       production.prepareRevision({
@@ -11426,7 +11434,7 @@ test("revision lifecycle rejects another driver or missing identity before clust
         harnessAuth: { method: "runtime" },
       }),
       {
-        message: `Agent setting harnessAuth.method must be ${accepted} on Kubernetes Compute: change harnessAuth or executionMode.`,
+        message: `Agent setting harnessAuth.method must be ${accepted}.`,
       },
     );
   }

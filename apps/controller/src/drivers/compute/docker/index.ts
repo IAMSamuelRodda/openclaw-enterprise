@@ -527,8 +527,8 @@ export class DockerComputeDriver implements ComputeDriver {
     validateCodexApprovalPolicySetting(configuration);
   }
 
-  // Agent save, provisioning and deployment apply preparation's workspace rule, with its
-  // message, before the first deployment.
+  // Agent create and update apply preparation's workspace rule, with its message. (OCC
+  // provisioning and deployment refuse Docker's Harness authentication first.)
   validateWorkspaceSetup(
     _harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,

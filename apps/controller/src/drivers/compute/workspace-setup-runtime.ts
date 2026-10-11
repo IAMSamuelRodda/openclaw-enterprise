@@ -37,8 +37,8 @@ type SettingError = (setting: string, requirement: string) => Error;
 /**
  * Initial workspace files reach only the native main Agent's managed durable workspace, so the
  * roster must be main alone (or omitted) and its workspace one of `workspaces`: the paths the
- * Compute Driver mounts on that storage for this Agent, managed path first. Every Compute
- * Driver applies this rule at Agent save, provisioning and preparation, so each refusal names
+ * Compute Driver mounts on that storage for this Agent, managed path first. Docker and
+ * Kubernetes Compute apply this rule at Agent save and in preparation, so each refusal names
  * the same setting with the same text. Returns the workspace path.
  */
 export function requireWorkspaceSetupConfiguration(

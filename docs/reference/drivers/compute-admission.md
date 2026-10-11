@@ -61,8 +61,9 @@ Agent that fails a check still reads; its next update must fix the pair.
 also `codex_pat` and `oauth`), a provider `apiKey` other than the Harness
 authentication reference, a channel credential reference without a
 Configuration Secret binding, and the dedicated OpenClaw model catalog
-settings. Whether the Installation supplies what a method needs (OAuth without
-a Sandbox Driver, a credential source's paired Sandbox) stays a fixed `409`.
+settings. Whether the Installation supplies what a method needs (OAuth needs
+no Sandbox Driver; a credential source needs its paired Sandbox) stays a fixed
+`409`.
 The channel runtime rule stays at deployment: it depends on the execution mode
 and the Installation's `runtime.channels`.
 
@@ -72,7 +73,7 @@ Harness); preparation also needs runtime storage, an Installation setting.
 [Docker Compute](../../../apps/controller/src/drivers/compute/docker/index.ts)
 applies the same
 [shared rule](../../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts),
-with the same messages, at save and in preparation. It accepts both paths on
+with the same messages, at Agent save and in preparation. It accepts both paths on
 either topology, since one volume backs both, and also refuses `skipBootstrap`
 and `skipOptionalBootstrapFiles` on `agents.defaults` or `main`.
 

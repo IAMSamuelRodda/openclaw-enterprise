@@ -17,11 +17,11 @@ real Installation.
 
 - On Kubernetes Compute, an Agent whose `harnessAuth.method` its topology
   cannot use (for example `runtime` or `codex_pat` on embedded OpenClaw, or
-  `oauth` on dedicated OpenClaw) gets `400` naming `harnessAuth.method` at
-  Agent create and update, provisioning and deployment, where it got a fixed
-  `409`. Nothing new is refused.
-- On Docker Compute, Agent create and update with initial workspace files, and
-  deployment while that setup is pending, answer `400` for an `agents.entries`
+  `oauth` on dedicated OpenClaw) gets `400` naming `harnessAuth.method`, where
+  it got a fixed `409`: at provisioning and deployment, and at Agent create and
+  update for `runtime` and Secret bindings. Nothing new is refused.
+- On Docker Compute, Agent create, and update while initial workspace files
+  are pending, answer `400` for an `agents.entries`
   roster other than `main` alone, a workspace other than
   `/home/node/.openclaw/workspace` or `/home/node/workspace`, or a true
   `skipBootstrap` or `skipOptionalBootstrapFiles`. Before, the first

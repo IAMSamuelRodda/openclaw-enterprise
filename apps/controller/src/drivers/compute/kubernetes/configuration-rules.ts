@@ -205,9 +205,9 @@ export function requireHarnessCredentialBinding(
 export type KubernetesHarnessTopology =
   "embedded OpenClaw" | "Dedicated OpenClaw" | "Dedicated Codex";
 
-// The Harness authentication methods Kubernetes Compute delivers to each topology. Methods
-// that need an Installation dependency as well (oauth without a Sandbox Driver, a
-// credential_source's paired Sandbox) are checked after this, at deployment.
+// The Harness authentication methods Kubernetes Compute delivers to each topology. What a
+// method also needs from the Installation (oauth needs no Sandbox Driver, credential_source
+// its paired Sandbox) is checked after this, with a fixed refusal.
 const HARNESS_AUTH_METHODS: Readonly<Record<KubernetesHarnessTopology, readonly string[]>> = {
   "embedded OpenClaw": ["api_key"],
   "Dedicated OpenClaw": ["api_key", "credential_source"],
@@ -231,9 +231,11 @@ export function requireHarnessAuthMethod(
       accepted.length === 1
         ? accepted[0]
         : `${accepted.slice(0, -1).join(", ")} or ${accepted.at(-1)}`;
+    // Codex runs only dedicated, so its execution mode is not a fix.
+    const fix = topology === "Dedicated Codex" ? "harnessAuth" : "harnessAuth or executionMode";
     throw createError(
       "harnessAuth.method",
-      `must be ${list} for ${topology} on Kubernetes Compute: change harnessAuth or executionMode`,
+      `must be ${list} for ${topology} on Kubernetes Compute: change ${fix}`,
     );
   }
 }
