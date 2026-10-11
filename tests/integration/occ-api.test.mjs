@@ -5770,7 +5770,7 @@ test("Agent provisioning API validates inline configuration with existing Secret
     ],
     [
       { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
-      "Configuration setting env.OPENAI_API_KEY must not be set: model credentials come from the Agent's Harness authentication binding.",
+      "Configuration setting env.OPENAI_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
     ],
   ]) {
     const refused = await injectedRequest(

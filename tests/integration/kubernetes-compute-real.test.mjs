@@ -1107,13 +1107,18 @@ test(
       ),
     );
 
-    // Editing the draft mode does not move the deployed revision or its private storage.
+    // Agent save refuses a dedicated draft its Configuration cannot serve (no native model
+    // catalog), with deployment's message; the deployed revision and its storage stay.
     const updatedEmbedded = await request(
       "PATCH",
       `/namespaces/${namespaceIds[1]}/agents/${embeddedDelete.id}`,
       { configurationId: embeddedDelete.configurationId, executionMode: "dedicated" },
     );
-    assert.equal(updatedEmbedded.status, 200, JSON.stringify(updatedEmbedded.error));
+    assert.equal(updatedEmbedded.status, 400, JSON.stringify(updatedEmbedded.error));
+    assert.match(
+      updatedEmbedded.error.message,
+      /^Configuration setting models\.providers\.openai\.models must list the selected OpenAI models/,
+    );
     // Deleting an active embedded Agent must not finalize until its gateway Pod is gone.
     const deletingEmbedded = await request(
       "DELETE",

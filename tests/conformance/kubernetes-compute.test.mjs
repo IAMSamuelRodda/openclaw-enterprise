@@ -8763,11 +8763,11 @@ test("Anthropic API-key admission binds every embedded model to the canonical cr
   for (const [conflicting, message] of [
     [
       { env: { ANTHROPIC_API_KEY: "fixture" } },
-      `Configuration setting env.ANTHROPIC_API_KEY must not be set: ${binding}.`,
+      `Configuration setting env.ANTHROPIC_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.`,
     ],
     [
       { env: { vars: { ANTHROPIC_AUTH_TOKEN: "fixture" } } },
-      `Configuration setting env.vars.ANTHROPIC_AUTH_TOKEN must not be set: ${binding}.`,
+      `Configuration setting env.vars.ANTHROPIC_AUTH_TOKEN must not be set: the Agent's Harness authentication binding owns model provider environment.`,
     ],
     [
       { auth: { profiles: { alternate: { provider: "anthropic", mode: "token" } } } },

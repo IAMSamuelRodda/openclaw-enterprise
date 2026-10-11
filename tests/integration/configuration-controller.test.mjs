@@ -802,7 +802,10 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
     ],
     [
       { ...valid, env: { vars: { OPENAI_BASE_URL: "https://example.invalid/v1" } } },
-      setting("env.vars.OPENAI_BASE_URL", `must not be set: ${binding}`),
+      setting(
+        "env.vars.OPENAI_BASE_URL",
+        `must not be set: the Agent's Harness authentication binding owns model provider environment`,
+      ),
     ],
     [
       {

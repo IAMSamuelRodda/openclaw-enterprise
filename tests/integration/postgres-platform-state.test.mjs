@@ -1761,8 +1761,6 @@ test(
       api,
       namespaceId,
       "Unreadable saved configuration",
-      undefined,
-      { harnessAuth: { method: "runtime" } },
     );
     const { agent: healthyAgent } = await createConfiguredAgent(
       api,
@@ -2034,8 +2032,6 @@ test(
       api,
       namespaceId,
       "Native admin successor",
-      undefined,
-      { harnessAuth: { method: "runtime" } },
     );
     const plugins = {
       "occ-plugin:diffs": { enabled: true, toolDefaults: { approval: "provider_default" } },

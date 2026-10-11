@@ -24,7 +24,16 @@ selected (`400`; deployment answered `404`), a Harness the Configuration
 selects for the other execution mode (`400`), a Harness authentication,
 repository or initial workspace file setup the Compute Driver cannot deliver
 (`400` naming the setting, or `409`). Deployment names those Kubernetes
-settings too, instead of answering with fixed Harness authentication text.
+settings too, instead of answering with fixed Harness authentication text:
+
+- Deployment answers `400` naming the setting, where it answered `409`, for
+  the dedicated OpenClaw model catalog, a provider `apiKey`, channel Secret
+  bindings and `cloudWorkers.requiredProfile`.
+- Deployment refuses a pending initial workspace setup the Configuration
+  cannot deliver with `400`, where the first deployment's preparation failed.
+- Switching an embedded OpenClaw Agent to `dedicated` needs the Configuration
+  to carry the dedicated model catalog first: save the Configuration, then
+  the Agent.
 
 **Who is affected.** Clients that saved such values and fixed them before
 deploying. Stored Configurations and Agents still read.

@@ -1141,8 +1141,6 @@ function resolveAgentHarness(
   return approvedHarness;
 }
 
-// A Driver names unsupported Configuration content the caller owns; keep that message. Other
-// refusals get this fixed text; the caller is already authorized for the Agent.
 // Whether the Configuration selects a model for the default or any roster entry.
 function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean {
   const agents = asRecord(values.agents);
@@ -1151,6 +1149,8 @@ function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean 
   );
 }
 
+// A Driver names unsupported Configuration content the caller owns; keep that message. Other
+// refusals get this fixed text; the caller is already authorized for the Agent.
 function validateAgentHarnessAuth(
   compute: ComputeDriver,
   ...input: Parameters<NonNullable<ComputeDriver["validateHarnessAuth"]>>

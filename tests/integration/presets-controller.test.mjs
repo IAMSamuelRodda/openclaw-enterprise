@@ -865,7 +865,7 @@ describe("Presets", { concurrency: 2 }, () => {
             },
           },
         },
-        "Configuration setting env.vars.ANTHROPIC_API_KEY must not be set: model credentials come from the Agent's Harness authentication binding.",
+        "Configuration setting env.vars.ANTHROPIC_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
       ],
     ];
     for (const [template, message, details] of cases) {

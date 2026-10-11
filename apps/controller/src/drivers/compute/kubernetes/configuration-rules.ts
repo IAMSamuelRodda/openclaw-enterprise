@@ -121,6 +121,9 @@ export function enabledChannelProviders(
 }
 
 const HARNESS_BINDING = "model credentials come from the Agent's Harness authentication binding";
+// Every OPENAI_*/ANTHROPIC_* name is reserved, credential or not (for example a base URL).
+const PROVIDER_ENVIRONMENT =
+  "the Agent's Harness authentication binding owns model provider environment";
 const MODEL_CREDENTIAL_ENVIRONMENT =
   /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i;
 const AUTHORIZATION_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
@@ -171,7 +174,7 @@ export function requireHarnessCredentialBinding(
   ] as const) {
     const name = Object.keys(values ?? {}).find((key) => MODEL_CREDENTIAL_ENVIRONMENT.test(key));
     if (name !== undefined) {
-      throw createError(keyedSettingPath(parent, name), `must not be set: ${HARNESS_BINDING}`);
+      throw createError(keyedSettingPath(parent, name), `must not be set: ${PROVIDER_ENVIRONMENT}`);
     }
   }
   const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};

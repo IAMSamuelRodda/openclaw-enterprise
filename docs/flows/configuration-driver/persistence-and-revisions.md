@@ -84,7 +84,10 @@ Agent's exact same-Namespace `configurationId` and ensure its Configuration kind
 is `"agent"`. They also run deployment's checks of the Agent against that
 Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-save)):
 the Sandbox execution mode, the Harness and its mode, and the Compute checks.
-`deployAgent` then locks the Agent, authorizes a read of the
+With a Compute Driver and a Harness resolver selected, every Agent save reads
+its Configuration once from the Configuration Driver, inside the save's
+transaction; a Driver outage then fails the save with `503` instead of letting
+an unchecked pair through. `deployAgent` then locks the Agent, authorizes a read of the
 referenced Configuration, and locks its ownership metadata. It authorizes the
 caller's selected Secret bindings and the Agent service principal's consumption,
 checks topology/model-source compatibility, and asks the selected Secret Driver
