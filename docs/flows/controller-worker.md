@@ -187,8 +187,8 @@ When Compute's `requiresStoppedPredecessors` capability is set,
 it loads earlier snapshots, including failed candidates, closes their credential
 sessions, and stops them before preparing the candidate; a release failure
 prevents preparation. Their drains yield like a stopped Agent's
-(`PREDECESSOR_STOP_YIELDED`); failing or superseded work first finishes that stop. The dispatch
-guard keeps maintenance from recreating a predecessor.
+(`PREDECESSOR_STOP_YIELDED`); failing, superseded or stopped work first finishes that stop. The
+dispatch guard keeps maintenance from recreating a predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable revision; the
@@ -203,8 +203,8 @@ Before each shutdown, the worker rechecks the Agent owner and stopped desired st
 later admissions are not added. Partial failure retries idempotent shutdowns,
 keeping the active pointer and retained workspace data. Before the convergence
 deadline, a stopped Agent's Gateway drain, here or in revision work, yields to due
-work (`withYieldingGatewayDrain`), deferring as `AGENT_STOP_YIELDED` without
-spending an attempt. In-pass waits ignore yielded stops.
+work (`withYieldingGatewayDrain`) as `AGENT_STOP_YIELDED`, refunding the attempt.
+A drain ignores yielded stops; other waits, only stopped Agents'.
 
 Before shutdown or retirement, including stopped-revision recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
