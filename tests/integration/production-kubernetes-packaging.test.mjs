@@ -3793,6 +3793,10 @@ test(
         "invalid database CA key",
         { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
       ],
+      ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
+      ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],
+      ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
+      ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
       ["shared migration database credentials", { "database.migrationUrlKey": "application-url" }],
       [
         "retired ChatGPT integration key",
