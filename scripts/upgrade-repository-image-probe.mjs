@@ -154,6 +154,15 @@ async function main() {
   }
   assert.equal(target, native, "the probe must run on the target's native architecture");
   assert.equal(process.getuid?.(), 1000, "the fixture must run as the broker's UID 1000");
+  // Check before Docker runs or anything is created. mkdtemp adds six characters, and
+  // receipt.sock and control.sock have the same length; 103 bytes binds on Linux and macOS.
+  const receiptSocket = join(tmpdir(), "oce-pair-XXXXXX", "control", "receipt.sock");
+  if (Buffer.byteLength(receiptSocket) > 103) {
+    throw new ProbeEnvironmentError(
+      `socket path ${receiptSocket} is ${Buffer.byteLength(receiptSocket)} bytes, over the ` +
+        "103-byte Unix socket limit; set TMPDIR to a shorter directory",
+    );
+  }
   const daemon = (await run("docker", ["info", "--format", "{{.OSType}}/{{.Architecture}}"]))
     .trim()
     .replace("linux/x86_64", "linux/amd64")
@@ -178,14 +187,6 @@ async function main() {
   let cleanupFailed = false;
   let cleanupError;
   try {
-    // receipt.sock and control.sock have the same length; 103 bytes binds on Linux and macOS.
-    const receiptSocket = join(control, "receipt.sock");
-    if (Buffer.byteLength(receiptSocket) > 103) {
-      throw new ProbeEnvironmentError(
-        `socket path ${receiptSocket} is ${Buffer.byteLength(receiptSocket)} bytes, over the ` +
-          "103-byte Unix socket limit; set TMPDIR to a shorter directory",
-      );
-    }
     await mkdir(control, { mode: 0o700 });
     await run("openssl", [
       "genpkey",
