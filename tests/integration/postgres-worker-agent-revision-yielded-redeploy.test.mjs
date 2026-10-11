@@ -19,6 +19,8 @@ import {
 // waits for the drain, newer and refused deployments supersede it, an Agent stop overtakes it, and
 // lease recovery grants its last attempt one more. Other exclusive replacement and refused
 // candidate cases are in the -replacement sibling; the lane runs the revision files at once.
+// These files name the -replacement and -yielded-redeploy siblings only by suffix: CI Impact sends
+// a test-only change to full CI when another file names that test.
 
 const { setup, cleanup, revisionTest } = createWorkerRevisionFixtures(import.meta.url);
 after(cleanup);
