@@ -89,6 +89,7 @@ import {
   withYieldingGatewayDrain,
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
+import { StopYields, stopYieldRecheckMs } from "./worker/stop-yields.ts";
 import {
   RepositoryCredentialAuthorityError,
   repositoryCleanupFailureCode,
@@ -147,9 +148,6 @@ type Outcome = "success" | "pending" | "retry" | "permanent";
 const REVISION_READINESS_RECHECK_MS = 500;
 const REVISION_READINESS_RECHECK_MAX_MS = 5_000;
 const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
-// Work whose stop yielded during its Gateway drain runs again after the Work that was due, at
-// least this long after, on the readiness cadence once older (finding 1088).
-const AGENT_STOP_YIELD_RECHECK_MS = 1_000;
 
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
@@ -938,6 +936,10 @@ export class ControllerWorker {
    * terminal pass and a changed pending state are always audited.
    */
   private readonly auditedPendingLifecycle = new Map<string, string>();
+  /** Work whose latest pass yielded its stop during a Gateway drain (findings 1093, 1094). */
+  private readonly stopYields = new StopYields();
+  /** Whether this pass deferred its work as AGENT_STOP_YIELDED. */
+  private stopYieldedThisPass = false;
 
   constructor(options: ControllerWorkerOptions) {
     this.metrics = options.metrics;
@@ -1160,12 +1162,16 @@ export class ControllerWorker {
           this.passOutcome = "error";
           this.preparedThisPass = undefined;
           this.refusalWait = undefined;
+          this.stopYieldedThisPass = false;
           try {
             await this.process(claim);
           } catch (error) {
             this.passOutcome = error instanceof WorkClaimLostError ? "claim_lost" : "error";
             throw error;
           } finally {
+            if (!this.stopYieldedThisPass) {
+              this.stopYields.settled(claim.idempotencyKey);
+            }
             let kind: WorkKind = "namespace_ensure";
             if (claim.kind === "provisioning") {
               kind = "agent_provisioning";
@@ -2065,7 +2071,9 @@ export class ControllerWorker {
    * the work is deferred to repeat the stop. Older work keeps the full bounded wait, so a drain
    * that never ends cannot defer it forever (finding 1088). Age counts from the work's creation:
    * maintenance work is created one interval before it is due, so a convergence deadline shorter
-   * than the maintenance interval leaves its stops without yielding.
+   * than the maintenance interval leaves its stops without yielding. Other stops that yielded
+   * during their own drain do not count as due Work: their next pass only rechecks that drain,
+   * and stops draining at once would otherwise take turns for the whole drain (finding 1093).
    */
   private stopForStoppedAgent(
     claim: ClaimedWork,
@@ -2073,17 +2081,26 @@ export class ControllerWorker {
   ): Promise<void> {
     return this.withClaimHeartbeat(claim, () =>
       Date.now() - claim.createdAt.getTime() < this.convergenceTimeoutMs
-        ? withYieldingGatewayDrain(() => this.compute.stopRevision(revision))
+        ? withComputeWorkWaiting(
+            () => this.queue.claimableWorkWaiting({ except: this.stopYields.waiting() }),
+            () => withYieldingGatewayDrain(() => this.compute.stopRevision(revision)),
+          )
         : this.compute.stopRevision(revision),
     );
   }
 
   /** When work whose stop yielded to other Work runs again: 1 s, growing with its age to 5 s. */
   private stopYieldRecheckMs(claim: ClaimedWork): number {
-    return Math.max(
-      AGENT_STOP_YIELD_RECHECK_MS,
-      revisionReadinessRecheckMs(Date.now() - claim.createdAt.getTime()),
-    );
+    return stopYieldRecheckMs(Date.now() - claim.createdAt.getTime());
+  }
+
+  /**
+   * Records a committed AGENT_STOP_YIELDED deferral. Returns the work's yield count when its
+   * `worker.completed` line is due: the first yield, then at most one a minute (finding 1094).
+   */
+  private recordStopYield(claim: ClaimedWork): number | undefined {
+    this.stopYieldedThisPass = true;
+    return this.stopYields.yielded(claim.idempotencyKey);
   }
 
   private async processAgentDeletion(claim: ClaimedWork): Promise<void> {
@@ -2477,6 +2494,13 @@ export class ControllerWorker {
         Math.max(0, Date.now() - claim.createdAt.getTime()) / 1000,
       );
     }
+    let stopYields: number | undefined;
+    if (result.outcome === "pending" && result.code === "AGENT_STOP_YIELDED") {
+      stopYields = this.recordStopYield(claim);
+      if (stopYields === undefined) {
+        return;
+      }
+    }
     this.emit({
       event: "worker.completed",
       ...workLogFields(claim),
@@ -2486,6 +2510,7 @@ export class ControllerWorker {
       result: result.outcome,
       outcome: result.outcome,
       code: result.code,
+      ...(stopYields === undefined ? {} : { stopYields }),
     });
   }
 
@@ -4473,6 +4498,13 @@ export class ControllerWorker {
       await this.completeActivatedRevision(claim, resolved);
       return;
     }
+    let stopYields: number | undefined;
+    if (resolved.outcome === "pending" && resolved.code === "AGENT_STOP_YIELDED") {
+      stopYields = this.recordStopYield(claim);
+      if (stopYields === undefined) {
+        return;
+      }
+    }
     this.emit({
       event: "worker.completed",
       ...workLogFields(claim),
@@ -4484,6 +4516,7 @@ export class ControllerWorker {
       code: resolved.code,
       ...failureLogFields,
       ...this.deployTimingFields(claim),
+      ...(stopYields === undefined ? {} : { stopYields }),
     });
   }
 

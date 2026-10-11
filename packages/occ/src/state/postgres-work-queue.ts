@@ -950,16 +950,23 @@ export class PostgresWorkQueue {
   /**
    * Whether some Work could be claimed now. Work for an Agent or Namespace that
    * already has a claim (the caller's own included) does not count: no worker
-   * could take it.
+   * could take it. Neither does Work named in `except`.
    */
-  async claimableWorkWaiting(): Promise<boolean> {
+  async claimableWorkWaiting(
+    options: { readonly except?: readonly string[] } = {},
+  ): Promise<boolean> {
+    const except = options.except ?? [];
+    if (!Array.isArray(except) || except.some((key) => typeof key !== "string")) {
+      throw new ScopeViolationError("The excluded controller work keys are invalid.");
+    }
     const waiting = await this.client.query(
       `SELECT EXISTS (
          SELECT 1
          FROM occ.controller_work AS work
          WHERE ${this.claimablePredicate("$1")}
+           AND work.idempotency_key <> ALL($2::text[])
        ) AS waiting`,
-      [this.maxAttempts],
+      [this.maxAttempts, except],
     );
     const value = (waiting.rows[0] as { waiting?: unknown } | undefined)?.waiting;
     if (typeof value !== "boolean") {
