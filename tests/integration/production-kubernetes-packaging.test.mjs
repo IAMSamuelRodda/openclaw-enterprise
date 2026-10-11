@@ -3864,6 +3864,21 @@ test(
       ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
       ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
       [
+        "invalid Better Auth signing Secret key",
+        { "auth.secretKey": "bad/key" },
+        /auth\.secretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved Better Auth signing Secret key",
+        { "auth.secretKey": "." },
+        /auth\.secretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "overlong Better Auth signing Secret key",
+        { "auth.secretKey": "a".repeat(254) },
+        /auth\.secretKey must be a Kubernetes Secret key/,
+      ],
+      [
         "invalid GitHub client ID Secret key",
         { ...githubLoginValues, "auth.github.clientIdKey": "bad/key" },
         /auth\.github\.clientIdKey must be a Kubernetes Secret key/,
