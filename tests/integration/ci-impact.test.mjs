@@ -145,8 +145,9 @@ async function fixture(t, change, initial = {}, initialModes = {}, { moveMain } 
   };
   await git("init", "-q");
   // Commit and merge otherwise start `git maintenance run --auto --detach`,
-  // which outlives them: Git 2.55 repacks in the background once objects/17
-  // holds two loose objects, racing tempDir's removal (ENOTEMPTY).
+  // which outlives them and can rewrite .git/objects under the test and
+  // tempDir's removal (ENOTEMPTY); Git 2.55, for one, repacks in the
+  // background once objects/17 holds two loose objects.
   appendFileSync(
     join(repo, ".git/config"),
     "[user]\n\tname = CI test\n\temail = ci@example.test\n[maintenance]\n\tauto = false\n",
