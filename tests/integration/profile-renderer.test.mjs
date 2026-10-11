@@ -2127,6 +2127,17 @@ test("profiles refuse gateway storage class names the compute driver refuses", (
       /runtime\.gatewayStorageClassName must be a Kubernetes resource name of at most 253 characters/,
     );
   }
+  for (const gatewayStorageClassName of ["a".repeat(253), "gp3.encrypted"]) {
+    const output = render(
+      "openclaw",
+      baseInput({ runtime: { ...runtime, gatewayStorageClassName } }),
+    );
+    assert.equal(output.summary.ok, true, output.preflight.errors.join("\n"));
+    assert.match(
+      output.installation,
+      new RegExp(`gatewayStorageClassName: ${gatewayStorageClassName}`),
+    );
+  }
 });
 
 test("preflight rejects Codex seccomp paths the compute driver refuses", () => {

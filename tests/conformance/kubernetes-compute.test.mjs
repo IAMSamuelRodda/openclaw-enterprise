@@ -11049,6 +11049,13 @@ test("gateway storage class names must be Kubernetes resource names", () => {
       /SQLite-compatible gateway storage class must be a DNS-safe Kubernetes resource name/,
     );
   }
+  for (const gatewayStorageClassName of ["a".repeat(253), "gp3.encrypted"]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(
+        options({ runtime: { transportSecretPrefix: "transport", gatewayStorageClassName } }),
+      ),
+    );
+  }
 });
 
 test("Gateway and Harness storage are separate and preserve ephemeral Codex credentials", () => {
