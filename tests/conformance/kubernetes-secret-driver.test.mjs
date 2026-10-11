@@ -865,6 +865,162 @@ test("kubernetes-secret-driver removes a Secret whose create applied but answere
   assert.equal(client.calls.deleteNamespacedSecret, 1);
 });
 
+const ownershipRefused = (error) =>
+  error instanceof SecretOwnershipError &&
+  error.message === "Secret backend does not match exact OCC ownership.";
+const cleanupFailed = (error) =>
+  error instanceof SecretBackendUnavailableError &&
+  error.message ===
+    "The Kubernetes Secret create outcome is unknown, and its cleanup could not finish.";
+const stripSecretLabel = (body) => {
+  delete body.metadata.labels["openclaw.dev/secret"];
+};
+// A client whose admission webhook rewrites what create stores (and so what it answers),
+// with a hook to change the stored object after the answer and each delete's target recorded.
+const webhookClient = ({ rewrite = () => {}, answer = () => {}, afterStore = () => {} }) => {
+  const client = new FakeCoreV1Api();
+  const nsId = namespaceId();
+  client.addNamespace(nsId);
+  const realCreate = client.createNamespacedSecret.bind(client);
+  client.requested = [];
+  client.createNamespacedSecret = async (request) => {
+    const body = clone(request.body);
+    rewrite(body);
+    const answered = await realCreate({ ...request, body });
+    client.requested.push(`${request.namespace}/${request.body.metadata.name}`);
+    afterStore(client, `${request.namespace}/${request.body.metadata.name}`);
+    answer(answered);
+    return answered;
+  };
+  const realDelete = client.deleteNamespacedSecret.bind(client);
+  client.deleted = [];
+  client.deleteNamespacedSecret = async (request) => {
+    client.deleted.push(`${request.namespace}/${request.name}`);
+    return realDelete(request);
+  };
+  const driver = driverWithClient(client);
+  const create = () =>
+    driver.create({ id: secretId(), namespaceId: nsId, name: "model-key" }, "value");
+  return { client, create };
+};
+
+test("kubernetes-secret-driver deletes the exact Secret a refused create stored", async () => {
+  // Whatever the webhook rewrote, the create is refused and the stored object, which holds the
+  // value, is deleted by its name with the uid and resourceVersion it was answered with
+  // (finding 1111).
+  for (const [label, rewrite] of [
+    ["label stripped", stripSecretLabel],
+    [
+      "driver annotation rewritten",
+      (body) => {
+        body.metadata.annotations["openclaw.dev/secret-driver-id"] = "other-driver";
+      },
+    ],
+    [
+      "type rewritten",
+      (body) => {
+        body.type = "kubernetes.io/basic-auth";
+      },
+    ],
+    [
+      "made immutable",
+      (body) => {
+        body.immutable = true;
+      },
+    ],
+  ]) {
+    const { client, create } = webhookClient({ rewrite });
+    await assert.rejects(create, ownershipRefused, label);
+    assert.equal(client.secrets.size, 0, label);
+    assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }], label);
+    assert.deepEqual(client.deleted, client.requested, label);
+  }
+
+  // The delete targets the name this create chose, not one the answer claims, and the
+  // answer's own refusal is what the caller sees.
+  {
+    const { client, create } = webhookClient({
+      rewrite: stripSecretLabel,
+      answer: (answered) => {
+        answered.metadata.name = "secret-someone-else";
+      },
+    });
+    await assert.rejects(create, ownershipRefused);
+    assert.equal(client.secrets.size, 0);
+    assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
+    assert.deepEqual(client.deleted, client.requested);
+  }
+
+  // An accepted create deletes nothing.
+  {
+    const { client, create } = webhookClient({});
+    await create();
+    assert.equal(client.secrets.size, 1);
+    assert.equal(client.calls.deleteNamespacedSecret, 0);
+  }
+});
+
+test("kubernetes-secret-driver leaves an object that is no longer the refused answer alone", async () => {
+  // An object that is no longer the one answered (replaced under that name, or rewritten
+  // since) fails the delete preconditions and is left alone, and the driver reports that it
+  // could not clean up instead of a plain refusal.
+  for (const [label, field, value] of [
+    ["replaced", "uid", "uid-other"],
+    ["rewritten since", "resourceVersion", "2"],
+  ]) {
+    let replacement;
+    const { client, create } = webhookClient({
+      rewrite: stripSecretLabel,
+      afterStore: (fake, key) => {
+        replacement = clone(fake.secrets.get(key));
+        replacement.metadata[field] = value;
+        fake.secrets.set(key, replacement);
+      },
+    });
+    await assert.rejects(create, cleanupFailed, label);
+    assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }], label);
+    assert.deepEqual([...client.secrets.values()], [replacement], label);
+  }
+});
+
+test("kubernetes-secret-driver reports a refused create it cannot clean up as an unknown outcome", async () => {
+  // A delete the API server fails is sent once and reported as an unknown outcome, not
+  // swallowed into the refusal.
+  for (const failure of ["dropped", 403, 503]) {
+    const { client, create } = webhookClient({ rewrite: stripSecretLabel });
+    client.failureCodes.deleteNamespacedSecret.push(failure);
+    const pauses = [];
+    await assert.rejects(() => withRetryTimers(create, pauses), cleanupFailed, `${failure}`);
+    assert.equal(client.secrets.size, 1, `${failure}`);
+    assert.equal(client.calls.deleteNamespacedSecret, 1, `${failure}`);
+    assert.deepEqual(pauses, [], `${failure}`);
+  }
+
+  // An object already gone needs no cleanup, so the refusal stands.
+  {
+    const { client, create } = webhookClient({
+      rewrite: stripSecretLabel,
+      afterStore: (fake, key) => fake.secrets.delete(key),
+    });
+    await assert.rejects(create, ownershipRefused);
+    assert.equal(client.calls.deleteNamespacedSecret, 1);
+  }
+
+  // An answer without the uid or resourceVersion that would pin a delete cannot be cleaned up
+  // safely, so nothing is deleted and the outcome is reported as unknown.
+  for (const field of ["uid", "resourceVersion"]) {
+    const { client, create } = webhookClient({
+      rewrite: stripSecretLabel,
+      answer: (answered) => {
+        delete answered.metadata[field];
+      },
+    });
+    await assert.rejects(create, cleanupFailed, field);
+    assert.equal(client.secrets.size, 1, field);
+    assert.equal(client.calls.deleteNamespacedSecret, 0, field);
+  }
+});
+
 test("kubernetes-secret-driver ends a retry pause at once when the owner cancels", async () => {
   const client = new FakeCoreV1Api();
   const { driver, secret } = await storedSecret(client);

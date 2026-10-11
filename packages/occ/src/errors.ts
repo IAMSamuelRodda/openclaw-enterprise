@@ -357,8 +357,16 @@ export function modelProviderMessage(key: string, message: (path: string) => str
   return keyedSettingMessage("models.providers", key, message);
 }
 
-const modelCredentialMessage = (path: string): string =>
-  `Configuration field ${path} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.`;
+const inlineCredentialMessage =
+  (instead: string) =>
+  (path: string): string =>
+    `Configuration field ${path} holds a credential value inline, where a reference is required. ${instead}`;
+const modelCredentialMessage = inlineCredentialMessage(
+  "Store the key as a Secret and select it as the Agent's model credential instead.",
+);
+const gatewayPasswordMessage = inlineCredentialMessage(
+  "Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+);
 
 /**
  * A literal credential in a known model credential field of Configuration values. The
@@ -367,10 +375,18 @@ const modelCredentialMessage = (path: string): string =>
 export class ModelCredentialValueError extends Error {
   readonly path: string;
 
-  constructor(path: string) {
-    super(configurationFieldMessage(path, modelCredentialMessage));
+  constructor(path: string, message: (path: string) => string = modelCredentialMessage) {
+    super(configurationFieldMessage(path, message));
     this.name = "ModelCredentialValueError";
     this.path = path;
+  }
+}
+
+/** A literal gateway.auth.password in Configuration values, reported like a model credential. */
+export class GatewayPasswordValueError extends ModelCredentialValueError {
+  constructor(path: string) {
+    super(path, gatewayPasswordMessage);
+    this.name = "GatewayPasswordValueError";
   }
 }
 
