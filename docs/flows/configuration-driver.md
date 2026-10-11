@@ -1,7 +1,7 @@
 ---
 created: 2026-08-19
-updated: 2026-10-10
-last_updated_session: authoring-run/f29e292f-76cb-44a1-88b5-e0244f9164fc
+updated: 2026-10-11
+last_updated_session: fix-1118
 ---
 
 # Configuration Driver and Agent Revision Flow
@@ -119,9 +119,12 @@ are dispatched by the
 identity and checks the selected IAM Driver before touching tenant data:
 creation targets the exact Namespace-owned Configuration resource; reads,
 updates, and deletes target the exact Configuration identifier in that
-Namespace. Creation requires `kind: "agent"` and a native root-object JSON
-document; omitted or unknown kinds and malformed request shapes fail with
-`400`. Updates require the complete replacement `values` document and accept
+Namespace. POST and PATCH accept bodies up to 6 MiB plus 64 KiB (the
+Kubernetes Driver's 1 MiB of values in six-byte JSON escapes, plus the
+envelope), so their `onRequest` hook runs `authorizeConfigurationWrite` before
+the body is read; the transaction repeats it. Creation requires
+`kind: "agent"` and a native root-object JSON document; omitted or unknown
+kinds and malformed request shapes fail with `400`. Updates require the complete replacement `values` document and accept
 optional `secretBindings`; `kind`,
 `generation`, and ownership are server-owned and cannot be supplied or changed.
 OCC preserves nested values and SecretRefs unchanged. Malformed,
@@ -202,6 +205,8 @@ its optional integration is skipped.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 12:00: Configuration POST/PATCH admit every Configuration the Kubernetes Driver stores (6 MiB + 64 KiB body) and check the create or update grant before reading the body. (fix-1118, finding 1118)
 
 - 2026-10-10 08:00: Kubernetes renders `gateway.bind: lan` for an omitted or `auto` bind; Kubernetes and Docker Compute refuse other unreachable listeners (other binds, non-`0.0.0.0` custom hosts, Tailscale exposure) before revision creation. (fix-996-999, findings 996-998)
 

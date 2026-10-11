@@ -19,7 +19,10 @@ Every Agent Configuration has the required, immutable `kind: "agent"`. Its
 SecretRefs. The optional `secretBindings` field binds exact Namespace-owned
 Secrets to selected gateway environment variables; the Secret Driver stores the
 values separately. The Configuration Driver stores the native document. The
-bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry. Reviewed
+bundled Kubernetes Driver uses one `openclaw.json` ConfigMap entry, so values
+must serialize to less than 1 MiB. Configuration POST/PATCH bodies allow 6 MiB
+plus 64 KiB for JSON escapes and the envelope; a caller without the create or
+update grant is refused before the body is read. Reviewed
 bundled and installed Configuration Drivers are available in development and
 production.
 
