@@ -113,9 +113,9 @@ Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), Google hosted domains (at most 253 characters,
 last label starting with a letter), GatewayClass, gateway API key Secret, database
-CA Secret, gateway StorageClass, repository ConfigMap, Secret and Service resource
-names, and paired metrics scraper selectors. Invalid values fail before
-`values.yaml` or `installation.yaml` is written.
+CA Secret, ChatGPT admin Secret, gateway StorageClass, repository ConfigMap, Secret
+and Service resource names, and paired metrics scraper selectors. Invalid values
+fail before `values.yaml` or `installation.yaml` is written.
 
 `scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
 and client-secret Secret keys for GitHub, Google and OIDC, considering the chart's
@@ -280,6 +280,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11: Refuse ChatGPT admin Secret names that Kubernetes refuses.
 
 - 2026-10-10: Public CA Secrets may share one Secret, as in the chart.
 
