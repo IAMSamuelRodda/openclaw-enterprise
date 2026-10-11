@@ -375,8 +375,8 @@ function podRestarts({ metadata = {}, status = {} }) {
 
 // The QA evidence artifact is uploaded on every run, and only its *.json files;
 // keep the API and worker log tails there, redacted, for the kubernetes control
-// plane (Compose runs them as containers outside the cluster): every worker Pod
-// plus the previous container of a restarted one, platform Pod restarts, recent
+// plane (Compose runs them as containers outside the cluster), plus each worker
+// Pod during a rollout, a restarted worker's previous log, platform Pod restarts, recent
 // Events in the platform and remaining Agent Namespaces, and the drain lines of a
 // Gateway still terminating. Returns the file name.
 async function recordPlatformLogs(f, label, remainingPods = []) {
@@ -413,6 +413,9 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
     );
   const logs = {};
   logs.api = await attempt(() => containerTail("deployment/openclaw-enterprise-api", "api"));
+  logs.worker = await attempt(() =>
+    containerTail("deployment/openclaw-enterprise-worker", "worker"),
+  );
   const platformPods = await attempt(async () =>
     JSON.parse(
       await f.kubectl(
@@ -427,25 +430,20 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
     ).items.map(podRestarts),
   );
   logs.platformPods = platformPods;
-  // `logs deployment/...` reads one Pod and never its previous container; a
-  // rollout or restart can leave the stop's worker elsewhere, so read each worker
-  // Pod by name (the Deployment when no worker Pod is listed).
+  // `logs deployment/...` reads one Pod and never its previous container: during
+  // a rollout read every worker Pod by name, and a restarted one's previous log.
   const workerPods = Array.isArray(platformPods)
     ? platformPods.filter(({ component }) => component === "worker")
     : [];
-  logs.worker = {};
   for (const pod of workerPods) {
-    logs.worker[pod.name] = await attempt(() => containerTail(pod.name, "worker"));
+    if (workerPods.length > 1) {
+      (logs.workerPods ??= {})[pod.name] = await attempt(() => containerTail(pod.name, "worker"));
+    }
     if (pod.containers.find(({ name }) => name === "worker")?.restartCount > 0) {
       (logs.workerPrevious ??= {})[pod.name] = await attempt(() =>
         containerTail(pod.name, "worker", "--previous"),
       );
     }
-  }
-  if (workerPods.length === 0) {
-    logs.worker["deployment/openclaw-enterprise-worker"] = await attempt(() =>
-      containerTail("deployment/openclaw-enterprise-worker", "worker"),
-    );
   }
   const eventNamespaces = [
     platformNamespace,
