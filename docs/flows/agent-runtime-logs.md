@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: 2026-10-11
-last_updated_session: issue-2114
+last_updated_session: fix-1096
 ---
 
 # Agent runtime logs flow
@@ -65,38 +65,38 @@ a closed query schema. `apps/controller/src/index.ts:perform` answers `501` when
 `agentRuntimeLogs` is disabled. `OpenClawController.runtimeLogTarget` authorizes
 the tier action and Agent `read` (plus revision `read` for status only), resolves
 the revision within the exact Agent, then rejects a Driver without
-`describeAgentRuntime` or with `runtimeLogging: "driver"`. Only then does the
-route's `admitRead` callback apply the replica-local
-`apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` around the Driver
-reads, so a denial is always audited and never spends a token.
+`describeAgentRuntime` or with `runtimeLogging: "driver"`. Only then does
+`admitRead` apply the replica-local
+`apps/controller/src/http/runtime-logs.ts:RuntimeLogLimiter` to Driver reads, so
+a denial is always audited and spends no token.
 
 ### 2. Describe the runtime
 
-`KubernetesComputeDriver.describeAgentRuntime` reports the current termination
-when terminated, otherwise its prior termination. It resolves the owned Namespace
-and lists exact Agent/revision/workload-role labels. Single-cluster Gateways and
-Harnesses share the tenant namespace; split clusters place Gateways in the control
-target and Harnesses in execution. It lists Events by
-`involvedObject.uid`, keeps only that Pod's Events, drops the scheduler's
-`FailedScheduling` retry after a lost PVC update race once the Pod has a node,
-follows Event-list continuation under the same five-second deadline, retains
-the newest 100 eligible Events across all pages, and takes each
-Event's `container` from `involvedObject.fieldPath` (`spec.containers{name}` or
-the init or ephemeral form; `null` for Pod-level Events such as `Scheduled`). A log
-read passes `{ source, events: false }`, so it lists only that source's Pods and
-no Events. Each
+`KubernetesComputeDriver.describeAgentRuntime` resolves the owned Namespace and
+lists Pods by exact Agent, revision and role labels. A single cluster holds
+Gateways and Harnesses in one tenant namespace; a two-cluster profile reads
+Gateways from control and Harnesses from execution. It reports a terminated
+container's current termination, otherwise the prior one. Event
+reads keep only the Pod's newest 100 eligible Events across continuation pages,
+drop a settled `FailedScheduling` PVC retry, and derive `container` from
+`involvedObject.fieldPath` (`null` for Pod Events). A log read passes
+`{ source, events: false }`: one source, no Events. Each
 Kubernetes call has a five-second deadline; a `403` becomes
 `RuntimeLogsForbiddenByClusterError`. `runtime-logs/description.ts:validRuntimeDescription`
-checks names, UIDs and counts, masks node, image and Secret names in Event
-messages (`runtime-logs/redact.ts:maskRuntimeEventText`) and redacts reasons and
-Event messages.
+checks names, UIDs, counts and RFC 3339 UTC timestamps. A malformed, impossible
+or offset Driver timestamp, Kubernetes Pod and Event time strings included, makes
+runtime status unavailable instead of being normalized to a different instant.
+The validator also
+masks node, image and Secret names in Event messages
+(`runtime-logs/redact.ts:maskRuntimeEventText`) and redacts reasons and Event
+messages.
 
 ### 3. Read one page
 
 `runtime-logs/read.ts:readRuntimeLogPage` verifies the HMAC cursor
 (`runtime-logs/cursor.ts`) against the principal, Agent, revision and source,
 and accepts only a Pod the description listed. A request without a cursor, or
-with one older than an hour, or a cursor whose Pod is gone, starts a view: the controller appends
+with one over an hour old or naming a gone Pod, starts a view: the controller appends
 `openclaw.agents.runtime_logs.view`, an `access` audit event naming the admitting
 action, before any log read. The Driver re-checks
 Pod ownership, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
@@ -104,8 +104,8 @@ Pod ownership, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
 zero restarts, no current or previous instance, and kubelet's exact `400`
 waiting-to-start Status matching the Pod, container and `PodInitializing` or
 `ContainerCreating` reason yield an empty page. Logs are requested first,
-so stale waiting status cannot hide available output. Unrelated failures retain
-their error mapping.
+so stale waiting status cannot hide output; unrelated failures keep their error
+mapping.
 `kubernetesRuntimeLogLine` separates kubelet's RFC3339 timestamp from each raw
 line and converts numeric offsets to UTC while retaining every fractional digit.
 Unknown or malformed offset prefixes remain untimed raw text. A cursor
@@ -148,10 +148,10 @@ progress; replayed overlap cannot erase a carried later BEGIN. Ordinary non-PEM
 text remains visible while ambiguous context stays open.
 
 Missing, invalid or reordered times make the frontier uncertain (`null`); later
-timestamped pages alone cannot repair that uncertainty. Empty polls preserve it,
+timestamped pages alone cannot repair it. Empty polls preserve it,
 and lines beyond the page or byte cut do not advance it. A new view, expiry,
 instance/Pod change or replacement during the read discards the old context.
-The paired fields are validated together under the existing cursor MAC; malformed
+The paired fields share the cursor MAC; malformed
 or inconsistent pairs fail as `cursor_invalid` before a Driver read. Legacy
 cursors and initial tails without observed PEM boundaries remain unknown and
 best-effort.
@@ -162,8 +162,9 @@ and implements `readSandboxLogs`, resolves Compute's placement with
 `resolveSandboxNamespace`, and runs `runtime-logs/sandbox.ts:readSandboxLogPage`.
 `OpenShellSandboxDriver.readSandboxLogs` derives the Sandbox name from the
 revision and calls `GetSandboxLogs` through `openShellSandboxLogReader`, which
-exposes nothing else. OpenShell stamps supervisor lines when recorded but
-batches them, and filters `since_time` by that stamp, so a resume sends a time
+exposes nothing else. The client rejects impossible `since_time` dates before
+gRPC dispatch. OpenShell stamps supervisor lines when recorded but batches them,
+and filters `since_time` by that stamp, so a resume sends a time
 `SANDBOX_LOG_OVERLAP_MS` (5 s) behind the newest delivered line; the cursor
 keeps one hash per line delivered since then (up to 48), and each re-read line
 consumes one. First pages retain the requested window start.
@@ -186,7 +187,7 @@ Sandbox IDs are refused; a new Sandbox ID emits `stream_replaced`.
 `sanitizeSandboxLogLines` parses the OCSF shorthand into allowlisted fields.
 
 A download (`download=true`) forces `tailLines` to 1000, rejects a `cursor` with
-`400`, and always starts a new view; `apps/controller/src/index.ts:auditAction`
+`400`, and starts a new view; `apps/controller/src/index.ts:auditAction`
 names its audit event, and any denial, `openclaw.agents.runtime_logs.download`.
 
 ### 4. Return
@@ -216,8 +217,7 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 ## Debugging and Verification
 
 - `go test ./internal/occcli -run '^TestResourceRequestStopsWhenCommandContextIsCanceled$'`
-  proves loopback CLI cancellation: follow exits cleanly, while one-shot reads
-  retain the error. It is not deployed OCC proof.
+  proves the loopback CLI cancellation above; it is not deployed OCC proof.
 
 - `503 RUNTIME_LOGS_CLUSTER_RBAC` means the API ServiceAccount lacks
   `pods/log`, `events` or, on an execution cluster, `pods` reads in that
@@ -243,6 +243,12 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 09:48: Refuse impossible or offset Kubernetes Pod and Event times. (fix-1096 - 839b0c90cb1c54d7ed70eb23229bd117f25278be)
+
+- 2026-10-11: Reject impossible timestamps. (#2146)
+
+- 2026-10-11 15:20: Reject malformed or impossible Compute Driver timestamps at the runtime-description boundary. (authoring-run/b5dc3ace-2767-4645-9b89-e30d18fa3184 - 2a1eae472d6a820a574cdbcb75dd7d31e3619a68)
 
 - 2026-10-11 09:10: Reject sub-second runtime-log `--since` before any API request. (issue-2114 - 724b37bd1630f0b066bb2cbc23e3e965d172f9a7)
 

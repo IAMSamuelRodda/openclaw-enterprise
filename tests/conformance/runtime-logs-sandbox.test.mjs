@@ -884,6 +884,71 @@ test("the OpenShell Sandbox Driver observes only its own dedicated revisions", a
   assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
 });
 
+// Finding 1127: Compute admits a revision's workspace-node relay to its Agent
+// Gateway by the labels the Driver returns; OpenShell's supervisor Pod carries the
+// Sandbox's gateway-minted ID, not the Sandbox name Compute could derive.
+test("the OpenShell Sandbox Driver names only its own revision's supervisor as the workspace-node peer", async () => {
+  const gateway = logOnlyGatewayClient();
+  const driver = openShellSandboxDriver(gateway.client);
+  const namespace = { id: "ns_1", name: SANDBOX_NAMESPACE, status: "ready", createdAt: "x" };
+  const revision = {
+    id: "rev_00000000-0000-4000-8000-000000000001",
+    namespaceId: namespace.id,
+    agentId: "agt_1",
+    sandboxDriverId: driver.id,
+    harness: { id: "codex", mode: "dedicated" },
+  };
+  const signal = AbortSignal.timeout(2_000);
+  for (const context of [
+    { namespace, revision: { ...revision, sandboxDriverId: "another-sandbox" }, signal },
+    { namespace: { ...namespace, id: "ns_2" }, revision, signal },
+    { namespace, revision: { ...revision, harness: { id: "openclaw", mode: "embedded" } }, signal },
+  ]) {
+    await assert.rejects(driver.workspaceNodePeerLabels(context), /outside its selected dedicated/);
+  }
+  assert.deepEqual(gateway.requests, [], "a refused lookup reads nothing");
+  // No Sandbox yet: no peer.
+  assert.equal(await driver.workspaceNodePeerLabels({ namespace, revision, signal }), undefined);
+  const name = gateway.requests[0].getSandbox.name;
+  assert.equal(name, driver.harnessResource({ namespace, revision }).resourceName);
+  const sandboxId = "0f4c1d0e-7b7e-4a55-9a64-3c1e0f5d2b11";
+  gateway.state.sandbox = {
+    name,
+    id: sandboxId,
+    labels: {},
+    annotations: { "openclaw.dev/revision-id": revision.id },
+    serviceUrls: {},
+    phase: "SANDBOX_PHASE_READY",
+  };
+  assert.deepEqual(await driver.workspaceNodePeerLabels({ namespace, revision, signal }), {
+    "openshell.ai/sandbox-id": sandboxId,
+    "openshell.ai/boundary-role": "supervisor",
+  });
+  // Another revision's Sandbox, or one without a usable ID, is refused.
+  gateway.state.sandbox = {
+    ...gateway.state.sandbox,
+    annotations: { "openclaw.dev/revision-id": "rev_other" },
+  };
+  await assert.rejects(
+    driver.workspaceNodePeerLabels({ namespace, revision, signal }),
+    /without exact AgentRevision ownership/,
+  );
+  for (const id of [undefined, "", "not a label value", "x".repeat(64)]) {
+    gateway.state.sandbox = {
+      name,
+      ...(id === undefined ? {} : { id }),
+      labels: {},
+      annotations: { "openclaw.dev/revision-id": revision.id },
+      serviceUrls: {},
+    };
+    await assert.rejects(
+      driver.workspaceNodePeerLabels({ namespace, revision, signal }),
+      /no ID usable as a supervisor Pod label/,
+    );
+  }
+  assert.deepEqual([...new Set(gateway.touched)], ["getSandbox"]);
+});
+
 test("without a log-reading Sandbox Driver the sandbox source is absent", async () => {
   const fixture = await createRuntimeLogFixture();
   const target = await fixture.deployAgent("no-sandbox");

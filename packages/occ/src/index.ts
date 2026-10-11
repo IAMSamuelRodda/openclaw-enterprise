@@ -187,6 +187,7 @@ import {
   SecretStorageDriverError,
   SecretValueError,
 } from "./errors.ts";
+import { validateConfigurationSettings } from "./configuration-settings.ts";
 import { validateModelProviderSettings } from "./model-provider-settings.ts";
 import {
   readRuntimeLogPage,
@@ -291,6 +292,7 @@ export {
   CredentialSourceTypeNotOfferedError,
   CredentialWithdrawalInProgressError,
   CredentialWithdrawalRefusedError,
+  GatewayPasswordValueError,
   HarnessAuthSecretDriverError,
   IAMAccessBindingRoleError,
   IAMPolicyValidationError,
@@ -341,6 +343,7 @@ export {
   type RuntimeLogQuery,
   type RuntimeLogViewAdmission,
   type SanitizedRuntimeLogRecord,
+  validRuntimeLogFrontierTime,
 } from "./runtime-logs/index.ts";
 export {
   PINNED_OPENCLAW_RUNTIME_SUPPORTS_NATIVE_WORKERS,
@@ -386,6 +389,7 @@ export {
 } from "./state/platform-state.ts";
 export { resolveConfiguredHarnessId } from "./configured-harness.ts";
 export { requireOpenClawRoster } from "./openclaw-roster.ts";
+export { CODEX_APPROVAL_POLICY_SETTING, codexApprovalPolicy } from "./configuration-settings.ts";
 export { PostgresCommitOutcomeUnknownError };
 export {
   PostgresHumanAuthentication,
@@ -2344,6 +2348,7 @@ export class OpenClawController {
         harnessAuth,
       );
       validateModelProviderSettings(configurationInput.values);
+      validateConfigurationSettings(configurationInput.values);
       await configurationDriver.validate({
         id: "cfg_00000000-0000-4000-8000-000000000000",
         namespaceId: namespace.id,
@@ -3877,6 +3882,29 @@ export class OpenClawController {
     });
   }
 
+  /**
+   * The grant check that opens createConfiguration (no configurationId) or
+   * updateConfiguration, alone. The HTTP layer runs it before it reads a write's body (up to
+   * about 6 MiB), so a caller without the grant is refused without the body being buffered.
+   * Both writes repeat it in their transaction, followed by the Secret binding checks.
+   */
+  async authorizeConfigurationWrite(
+    principalId: string,
+    namespaceId: string,
+    configurationId?: string,
+  ): Promise<void> {
+    if (configurationId === undefined) {
+      this.namespaceIdentity(namespaceId);
+    } else {
+      this.configurationIdentity(namespaceId, configurationId);
+    }
+    await this.authorize(principalId, configurationId === undefined ? "create" : "update", {
+      kind: "configuration",
+      id: configurationId ?? namespaceId,
+      namespaceId,
+    });
+  }
+
   async updatePreset(principalId: string, input: UpdatePresetInput): Promise<Readonly<Preset>> {
     if (input.name !== undefined && !isName(input.name)) {
       throw new PresetValidationError("The Preset name is invalid.");
@@ -4742,6 +4770,7 @@ export class OpenClawController {
         createdAt: this.timestamp(),
       });
       validateModelProviderSettings(values);
+      validateConfigurationSettings(values);
       requireDeployableRoster(values);
       await driver.validate(configuration);
       const metadata = await state.configurations.createConfiguration({
@@ -5084,8 +5113,9 @@ export class OpenClawController {
         createdAt: advanced.createdAt,
       });
       validateModelProviderSettings(values);
-      // A stored Configuration that predates this rule still reads, and deployment refuses it as
-      // before; only a replacement that keeps the refused roster fails.
+      // A stored Configuration that predates these rules still reads, and deployment refuses it
+      // as before; only a replacement that keeps the refused value fails.
+      validateConfigurationSettings(values);
       requireDeployableRoster(values);
       await driver.validate(configuration);
       // Registered before the write: a replace that applied but answered with an error (a

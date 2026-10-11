@@ -3455,6 +3455,70 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
   assert.equal(longest.length, 253);
 });
 
+// Findings 1065 and 1066: every Secret or ConfigMap name an operator sets, and the GatewayClass,
+// must be a Kubernetes resource name (the profile renderer's resourceNameRule), so a malformed
+// one fails at template time instead of in the cluster.
+const oidcLoginValues = {
+  "auth.oidc.enabled": "true",
+  "auth.recoveryUserId": "recovery-admin_1",
+  "auth.oidc.issuer": "https://tenant.idp.example.test/",
+  "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
+  "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
+  "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+};
+const executionClusterValues = {
+  "executionCluster.enabled": "true",
+  "executionCluster.apiKubeconfigSecretName": "execution-api",
+  "executionCluster.workerKubeconfigSecretName": "execution-worker",
+  "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+};
+for (const [field, enable = {}] of [
+  ["installation.secretName"],
+  ["database.secretName"],
+  ["auth.secretName"],
+  ["database.caSecretName", databaseCaValues],
+  ["auth.github.secretName", githubLoginValues],
+  ["auth.google.secretName", { "auth.google.enabled": "true", "auth.recoveryUserId": "r1" }],
+  ["auth.oidc.secretName", oidcLoginValues],
+  ["backend.chatgpt.secretName", chatgptValues],
+  ["gatewayRouting.apiKeySecretName", gatewayRoutingValues],
+  ["gatewayRouting.tlsSecretName", gatewayRoutingValues],
+  ["gatewayRouting.gatewayClassName", gatewayRoutingValues],
+  [
+    "gatewayRouting.caSecretName",
+    { ...externalGatewayRoutingValues, "gatewayRouting.caSecretKey": "ca.crt" },
+  ],
+  ["gatewayRouting.sandbox.tlsSecretName", sandboxValues],
+  ["executionCluster.apiKubeconfigSecretName", executionClusterValues],
+  ["executionCluster.workerKubeconfigSecretName", executionClusterValues],
+  ...[
+    "registryConfigMapName",
+    "serviceConfigSecretName",
+    "appKeySecretName",
+    "tlsSecretName",
+    "publicCaSecretName",
+  ].map((key) => [`repositoryCredentials.${key}`, repositoryCredentialValues]),
+  ["logging.collector.configSecretName", productionCollectorValues],
+  ["logging.collector.envSecretName", productionCollectorValues],
+]) {
+  test(`the chart refuses a malformed ${field} with the resource name rule`, tooling, async () => {
+    const message = new RegExp(
+      `${field.replaceAll(".", "\\.")} must be a Kubernetes resource name of at most 253 characters`,
+    );
+    for (const name of ["Bad_Name", "-secret", "secret.", "a".repeat(254)]) {
+      await assert.rejects(
+        render(enable, { strings: { [field]: name } }),
+        ({ code, stderr }) => code !== 0 && message.test(stderr),
+        `${field}: ${name.length > 40 ? `${name.length} characters` : name}`,
+      );
+    }
+    for (const name of ["occ.custom-secret-v2", "s".repeat(253)]) {
+      const { stdout } = await render(enable, { strings: { [field]: name } });
+      assert.match(stdout, new RegExp(`\\b${name.replaceAll(".", "\\.")}\\b`), field);
+    }
+  });
+}
+
 test(
   "the chart refuses a gateway API key Secret that holds other credentials",
   tooling,
@@ -3764,7 +3828,7 @@ test(
       const gateway = objects.find((object) => object.kind === "Gateway");
       assert.equal(gateway.metadata.namespace, namespace);
     }
-    for (const [description, override] of [
+    for (const [description, override, message] of [
       ["mutable controller", { "images.controller": "registry.example/controller:latest" }],
       ["missing Better Auth secret", { "auth.secretName": "" }],
       ["missing bootstrap admin email", { "bootstrap.adminEmail": "" }],
@@ -3792,6 +3856,49 @@ test(
       [
         "invalid database CA key",
         { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
+      ],
+      ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
+      ["reserved application database Secret key", { "database.appUrlKey": "." }],
+      ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],
+      ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
+      ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
+      ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
+      [
+        "invalid GitHub client ID Secret key",
+        { ...githubLoginValues, "auth.github.clientIdKey": "bad/key" },
+        /auth\.github\.clientIdKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved GitHub client secret Secret key",
+        { ...githubLoginValues, "auth.github.clientSecretKey": "." },
+        /auth\.github\.clientSecretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "overlong Google client secret Secret key",
+        {
+          "auth.google.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.google.clientSecretKey": "a".repeat(254),
+        },
+        /auth\.google\.clientSecretKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "invalid OIDC client ID Secret key",
+        {
+          "auth.oidc.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.oidc.clientIdKey": "bad/key",
+        },
+        /auth\.oidc\.clientIdKey must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved Google client ID Secret key",
+        {
+          "auth.google.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.google.clientIdKey": "..client-id",
+        },
+        /auth\.google\.clientIdKey must be a Kubernetes Secret key/,
       ],
       ["shared migration database credentials", { "database.migrationUrlKey": "application-url" }],
       [
@@ -3824,6 +3931,31 @@ test(
       [
         "ChatGPT Backend without an admin Secret key",
         { ...chatgptValues, "backend.chatgpt.key": "" },
+      ],
+      [
+        "ChatGPT Backend with an invalid admin Secret name",
+        { ...chatgptValues, "backend.chatgpt.secretName": "Bad_Name" },
+        /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
+      ],
+      [
+        "ChatGPT Backend with an invalid admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "bad/key" },
+        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "ChatGPT Backend with a reserved admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "..admin-key" },
+        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "ChatGPT Backend with an overlong admin Secret name",
+        { ...chatgptValues, "backend.chatgpt.secretName": "a".repeat(254) },
+        /backend\.chatgpt\.secretName must be a Kubernetes resource name/,
+      ],
+      [
+        "ChatGPT Backend with an overlong admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "a".repeat(254) },
+        /backend\.chatgpt\.key must be a Kubernetes Secret key/,
       ],
       [
         "Agent native admin enabled without a public DNS suffix",
@@ -3926,10 +4058,34 @@ test(
       // Rejection comes from the actual Helm templates, not a reimplemented test validator.
       await assert.rejects(
         render(override),
-        ({ code, stderr }) => code !== 0 && stderr.length > 0,
+        ({ code, stderr }) => code !== 0 && stderr.length > 0 && (!message || message.test(stderr)),
         description,
       );
     }
+    for (const [provider, override] of [
+      ["github", { ...githubLoginValues, "auth.github.clientIdKey": ".hidden" }],
+      [
+        "oidc",
+        {
+          "auth.oidc.enabled": "true",
+          "auth.recoveryUserId": "recovery-admin_1",
+          "auth.oidc.issuer": "https://tenant.idp.example.test/",
+          "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
+          "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
+          "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+          "auth.oidc.clientSecretKey": "a".repeat(253),
+        },
+      ],
+    ]) {
+      assert.match(
+        (await render(override)).stdout,
+        new RegExp(`OCC_AUTH_${provider.toUpperCase()}`),
+      );
+    }
+    assert.match(
+      (await render({ ...chatgptValues, "backend.chatgpt.key": ".hidden" })).stdout,
+      /key: "\.hidden"/,
+    );
     // OCI SHA-256 digests are `sha256` and lowercase hex; containerd refuses other
     // spellings at pull time. The uppercase algorithm was already refused; uppercase hex
     // was not.

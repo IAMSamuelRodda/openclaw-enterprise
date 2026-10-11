@@ -366,6 +366,17 @@ test("service admission bounds are finite and retain an explicit long-task polic
     },
   };
   assert.equal(validateServiceConfig(input).sessionPolicy.maximumDurationSeconds, 172800);
+  // The control socket limit is 103 bytes, matching the control client and the Driver schema.
+  const socketPath = (bytes) => `/run/${"s".repeat(bytes - "/run/.sock".length)}.sock`;
+  const longest = socketPath(103);
+  assert.equal(Buffer.byteLength(longest), 103);
+  assert.equal(
+    validateServiceConfig({ ...input, gateway: { ...input.gateway, controlSocket: longest } })
+      .gateway.controlSocket,
+    longest,
+  );
+  const multibyte = `/run/${"\u00e9".repeat(50)}.sock`;
+  assert.ok(multibyte.length < 103 && Buffer.byteLength(multibyte) > 103);
   // Every guard refuses with the same message, so each input breaks exactly one guard:
   // removing any guard lets its input through.
   const gateway = (patch) => ({ ...input, gateway: { ...input.gateway, ...patch } });
@@ -379,6 +390,8 @@ test("service admission bounds are finite and retain an explicit long-task polic
     gateway({ publicOrigin: "https://credentials.example/alias" }),
     gateway({ listen: "127.0.0.1:0" }),
     gateway({ controlSocket: "run/credentials/control.sock" }),
+    gateway({ controlSocket: socketPath(104) }),
+    gateway({ controlSocket: multibyte }),
     policy({ maximumDurationSeconds: undefined }),
     policy({ maximumDurationSeconds: Math.floor(Number.MAX_SAFE_INTEGER / 1000) + 1 }),
     policy({ allowedProfiles: ["git-write", ...profiles] }),

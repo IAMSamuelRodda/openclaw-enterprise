@@ -6814,7 +6814,7 @@ test("authorization rejects sparse decision evidence", async () => {
   assert.equal(response.body.error.code, "DEPENDENCY_UNAVAILABLE");
 });
 
-test("deployment refuses the retired Codex untrusted approval policy across Compute Drivers", async (t) => {
+test("deployment refuses a Codex approval policy the Gateway refuses across Compute Drivers", async (t) => {
   for (const [kind, nativeCompute] of plaintextGatewayComputeDrivers()) {
     await t.test(kind, async () => {
       // The API/state fixture owns lifecycle and credentials; the actual selected
@@ -6833,18 +6833,40 @@ test("deployment refuses the retired Codex untrusted approval policy across Comp
         namespace.id,
         "ready",
       );
+      const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
       // The pinned Gateway refuses untrusted at configuration load, with a doctor hint that
-      // cannot edit Compute's read-only configuration (finding 987).
-      for (const [name, approvalPolicy, expectedStatus] of [
-        ["untrusted", "untrusted", 409],
-        ["on-failure", "on-failure", 202],
-        ["omitted", undefined, 202],
+      // cannot edit Compute's read-only configuration (finding 987), and any value outside its
+      // enum; preparation refused those only after a dedicated deployment stopped the running
+      // revision (finding 1113). Configuration save refuses them now, so each is a row an older
+      // release saved, written past OCC.
+      for (const [name, approvalPolicy, message] of [
+        [
+          "untrusted",
+          "untrusted",
+          `Configuration setting ${setting} must not be "untrusted", which the OpenClaw runtime retired: use "on-request".`,
+        ],
+        [
+          "always",
+          "always",
+          `Configuration setting ${setting} must be "never", "on-request" or "on-failure".`,
+        ],
+        ["on-failure", "on-failure"],
+        ["omitted", undefined],
       ]) {
-        const agent = await createAgent(controller, namespace.id, `codex-approval-${name}`, {
-          plugins: {
-            entries: {
-              codex: {
-                config: { appServer: approvalPolicy === undefined ? {} : { approvalPolicy } },
+        const agent = await createAgent(controller, namespace.id, `codex-approval-${name}`);
+        const stored = fixture.configurationDriver.stored({
+          namespaceId: namespace.id,
+          id: agent.configurationId,
+        });
+        await fixture.configurationDriver.update({
+          ...stored,
+          values: {
+            ...stored.values,
+            plugins: {
+              entries: {
+                codex: {
+                  config: { appServer: approvalPolicy === undefined ? {} : { approvalPolicy } },
+                },
               },
             },
           },
@@ -6854,13 +6876,15 @@ test("deployment refuses the retired Codex untrusted approval policy across Comp
           "POST",
           `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
         );
-        assert.equal(result.status, expectedStatus, `${kind}: ${JSON.stringify(result.body)}`);
-        if (expectedStatus === 409) {
+        assert.equal(
+          result.status,
+          message === undefined ? 202 : 409,
+          `${kind}: ${JSON.stringify(result.body)}`,
+        );
+        if (message !== undefined) {
           assert.equal(result.body.error.code, "RESOURCE_CONFLICT");
-          assert.equal(
-            result.body.error.message,
-            'Configuration setting plugins.entries.codex.config.appServer.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired: use "on-request".',
-          );
+          assert.equal(result.body.error.message, message);
+          // No revision is admitted, so the worker never stops the running one.
           const revisions = await controller.request(
             "GET",
             `/namespaces/${namespace.id}/agents/${agent.id}/revisions`,

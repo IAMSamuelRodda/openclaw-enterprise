@@ -86,13 +86,14 @@ async function runLauncher(
 
   let expectedDockerHost = "";
   if (engine === "podman") {
-    const socket = join(await socketDirectory(context, "oce-k3d-podman-socket-"), "podman.sock");
+    // After hooks run in registration order: close the server before its directory goes.
     const server = createServer();
+    context.after(() => new Promise((resolvePromise) => server.close(() => resolvePromise())));
+    const socket = join(await socketDirectory(context, "oce-k3d-podman-socket-"), "podman.sock");
     await new Promise((resolvePromise, reject) => {
       server.once("error", reject);
       server.listen(socket, resolvePromise);
     });
-    context.after(() => new Promise((resolvePromise) => server.close(resolvePromise)));
     expectedDockerHost = `unix://${socket}`;
     await command(
       "podman",
