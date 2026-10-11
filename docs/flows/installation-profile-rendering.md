@@ -1,6 +1,6 @@
 ---
 created: 2026-09-28
-updated: 2026-10-10
+updated: 2026-10-11
 last_updated_session: authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c
 ---
 
@@ -76,16 +76,14 @@ registry names, so the same profile and input always render the same output.
 
 `scripts/render-installation-profile.mjs:buildInput`
 
-Every input section is closed: an unknown field is a preflight error, not
-ignored, so the renderer never accepts an unused readiness flag. The OpenClaw
+Every input section is closed: an unknown field is a preflight error, so the renderer never accepts an unused readiness flag. The OpenClaw
 profile rejects Codex-only inputs.
 
 The input schema has no field for the hosted discovery and `codex_pat` runtime
 token because Installation startup configuration does not consume it.
 `preflight.json` tells the operator to add that credential later as a
 same-Namespace Secret or through the Console. Managed ServiceAccount
-provisioning for `codex_pat` is optional and renders only when `codex.managedServiceAccounts` is
-supplied.
+provisioning for `codex_pat` is optional and renders only with `codex.managedServiceAccounts`.
 
 Preflight checks `controlPlane.releaseName` against Helm's lowercase release-name
 syntax and 53-character maximum. It also requires `controlPlane.namespace` and,
@@ -96,8 +94,7 @@ same rule to `gatewayNamespace` and `envoyNamespace`, and the chart to
 `controlPlane.dns.namespace` follow the same rule, as the chart does for
 `api.clients` and `dns`: NetworkPolicies select those peers by
 `kubernetes.io/metadata.name`, which only holds Namespace names. A dot, a
-slash, an uppercase letter, or a longer name fails before any deployable file
-is written. The shared `digestImage` check in `buildRendered`
+slash, an uppercase letter, or a longer name fails preflight. The shared `digestImage` check in `buildRendered`
 requires the literal `sha256` algorithm and 64 lowercase hexadecimal characters for
 `controlPlane.controllerImage`, `runtime.image`, and enabled `repository.image`.
 `controllerDigestImage` additionally applies the chart and bootstrap-volume
@@ -115,10 +112,10 @@ trailing whitespace and no control characters or line or paragraph separators.
 Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
 hostnames and their shared cookie parent domain (not a public suffix, checked
 with the API's `tldts` list), Google hosted domains (at most 253 characters,
-last label starting with a letter), GatewayClass, gateway API key Secret, gateway
-StorageClass, repository ConfigMap, Secret and Service resource names, and paired
-metrics scraper selectors. Invalid values fail before `values.yaml` or
-`installation.yaml` is written.
+last label starting with a letter), GatewayClass, gateway API key Secret, database
+CA Secret, gateway StorageClass, repository ConfigMap, Secret and Service resource
+names, and paired metrics scraper selectors. Invalid values fail before
+`values.yaml` or `installation.yaml` is written.
 
 `scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
 and client-secret Secret keys for GitHub, Google and OIDC, considering the chart's
@@ -129,7 +126,7 @@ Secrets must each differ from `occ-installation-startup`, `occ-database`,
 `occ-auth`, the generated Gateway TLS and root CA Secrets
 (`chartGatewaySecretNames`), the enabled log collector's Secrets and every Secret
 listed before it; only the two public CA Secrets may share one. A collision fails
-preflight before deployment files are written.
+preflight.
 
 `scripts/render-installation-profile.mjs:nodeSelector` checks
 `controlPlane.nodeSelector`, `runtime.nodeSelector` and
@@ -289,7 +286,7 @@ activation, and repository registry creation need separate evidence.
 - 2026-10-10: One `dedicatedSecrets` rule replaces the sign-in, gateway API key and credential Secret checks and adds the database CA Secret.
 
 - 2026-10-10: Refuse gateway API key Secret names that Kubernetes refuses.
-- 2026-10-11: Refuse Gateway StorageClass, repository ConfigMap and Secret names that Kubernetes refuses.
+- 2026-10-11: Refuse Gateway StorageClass, repository ConfigMap and Secret, and database CA Secret names that Kubernetes refuses.
 
 - 2026-10-10 02:33: Merge current main while retaining selector owners and Kubernetes DNS-subdomain parity. (authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c - db4ccbdea96a752cd99a66cf4cf02c195f5fe3ba)
 
