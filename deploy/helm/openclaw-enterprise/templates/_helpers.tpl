@@ -71,6 +71,7 @@
 {{- if not .Values.installation.secretName -}}{{- fail "installation.secretName must name the operator-created installation startup Secret" -}}{{- end -}}
 {{- if not .Values.database.secretName -}}{{- fail "database.secretName must name the operator-created database URL Secret" -}}{{- end -}}
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "auth.secretKey" "value" .Values.auth.secretKey) -}}
 {{- $github := .Values.auth.github -}}
 {{- $recoveryUserId := toString (default "" .Values.auth.recoveryUserId) -}}
 {{- if hasKey (default dict $github) "recoveryUserId" -}}{{- fail "auth.github.recoveryUserId is not a chart value; set auth.recoveryUserId" -}}{{- end -}}
