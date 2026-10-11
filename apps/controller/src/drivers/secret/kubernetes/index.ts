@@ -219,7 +219,13 @@ export class KubernetesSecretDriver implements SecretDriver {
       throw error;
     }
     try {
-      return this.checkedBackendRef(observed, identity, namespace);
+      const reference = this.checkedBackendRef(observed, identity, namespace);
+      // An answer under another name would record a backendRef that does not name what this
+      // create stored, so it is refused like any other nonconforming answer (finding 1121).
+      if (reference.name !== name) {
+        throw new SecretOwnershipError("Secret backend does not match exact OCC ownership.");
+      }
+      return reference;
     } catch (error) {
       await this.discardRefusedCreate(client, namespace, name, observed);
       throw error;
