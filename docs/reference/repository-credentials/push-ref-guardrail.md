@@ -76,6 +76,13 @@ Use GitHub repository rules for server-side controls.
 
 `repository-push-ref-not-allowed` means at least one destination is outside the
 allowlist. Choose an allowed branch. `repository-pre-push-guard-failed` means the
-guard could not safely check the push; inspect the selected binding, session and
-hook configuration. Neither result forwards ref updates. Do not retry an
-uncertain remote mutation without inspecting its result.
+guard could not safely check the push; a fixed reason code such as
+`invalid-repository-material` follows when one applies. Inspect the selected
+binding, session and hook configuration. Neither result forwards ref updates. Do
+not retry an uncertain remote mutation without inspecting its result. When
+session material cannot be read, only pushes to plainly spelled HTTPS hosts other
+than every binding's gateway and canonical origin proceed.
+
+Other dispatcher failures print `repository-hook-failed`, the hook name and a
+reason code. Push-to-checkout refusals use Git's own reasons, and a forwarded
+hook killed by a signal exits with 128 plus the signal number, as in Git.
