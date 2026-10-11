@@ -55,12 +55,27 @@ Agent that fails a check still reads; its next update must fix the pair.
 - an `authorization`, `api-key` or `x-api-key` header on a selected model
   provider or one of its models.
 
-`validateHarnessAuth` applies these first, then names a provider `apiKey` other
-than the Harness authentication reference, a channel credential reference
-without a Configuration Secret binding, and the dedicated OpenClaw model catalog
-settings. `validateWorkspaceSetup` needs an `agents.entries` roster of `main`
-alone (or none) and the managed workspace path; preparation also needs runtime
-storage, an Installation setting.
+`validateHarnessAuth` applies these first, then names the Agent's
+`harnessAuth.method` when its topology cannot use it (embedded OpenClaw takes
+`api_key`, dedicated OpenClaw also `credential_source`, and dedicated Codex
+also `codex_pat` and `oauth`), a provider `apiKey` other than the Harness
+authentication reference, a channel credential reference without a
+Configuration Secret binding, and the dedicated OpenClaw model catalog
+settings. Whether the Installation supplies what a method needs (OAuth needs
+no Sandbox Driver; a credential source needs its paired Sandbox) stays a fixed
+`409`.
+The channel runtime rule stays at deployment: it depends on the execution mode
+and the Installation's `runtime.channels`.
+
+`validateWorkspaceSetup` needs an `agents.entries` roster of `main` alone (or
+none) and the managed workspace path (or `/home/node/workspace` on a dedicated
+Harness); preparation also needs runtime storage, an Installation setting.
+[Docker Compute](../../../apps/controller/src/drivers/compute/docker/index.ts)
+applies the same
+[shared rule](../../../apps/controller/src/drivers/compute/workspace-setup-runtime.ts),
+with the same messages, at Agent save and in preparation. It accepts both paths on
+either topology, since one volume backs both, and also refuses `skipBootstrap`
+and `skipOptionalBootstrapFiles` on `agents.defaults` or `main`.
 
 ## Related
 

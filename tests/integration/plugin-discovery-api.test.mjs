@@ -632,10 +632,10 @@ test("Saved Agent plugin discovery rejects unsupported Harness authentication or
       harnessAuth: { method: "codex_pat", source: secret.ref },
     },
   });
-  assert.equal(embedded.status, 409, JSON.stringify(embedded.body));
+  assert.equal(embedded.status, 400, JSON.stringify(embedded.body));
   assert.equal(
     embedded.body.error.message,
-    "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
+    "Agent setting harnessAuth.method must be api_key for embedded OpenClaw on Kubernetes Compute: change harnessAuth or executionMode.",
   );
   // Stored discovery reads only a Secret-backed PAT today, so a dedicated Codex Agent whose
   // PAT comes from a managed ServiceAccount is refused like the other unsupported sources.
