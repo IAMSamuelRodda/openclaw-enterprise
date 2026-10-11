@@ -2,8 +2,6 @@ import type { OpenClawConfigurationDocument } from "@openclaw-enterprise/contrac
 import { keyedSettingPath } from "@openclaw-enterprise/occ";
 import { asRecord, splitModelRef } from "@openclaw-enterprise/utils";
 
-import { workspaceSetupMainAgent } from "../workspace-setup-runtime.ts";
-
 /**
  * Kubernetes Compute rules on the caller's own Configuration that preparation or the Gateway
  * entrypoint would otherwise apply only after a dedicated deployment stopped its predecessors
@@ -203,38 +201,41 @@ export function requireHarnessCredentialBinding(
   }
 }
 
-export const MANAGED_WORKSPACE = "/home/node/.openclaw/workspace";
-const DEDICATED_WORKSPACE = "/home/node/workspace";
+/** The Harness topologies Kubernetes Compute runs. */
+export type KubernetesHarnessTopology =
+  "embedded OpenClaw" | "Dedicated OpenClaw" | "Dedicated Codex";
+
+// The Harness authentication methods Kubernetes Compute delivers to each topology. What a
+// method also needs from the Installation (oauth needs no Sandbox Driver, credential_source
+// its paired Sandbox) is checked after this, with a fixed refusal.
+const HARNESS_AUTH_METHODS: Readonly<Record<KubernetesHarnessTopology, readonly string[]>> = {
+  "embedded OpenClaw": ["api_key"],
+  "Dedicated OpenClaw": ["api_key", "credential_source"],
+  "Dedicated Codex": ["api_key", "codex_pat", "oauth", "credential_source"],
+};
 
 /**
- * Initial workspace files reach only the native main Agent's managed durable workspace, so the
- * roster must be main alone (or omitted) and its workspace one Kubernetes Compute mounts.
- * Agent save and provisioning check this before the first deployment; preparation applies it
- * again to the admitted revision.
+ * The Agent's Harness authentication method must be one Kubernetes Compute delivers to the
+ * Agent's Harness topology. The rule depends only on the Agent (its binding and execution mode)
+ * and the Configuration's Harness, so Agent save, provisioning and deployment refuse it with
+ * the same message. `createError` names an Agent setting, not a Configuration one.
  */
-export function requireWorkspaceSetupConfiguration(
-  configuration: Readonly<OpenClawConfigurationDocument>,
-  mode: "embedded" | "dedicated",
+export function requireHarnessAuthMethod(
+  topology: KubernetesHarnessTopology,
+  method: string,
   createError: SettingError,
 ): void {
-  if (workspaceSetupMainAgent(configuration) === undefined) {
+  const accepted = HARNESS_AUTH_METHODS[topology];
+  if (!accepted.includes(method)) {
+    const list =
+      accepted.length === 1
+        ? accepted[0]
+        : `${accepted.slice(0, -1).join(", ")} or ${accepted.at(-1)}`;
+    // Codex runs only dedicated, so its execution mode is not a fix.
+    const fix = topology === "Dedicated Codex" ? "harnessAuth" : "harnessAuth or executionMode";
     throw createError(
-      "agents.entries",
-      "must hold only main, or be omitted, for initial workspace files: only the main Agent reads them",
-    );
-  }
-  const agents = asRecord(configuration.agents);
-  const main = asRecord(asRecord(agents?.entries)?.main);
-  const setting =
-    main?.workspace !== undefined ? "agents.entries.main.workspace" : "agents.defaults.workspace";
-  const workspace = main?.workspace ?? asRecord(agents?.defaults)?.workspace ?? MANAGED_WORKSPACE;
-  if (
-    workspace !== MANAGED_WORKSPACE &&
-    !(mode === "dedicated" && workspace === DEDICATED_WORKSPACE)
-  ) {
-    throw createError(
-      setting,
-      `must be ${MANAGED_WORKSPACE}${mode === "dedicated" ? ` or ${DEDICATED_WORKSPACE}` : ""}, or unset, for initial workspace files`,
+      "harnessAuth.method",
+      `must be ${list} for ${topology} on Kubernetes Compute: change ${fix}`,
     );
   }
 }

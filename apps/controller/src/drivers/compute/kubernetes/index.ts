@@ -116,7 +116,13 @@ import {
   createKubernetesClientConfiguration,
   KubernetesApiUnavailableError,
 } from "../../kubernetes/client.ts";
-import { WORKSPACE_SETUP_RUNTIME, workspaceSetupVerifier } from "../workspace-setup-runtime.ts";
+import {
+  HARNESS_WORKSPACE,
+  MANAGED_WORKSPACE,
+  requireWorkspaceSetupConfiguration,
+  WORKSPACE_SETUP_RUNTIME,
+  workspaceSetupVerifier,
+} from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import {
   validatePlaintextNativeGateway,
@@ -127,9 +133,10 @@ import {
   enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
+  type KubernetesHarnessTopology,
+  requireHarnessAuthMethod,
   requireHarnessCredentialBinding,
   requireWorkspaceNodePlugins,
-  requireWorkspaceSetupConfiguration,
   selectedModelProviders,
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
@@ -245,6 +252,16 @@ const callerSettingError = (setting: string, requirement: string) =>
 // The same rule refused in preparation, where the message reaches only diagnostics.
 const preparationSettingError = (setting: string, requirement: string) =>
   new ConfigurationFailure(configurationSettingMessage(setting, requirement));
+
+// An Agent setting the caller owns (its Harness authentication binding), refused at Agent save,
+// provisioning and deployment with the same message.
+const agentSettingError = (setting: string, requirement: string) =>
+  new ConfigurationHarnessError(`Agent setting ${setting} ${requirement}.`);
+
+// Initial workspace files land in the managed workspace; a dedicated Harness also mounts that
+// storage at its working directory.
+const kubernetesSetupWorkspaces = (mode: "embedded" | "dedicated"): readonly string[] =>
+  mode === "dedicated" ? [MANAGED_WORKSPACE, HARNESS_WORKSPACE] : [MANAGED_WORKSPACE];
 
 export interface KubernetesWorkloadPeer {
   readonly namespace: string;
@@ -3282,22 +3299,22 @@ export class KubernetesComputeDriver implements ComputeDriver {
         native ? "Dedicated OpenClaw" : "Dedicated Codex",
       );
     }
-    if (
-      (!embedded && !codex && !native) ||
-      !auth ||
-      (auth.method !== "api_key" &&
-        auth.method !== "codex_pat" &&
-        auth.method !== "oauth" &&
-        auth.method !== "credential_source") ||
-      (auth.method === "codex_pat" && !codex) ||
-      (embedded && auth.method !== "api_key")
-    ) {
+    if ((!embedded && !codex && !native) || !auth) {
       throw new ConfigurationFailure(
         "Harness authentication is incompatible with the selected topology.",
       );
     }
-    // Reject here, before a deployment stops predecessors, not only during preparation.
-    if (auth.method === "oauth" && (!codex || this.sandboxDriver !== undefined)) {
+    // The method against the Agent's topology is the caller's to fix, so it is named; whether
+    // the Installation supplies what a method needs (below) is not.
+    const topology: KubernetesHarnessTopology = embedded
+      ? "embedded OpenClaw"
+      : native
+        ? "Dedicated OpenClaw"
+        : "Dedicated Codex";
+    requireHarnessAuthMethod(topology, auth.method, agentSettingError);
+    // Reject here, before a deployment stops predecessors, not only during preparation. Only
+    // Dedicated Codex reaches this with oauth.
+    if (auth.method === "oauth" && this.sandboxDriver !== undefined) {
       throw new ConfigurationFailure("OAuth requires the Compute-owned dedicated Codex Harness.");
     }
     if (
@@ -3371,6 +3388,8 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (this.hostsWorkspaceNode(harness)) {
       requireWorkspaceNodePlugins(configuration, callerSettingError);
     }
+    // Not a Configuration save rule: it depends on the Agent's execution mode and on the
+    // Installation's channel runtime (runtime.channels), which an operator may add later.
     requireChannelTopology(
       enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError),
       {
@@ -3427,7 +3446,11 @@ export class KubernetesComputeDriver implements ComputeDriver {
     harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
   ): void {
-    requireWorkspaceSetupConfiguration(configuration, harness.mode, callerSettingError);
+    requireWorkspaceSetupConfiguration(
+      configuration,
+      kubernetesSetupWorkspaces(harness.mode),
+      callerSettingError,
+    );
   }
 
   /**
@@ -10258,7 +10281,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     }
     requireWorkspaceSetupConfiguration(
       revision.configuration,
-      revision.harness.mode,
+      kubernetesSetupWorkspaces(revision.harness.mode),
       preparationSettingError,
     );
     return setup;
