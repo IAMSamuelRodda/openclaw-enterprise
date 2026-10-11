@@ -3794,8 +3794,10 @@ test(
         { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
       ],
       ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
+      ["reserved application database Secret key", { "database.appUrlKey": "." }],
       ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],
       ["invalid migration database Secret key", { "database.migrationUrlKey": "bad/key" }],
+      ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
       ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
       ["shared migration database credentials", { "database.migrationUrlKey": "application-url" }],
       [
