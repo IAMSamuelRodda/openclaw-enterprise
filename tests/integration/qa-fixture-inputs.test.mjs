@@ -318,6 +318,10 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     env: {
       PRIVATE_INPUT: "launcher-private-value",
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+      OCC_DEVELOPMENT_COMPOSE_PROJECT: "occ-dev-qa-k-ab12cd34",
+      OCC_DEVELOPMENT_KUBERNETES_CLUSTER: "occ-dev-qa-k-ab12cd34",
+      OCC_DEVELOPMENT_STATE_DIRECTORY: "/runner/tmp/occ-dev-qa-k-ab12cd34-x/state",
+      OCC_DEVELOPMENT_K3S_IMAGE: "docker.io/rancher/k3s:v1.35.9-k3s1",
     },
     state: { platformNamespace: "oce-system" },
     async api(method, path) {
@@ -362,7 +366,8 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
       return (
         "2026-10-11T01:36:00Z kubernetes compute: stop requested for agent-1\n" +
         "2026-10-11T01:36:01Z authenticated with stop-fixture-service-key\n" +
-        "2026-10-11T01:36:02Z Authorization: Bearer abcdefghijklmnop\n"
+        "2026-10-11T01:36:02Z Authorization: Bearer abcdefghijklmnop\n" +
+        "2026-10-11T01:36:03Z cluster occ-dev-qa-k-ab12cd34 state /runner/tmp/occ-dev-qa-k-ab12cd34-x/state image docker.io/rancher/k3s:v1.35.9-k3s1\n"
       );
     },
     async record(name, value) {
@@ -423,7 +428,12 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     JSON.stringify(logs),
     /stop-fixture-service-key|abcdefghijklmnop|launcher-private-value/,
   );
-  assert.equal(logs.api.length, 3);
+  assert.equal(logs.api.length, 4);
+  // Fixed launcher settings stay readable.
+  assert.equal(
+    logs.api[3],
+    "2026-10-11T01:36:03Z cluster occ-dev-qa-k-ab12cd34 state /runner/tmp/occ-dev-qa-k-ab12cd34-x/state image docker.io/rancher/k3s:v1.35.9-k3s1",
+  );
   assert.match(logs.worker.unavailable.join("\n"), /unreachable/);
   assert.equal(describeStopObservation(undefined), "none");
   // During a rollout every worker Pod by name; only a restarted one's previous
@@ -509,6 +519,174 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   assert.equal(records.size, 0);
 });
 
+test("a QA Agent stop waits for the Gateway stop bound and records a slow stop without failing", async (t) => {
+  const { GATEWAY_STOP_TIMEOUT_MS } =
+    await import("../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts");
+  const { stopQaAgent, QA_STOP_TIMEOUT_MS, QA_SLOW_STOP_MS } =
+    await import("../helpers/qa-repository.mjs");
+  // The worker's own Gateway wait (grace plus one request) fits, with room for the
+  // Harness and the API; the old 300 s default did not.
+  assert.ok(QA_STOP_TIMEOUT_MS >= GATEWAY_STOP_TIMEOUT_MS + 10_000 + 3 * 60_000);
+  assert.ok(QA_STOP_TIMEOUT_MS > 300_000);
+  assert.equal(QA_SLOW_STOP_MS, 60_000);
+
+  const gateway = {
+    metadata: {
+      namespace: "oce-agent-4",
+      name: "agent-4-gateway-0",
+      deletionTimestamp: "2026-10-11T07:23:42Z",
+      labels: { "openclaw.dev/agent": "agent-4", "openclaw.dev/workload-role": "gateway" },
+    },
+    status: { phase: "Running" },
+  };
+  let clock = 0;
+  // Each GET advances the clock by the next step; the last step's read finds the stop done.
+  const fixture = (steps, { done = true } = {}) => {
+    const records = new Map();
+    let reads = 0;
+    const finished = () => done && reads >= steps.length;
+    const f = {
+      controlPlane: "kubernetes",
+      env: { PRIVATE_INPUT: "launcher-private-value" },
+      state: { platformNamespace: "oce-system" },
+      async api(method) {
+        if (method !== "GET") {
+          return undefined;
+        }
+        clock += steps[Math.min(reads, steps.length - 1)];
+        reads += 1;
+        return finished()
+          ? { desiredRuntimeState: "stopped", activeRevisionId: null }
+          : { desiredRuntimeState: "stopped", activeRevisionId: "revision-4" };
+      },
+      async kubectl(...args) {
+        if (args[0] === "get") {
+          return JSON.stringify({ items: finished() ? [] : [gateway] });
+        }
+        const [verb, target] = args.slice(2);
+        if (verb === "get") {
+          return JSON.stringify({ items: [] });
+        }
+        if (target === "agent-4-gateway-0") {
+          return "2026-10-11T07:18:13Z draining active work before stop with timeout 315000ms: 1 active chat run(s)\n";
+        }
+        return "2026-10-11T07:18:12Z worker.completed\n";
+      },
+      // Like the QA fixture's record: exclusive creation.
+      async record(name, value) {
+        if (records.has(name)) {
+          throw new Error(`EEXIST: ${name}`);
+        }
+        records.set(name, value);
+        return `${this.controlPlane}-${name}.json`;
+      },
+    };
+    return { f, records };
+  };
+  const written = [];
+  t.mock.method(process.stderr, "write", (text) => {
+    written.push(String(text));
+    return true;
+  });
+  const drain = [
+    "2026-10-11T07:18:13Z draining active work before stop with timeout 315000ms: 1 active chat run(s)",
+  ];
+
+  // A fast stop leaves no evidence.
+  const fast = fixture([0, 5_000]);
+  const fastAgent = { id: "agent-4", namespaceId: "namespace-1" };
+  await stopQaAgent(fast.f, fastAgent, { now: () => clock });
+  assert.equal(fastAgent.stopped, true);
+  assert.equal(fast.records.size, 0);
+  assert.deepEqual(written, []);
+
+  // Still running past 60 s: the drain lines are captured once, while the Gateway
+  // drains, then the completed stop records its total time and passes.
+  clock = 0;
+  const slow = fixture([61_000, 1_000, 1_000, 200_000]);
+  const slowAgent = { id: "agent-4", namespaceId: "namespace-1" };
+  await stopQaAgent(slow.f, slowAgent, { now: () => clock });
+  assert.equal(slowAgent.stopped, true);
+  assert.deepEqual([...slow.records.keys()].sort(), [
+    "agent-4-slow-stop",
+    "agent-4-slow-stop-platform-logs",
+  ]);
+  assert.deepEqual(
+    slow.records.get("agent-4-slow-stop-platform-logs").logs.gatewayDrain["agent-4-gateway-0"],
+    drain,
+  );
+  assert.deepEqual(slow.records.get("agent-4-slow-stop"), {
+    thresholdMs: 60_000,
+    observedAfterMs: 61_000,
+    observation: {
+      desiredRuntimeState: "stopped",
+      activeRevisionId: "revision-4",
+      pods: [
+        {
+          namespace: "oce-agent-4",
+          name: "agent-4-gateway-0",
+          phase: "Running",
+          deletionTimestamp: "2026-10-11T07:23:42Z",
+          finalizers: [],
+        },
+      ],
+    },
+    platformLogs: "kubernetes-agent-4-slow-stop-platform-logs.json",
+    elapsedMs: 263_000,
+  });
+  assert.equal(written.length, 1);
+  assert.match(
+    written[0],
+    /^QA slow stop \(diagnostic, not a failure\): Agent agent-4 took 263 s; drain evidence: kubernetes-agent-4-slow-stop-platform-logs\.json\n$/,
+  );
+
+  // A stop that first finishes after 60 s still records its time, without a capture.
+  // Stopping the same Agent again gets its own evidence names.
+  clock = 0;
+  const late = fixture([61_000]);
+  await stopQaAgent(late.f, slowAgent, { now: () => clock });
+  assert.deepEqual(late.records.get("agent-4-2-slow-stop"), {
+    thresholdMs: 60_000,
+    elapsedMs: 61_000,
+  });
+  assert.match(written[1], /took 61 s\n$/);
+
+  // Evidence that cannot be written never fails a completed stop, and its error is redacted.
+  clock = 0;
+  const unwritable = fixture([61_000, 1_000]);
+  const failures = [];
+  unwritable.f.record = async (name) => {
+    failures.push(name);
+    throw new Error("EEXIST: launcher-private-value exists");
+  };
+  const unwritableAgent = { id: "agent-4", namespaceId: "namespace-1" };
+  await stopQaAgent(unwritable.f, unwritableAgent, { now: () => clock });
+  assert.equal(unwritableAgent.stopped, true);
+  assert.deepEqual(failures, ["agent-4-slow-stop-platform-logs", "agent-4-slow-stop"]);
+  assert.match(written[2], /took 62 s\n$/);
+
+  // A slow stop that then times out names the drain evidence captured while it ran;
+  // it records no completed-stop summary.
+  const stuck = fixture([1_000], { done: false });
+  const stuckAgent = { id: "agent-5", namespaceId: "namespace-1" };
+  await assert.rejects(
+    stopQaAgent(stuck.f, stuckAgent, { slowAfter: 0, timeout: 10, now: () => clock }),
+    (error) => {
+      assert.match(
+        error.message,
+        /; API and worker logs: kubernetes-agent-5-stop-timeout-platform-logs\.json; drain evidence after \d+ s: kubernetes-agent-5-slow-stop-platform-logs\.json$/,
+      );
+      return true;
+    },
+  );
+  assert.equal(stuckAgent.stopped, undefined);
+  assert.deepEqual([...stuck.records.keys()].sort(), [
+    "agent-5-slow-stop-platform-logs",
+    "agent-5-stop-timeout-platform-logs",
+  ]);
+  assert.equal(written.length, 3);
+});
+
 test("QA log redaction hides each line of a registered multi-line secret", async () => {
   const { redactedQaTail, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
   const body = ["MIIEfixtureLineOneAAAAAAAA", "fixtureLineTwoBBBBBBBBBBBB"];
@@ -526,4 +704,61 @@ test("QA log redaction hides each line of a registered multi-line secret", async
   assert.deepEqual(lines[0], "reading key");
   assert.equal(lines.at(-1), "done");
   assert.doesNotMatch(lines.join("\n"), /fixtureLine/);
+});
+
+test("QA log redaction hides JSON-escaped, base64 and percent-encoded copies of a registered secret", async () => {
+  const { redactQaError, redactedQaTail, registerQaSecret } =
+    await import("../helpers/qa-secrets.mjs");
+  // Synthetic, with every character an encoding changes.
+  const value = 'synthetic"qa\\value/<&>+= 2026';
+  registerQaSecret(value);
+  const json = JSON.stringify(value).slice(1, -1);
+  const encoded = [
+    json,
+    // Go's encoding/json (kube API errors) also escapes <, > and &.
+    json.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026"),
+    Buffer.from(value).toString("base64"),
+    Buffer.from(value).toString("base64url"),
+    encodeURIComponent(value),
+  ];
+  assert.equal(new Set([value, ...encoded]).size, 6);
+  const text = [
+    `plain ${value}`,
+    JSON.stringify({ level: 30, msg: `loaded ${value}` }),
+    `go ${encoded[1]}`,
+    `secret data ${encoded[2]}`,
+    `url-safe ${encoded[3]}`,
+    `query ?v=${encoded[4]}`,
+  ].join("\n");
+  const lines = redactedQaTail(text, {}, { lines: 10, lineChars: 400 });
+  assert.equal(lines.length, 6);
+  for (const variant of [value, ...encoded]) {
+    assert.ok(!lines.join("\n").includes(variant), `variant survived: ${lines.join("\n")}`);
+  }
+  assert.ok(
+    lines.every((line) => line.includes("[env:qa-secret]")),
+    lines.join("\n"),
+  );
+  const error = redactQaError(new Error(`failed: ${encoded[2]}`));
+  assert.equal(error.message, "failed: [REDACTED]");
+});
+
+test("QA log tails drop the body of an unregistered key that starts above the tail", async () => {
+  const { redactedQaTail } = await import("../helpers/qa-secrets.mjs");
+  const lines = redactedQaTail(
+    [
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "b3BlbnNzaC1rZXktdjEsyntheticAAAA",
+      "syntheticBodyLineTwoBBBBBBBBBBBB",
+      "-----END OPENSSH PRIVATE KEY-----",
+      "after",
+    ].join("\n"),
+    {},
+    { lines: 3, lineChars: 200 },
+  );
+  assert.deepEqual(lines, [
+    "[redacted credential-bearing line]",
+    "[redacted credential-bearing line]",
+    "after",
+  ]);
 });

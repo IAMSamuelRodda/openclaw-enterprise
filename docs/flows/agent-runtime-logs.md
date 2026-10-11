@@ -174,8 +174,9 @@ and implements `readSandboxLogs`, resolves Compute's placement with
 `resolveSandboxNamespace`, and runs `runtime-logs/sandbox.ts:readSandboxLogPage`.
 `OpenShellSandboxDriver.readSandboxLogs` derives the Sandbox name from the
 revision and calls `GetSandboxLogs` through `openShellSandboxLogReader`, which
-exposes nothing else. OpenShell stamps supervisor lines when recorded but
-batches them, and filters `since_time` by that stamp, so a resume sends a time
+exposes nothing else. The client rejects impossible `since_time` dates before
+gRPC dispatch. OpenShell stamps supervisor lines when recorded but batches them,
+and filters `since_time` by that stamp, so a resume sends a time
 `SANDBOX_LOG_OVERLAP_MS` (5 s) behind the newest delivered line; the cursor
 keeps one hash per line delivered since then (up to 48), and each re-read line
 consumes one. A view's first page floors its resume time at the requested window
@@ -244,6 +245,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11: Reject impossible timestamps. (#2146)
 
 - 2026-10-11 15:20: Reject malformed or impossible Compute Driver timestamps at the runtime-description boundary. (authoring-run/b5dc3ace-2767-4645-9b89-e30d18fa3184 - 2a1eae472d6a820a574cdbcb75dd7d31e3619a68)
 
