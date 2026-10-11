@@ -318,6 +318,10 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     env: {
       PRIVATE_INPUT: "launcher-private-value",
       OCC_DEVELOPMENT_COMPUTE_DRIVER: "kubernetes",
+      OCC_DEVELOPMENT_COMPOSE_PROJECT: "occ-dev-qa-k-ab12cd34",
+      OCC_DEVELOPMENT_KUBERNETES_CLUSTER: "occ-dev-qa-k-ab12cd34",
+      OCC_DEVELOPMENT_STATE_DIRECTORY: "/runner/tmp/occ-dev-qa-k-ab12cd34-x/state",
+      OCC_DEVELOPMENT_K3S_IMAGE: "docker.io/rancher/k3s:v1.35.9-k3s1",
     },
     state: { platformNamespace: "oce-system" },
     async api(method, path) {
@@ -362,7 +366,8 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
       return (
         "2026-10-11T01:36:00Z kubernetes compute: stop requested for agent-1\n" +
         "2026-10-11T01:36:01Z authenticated with stop-fixture-service-key\n" +
-        "2026-10-11T01:36:02Z Authorization: Bearer abcdefghijklmnop\n"
+        "2026-10-11T01:36:02Z Authorization: Bearer abcdefghijklmnop\n" +
+        "2026-10-11T01:36:03Z cluster occ-dev-qa-k-ab12cd34 state /runner/tmp/occ-dev-qa-k-ab12cd34-x/state image docker.io/rancher/k3s:v1.35.9-k3s1\n"
       );
     },
     async record(name, value) {
@@ -423,7 +428,12 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     JSON.stringify(logs),
     /stop-fixture-service-key|abcdefghijklmnop|launcher-private-value/,
   );
-  assert.equal(logs.api.length, 3);
+  assert.equal(logs.api.length, 4);
+  // Fixed launcher settings stay readable.
+  assert.equal(
+    logs.api[3],
+    "2026-10-11T01:36:03Z cluster occ-dev-qa-k-ab12cd34 state /runner/tmp/occ-dev-qa-k-ab12cd34-x/state image docker.io/rancher/k3s:v1.35.9-k3s1",
+  );
   assert.match(logs.worker.unavailable.join("\n"), /unreachable/);
   assert.equal(describeStopObservation(undefined), "none");
   // During a rollout every worker Pod by name; only a restarted one's previous
@@ -526,4 +536,61 @@ test("QA log redaction hides each line of a registered multi-line secret", async
   assert.deepEqual(lines[0], "reading key");
   assert.equal(lines.at(-1), "done");
   assert.doesNotMatch(lines.join("\n"), /fixtureLine/);
+});
+
+test("QA log redaction hides JSON-escaped, base64 and percent-encoded copies of a registered secret", async () => {
+  const { redactQaError, redactedQaTail, registerQaSecret } =
+    await import("../helpers/qa-secrets.mjs");
+  // Synthetic, with every character an encoding changes.
+  const value = 'synthetic"qa\\value/<&>+= 2026';
+  registerQaSecret(value);
+  const json = JSON.stringify(value).slice(1, -1);
+  const encoded = [
+    json,
+    // Go's encoding/json (kube API errors) also escapes <, > and &.
+    json.replaceAll("<", "\\u003c").replaceAll(">", "\\u003e").replaceAll("&", "\\u0026"),
+    Buffer.from(value).toString("base64"),
+    Buffer.from(value).toString("base64url"),
+    encodeURIComponent(value),
+  ];
+  assert.equal(new Set([value, ...encoded]).size, 6);
+  const text = [
+    `plain ${value}`,
+    JSON.stringify({ level: 30, msg: `loaded ${value}` }),
+    `go ${encoded[1]}`,
+    `secret data ${encoded[2]}`,
+    `url-safe ${encoded[3]}`,
+    `query ?v=${encoded[4]}`,
+  ].join("\n");
+  const lines = redactedQaTail(text, {}, { lines: 10, lineChars: 400 });
+  assert.equal(lines.length, 6);
+  for (const variant of [value, ...encoded]) {
+    assert.ok(!lines.join("\n").includes(variant), `variant survived: ${lines.join("\n")}`);
+  }
+  assert.ok(
+    lines.every((line) => line.includes("[env:qa-secret]")),
+    lines.join("\n"),
+  );
+  const error = redactQaError(new Error(`failed: ${encoded[2]}`));
+  assert.equal(error.message, "failed: [REDACTED]");
+});
+
+test("QA log tails drop the body of an unregistered key that starts above the tail", async () => {
+  const { redactedQaTail } = await import("../helpers/qa-secrets.mjs");
+  const lines = redactedQaTail(
+    [
+      "-----BEGIN OPENSSH PRIVATE KEY-----",
+      "b3BlbnNzaC1rZXktdjEsyntheticAAAA",
+      "syntheticBodyLineTwoBBBBBBBBBBBB",
+      "-----END OPENSSH PRIVATE KEY-----",
+      "after",
+    ].join("\n"),
+    {},
+    { lines: 3, lineChars: 200 },
+  );
+  assert.deepEqual(lines, [
+    "[redacted credential-bearing line]",
+    "[redacted credential-bearing line]",
+    "after",
+  ]);
 });
