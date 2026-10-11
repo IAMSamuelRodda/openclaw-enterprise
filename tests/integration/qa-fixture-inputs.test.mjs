@@ -1043,12 +1043,29 @@ test("QA error redaction covers causes, AggregateError errors and command output
   assert.equal(reused.body.token, value);
   assertClean(reusedTop);
 
+  // A multi-line secret (a PEM key) behind hidden state is matched whole.
+  const pem = [
+    "-----BEGIN SYNTHETIC QA KEY-----",
+    "c3ludGhldGljLXFhLWtleS1saW5lLW9uZS0yMDI2LWFhYWFhYWFhYWFhYWFhYWFh",
+    "c3ludGhldGljLXFhLWtleS1saW5lLXR3by0yMDI2LWJiYmJiYmJiYmJiYmJiYmJi",
+    "-----END SYNTHETIC QA KEY-----",
+  ].join("\n");
+  registerQaSecret(pem);
+  const pending = Object.assign(new Error("pending"), { key: Promise.resolve(pem) });
+  assert.equal(redactQaError(pending), pending);
+  assert.ok(!printed(pending).includes("c3ludGhldGljLXFhLWtleS1saW5l"), printed(pending));
+
   // An error without a secret is left as it is, cycle included.
   const clean = new Error("clean");
   clean.cause = clean;
   Object.freeze(clean);
   assert.equal(redactQaError(clean), clean);
   assert.equal(clean.cause, clean);
+  const unprintable = Object.assign(new Error("unprintable"), {
+    handle: { [inspect.custom]: () => assert.fail("not printable") },
+  });
+  Object.setPrototypeOf(unprintable.handle, class Handle {}.prototype);
+  assert.equal(redactQaError(unprintable), unprintable);
 
   // A cause chain deeper than the bound is cut rather than left unredacted.
   let deep = new Error(`deepest ${value}`);

@@ -70,8 +70,8 @@ function isError(value) {
 // points back up its own chain becomes "[Circular]", so no cycle leads from a
 // replacement to an unredacted original. If redaction itself throws (a proxy
 // trap), a bare Error carrying only the redacted message is returned. Getters
-// run once per pass; one that returns a secret only on a later call can slip
-// past the first pass.
+// run at least once per pass; one that returns a secret only on a later call
+// can slip past the first pass.
 export function redactQaError(error) {
   // Longest first, so a value containing another is replaced whole.
   const secrets = [...protectedValues].sort((a, b) => b.length - a.length);
@@ -174,7 +174,20 @@ export function redactQaError(error) {
     if (copy !== value || prototype === Object.prototype || prototype === null) {
       return copy;
     }
-    const text = inspect(value, { depth: 2, getters: true });
+    let text;
+    try {
+      // On one line and uncut, so a multi-line secret (a PEM key) stays whole
+      // in its JSON-escaped form.
+      text = inspect(value, {
+        depth: 2,
+        getters: true,
+        breakLength: Infinity,
+        maxStringLength: Infinity,
+      });
+    } catch {
+      // A throwing custom inspect method: the runner can't print it either.
+      return value;
+    }
     const redacted = redactText(text);
     return redacted === text ? value : redacted;
   };
