@@ -4733,23 +4733,46 @@ test("Kubernetes drivers require explicit authentication, images, and production
     [{ network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["10.42.0.1/1e1"] } }, /CIDR/i],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["0.0.0.0/0"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
     ],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::/0"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
     ],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::ffff:0:0/96"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
     ],
     [
       { network: { ...baseNetwork, gatewayTrustedProxyCidrs: ["::ffff:0.0.0.0/96"] } },
-      /cannot trust every source/i,
+      /Trusted proxy CIDRs cannot cover every address/,
+    ],
+    // The status proxy sources follow the trusted proxy rule (bughunt F2).
+    ...["0.0.0.0/0", "::/0", "::ffff:0:0/96", "::ffff:0.0.0.0/96"].map((cidr) => [
+      { network: { ...baseNetwork, pluginStatusProxySourceCidrs: ["192.0.2.20/32", cidr] } },
+      /Plugin status proxy CIDRs cannot cover every address\./,
+    ]),
+    [
+      { network: { ...baseNetwork, pluginStatusProxySourceCidrs: ["10.42.0.1/"] } },
+      /Plugin status proxy CIDR 0 must be a valid/,
     ],
     [{ servicePrincipalCredentials: undefined }, /credential|projection/i],
   ]) {
     assert.throws(() => createKubernetesComputeDriver(options(invalid)), expected);
+  }
+
+  // Narrower sources, the Pod CIDR included, start: preflight warns about them instead.
+  for (const pluginStatusProxySourceCidrs of [
+    ["10.42.0.1/32"],
+    ["10.42.0.0/16"],
+    ["::/96"],
+    ["2001:db8::1/128"],
+  ]) {
+    assert.doesNotThrow(() =>
+      createKubernetesComputeDriver(
+        options({ network: { ...baseNetwork, pluginStatusProxySourceCidrs } }),
+      ),
+    );
   }
 
   for (const gatewayTrustedProxyCidrs of [
@@ -8028,6 +8051,105 @@ test("Kubernetes cached runtime failure evidence is native-only and readiness-pa
     ),
     (error) => error === cancellation,
   );
+});
+
+// A provider-fenced Harness admits only its Gateway's transport: the status proxy policy
+// selects ordinary Pods and the provider's fence denies the API server. No Pod proxy read can
+// answer, so Compute sends none to the Harness and keeps reading the Gateway (bughunt F4).
+test("Kubernetes status readback skips provider-fenced Harness Pods", async () => {
+  const driver = new KubernetesComputeDriver(
+    routedOptions({
+      network: { pluginStatusProxySourceCidrs: ["192.0.2.20/32"] },
+      runtime: { transportSecretPrefix: "transport", gatewayStorageClassName: "local-path" },
+      servicePrincipalCredentials: {
+        mode: "projectedServiceAccountToken",
+        audience: "openclaw-controller",
+        expirationSeconds: 900,
+      },
+    }),
+    { sandboxDriver: { id: "sandbox-provider", async provisionHarness() {} } },
+  );
+  const ordinary = routedRevision(driver, { id: "revision-fenced-status" });
+  const fenced = { ...ordinary, sandboxDriverId: "sandbox-provider" };
+  const namespace = { name: kubernetesNamespaceName(tenant.id), plane: "execution" };
+  const proxyReads = [];
+  driver.apiClients = Promise.resolve({
+    core: {
+      async listNamespacedPod({ labelSelector }) {
+        const role = labelSelector.includes("openclaw.dev/workload-role=agent")
+          ? "agent"
+          : "gateway";
+        return {
+          apiVersion: "v1",
+          kind: "PodList",
+          items: [
+            {
+              apiVersion: "v1",
+              kind: "Pod",
+              metadata: {
+                name: `${role}-fenced-status-pod`,
+                namespace: namespace.name,
+                uid: `${role}-fenced-status-uid`,
+                labels: {
+                  "openclaw.dev/agent": ordinary.agentId,
+                  "openclaw.dev/revision": ordinary.id,
+                  "openclaw.dev/workload-role": role,
+                },
+              },
+              status: {
+                phase: "Running",
+                podIP: "10.42.0.10",
+                containerStatuses: [{ name: role, containerID: `${role}-container` }],
+              },
+            },
+          ],
+        };
+      },
+      async connectGetNamespacedPodProxyWithPath({ name, path }) {
+        const role = name.startsWith("agent-") ? "agent" : "gateway";
+        proxyReads.push(`${role} ${path}`);
+        return {
+          revisionId: ordinary.id,
+          container: role,
+          podUid: `${role}-fenced-status-uid`,
+          startupId: `${role}-startup`,
+          phase: "ready",
+          successfulPluginIds: [],
+          failures: [],
+          observedAt: "2026-10-11T12:00:00.000Z",
+          checks: [],
+        };
+      },
+    },
+  });
+  const observe = async (revision) => {
+    proxyReads.length = 0;
+    await driver.safeRuntimeFailureObservation(revision, namespace);
+    const agentStatus = await driver.pluginRuntimeStatus(revision, namespace, "agent");
+    const gatewayStatus = await driver.pluginRuntimeStatus(revision, namespace, "gateway");
+    const agentChecks = await driver.runtimeDiagnosticChecks(revision, namespace, "agent");
+    return { reads: [...proxyReads], agentStatus, gatewayStatus, agentChecks };
+  };
+
+  const fencedObservation = await observe(fenced);
+  assert.deepEqual(fencedObservation.reads, [
+    "gateway openclaw/runtime/status",
+    "gateway openclaw/plugin-runtime/status",
+  ]);
+  assert.equal(fencedObservation.agentStatus, undefined);
+  assert.equal(fencedObservation.agentChecks, undefined);
+  assert.notEqual(fencedObservation.gatewayStatus, undefined);
+
+  // The same revision without the provider's Harness still reads both containers.
+  const ordinaryObservation = await observe(ordinary);
+  assert.deepEqual(ordinaryObservation.reads, [
+    "agent openclaw/runtime/status",
+    "gateway openclaw/runtime/status",
+    "agent openclaw/plugin-runtime/status",
+    "gateway openclaw/plugin-runtime/status",
+    "agent openclaw/runtime/diagnostics",
+  ]);
+  assert.notEqual(ordinaryObservation.agentStatus, undefined);
 });
 
 async function exerciseEmbeddedReplacement({ providerId, model, environmentName, api, baseUrl }) {
