@@ -107,6 +107,20 @@ const pin = (material, binding) =>
 const pushLine = (ref, source = "HEAD") => `${source} ${"1".repeat(40)} ${ref} ${"0".repeat(40)}\n`;
 const writeManifest = (material, manifest) =>
   writeFile(join(material.root, "manifest.json"), JSON.stringify(manifest), { mode: 0o600 });
+/** A manifest over these bindings with their exact generation digest. */
+const manifestOf = (bindings) => ({
+  version: 1,
+  generation: hash(bindings.map(({ repositoryRef, sessionId }) => [repositoryRef, sessionId])),
+  bindings,
+});
+/** Copy another material's sessions into `material`; returns its bindings at their new paths. */
+const relocated = async (material, other) => {
+  await cp(join(other.root, "sessions"), join(material.root, "sessions"), { recursive: true });
+  return other.manifest.bindings.map((binding) => ({
+    ...binding,
+    directory: binding.directory.replace(other.root, material.root),
+  }));
+};
 /** A refused credential request releases nothing. */
 const refused = (result, message) => {
   assert.notEqual(result.code, 0, message);
@@ -116,24 +130,23 @@ const granted = (result, bearer) => assert.equal(result.stdout.includes(bearer),
 
 describe("repository credential router", { concurrency: true }, () => {
   test("manifest requires canonical reference order and its exact generation digest", async (t) => {
-    const material = await nativeMaterial(t, ...["a", "Z", "A"].map((ref) => [ref, opened(ref)]));
+    const [material, reused] = await settle([
+      nativeMaterial(t, ...["a", "Z", "A"].map((ref) => [ref, opened(ref)])),
+      // Valid alone, but it reuses session "a" under another reference.
+      nativeMaterial(t, ["b", opened("a")]),
+    ]);
     assert.deepEqual(
       (await readRuntimeRepositoryManifest(material.root)).bindings.map(
         ({ repositoryRef }) => repositoryRef,
       ),
       ["A", "Z", "a"],
     );
-    const reversed = [...material.manifest.bindings].reverse();
     for (const manifest of [
       { ...material.manifest, generation: "0".repeat(64) },
-      {
-        ...material.manifest,
-        bindings: reversed,
-        // A self-consistent digest cannot authorize noncanonical binding order.
-        generation: hash(
-          reversed.map(({ repositoryRef, sessionId }) => [repositoryRef, sessionId]),
-        ),
-      },
+      // A self-consistent digest cannot authorize noncanonical binding order
+      // or one session bound to two references.
+      manifestOf([...material.manifest.bindings].reverse()),
+      manifestOf([...material.manifest.bindings, ...(await relocated(material, reused))]),
     ]) {
       await writeManifest(material, manifest);
       await assert.rejects(readRuntimeRepositoryManifest(material.root), {
@@ -305,6 +318,27 @@ describe("repository credential router", { concurrency: true }, () => {
         }
       }),
     );
+    // A valid next generation that would allow this push cannot replace the generation
+    // the installed hook configuration names.
+    const next = await nativeMaterial(t, [
+      "permitted",
+      opened("next", { pushRefAllowlist: ["refs/heads/agent/*"] }),
+    ]);
+    await writeManifest(material, manifestOf(await relocated(material, next)));
+    const replaced = await git(
+      [
+        "hook",
+        "run",
+        `--to-stdin=${join(work, "push-topic")}`,
+        "pre-push",
+        "--",
+        "origin",
+        permitted.client.gitRemote,
+      ],
+      { cwd: work, env: environment(material, ref("permitted")), allowFailure: true },
+    );
+    assert.equal(replaced.code, 1);
+    assert.equal(replaced.stderr, guardFailed);
   });
 
   test("push destination normalization retains exact repository and host boundaries", async (t) => {
@@ -423,7 +457,8 @@ describe("repository credential router", { concurrency: true }, () => {
     await native(["-C", source, "config", "user.name", "Native fixture"]);
     await native(["-C", source, "config", "user.email", "fixture@example.test"]);
     await writeFile(join(source, "tracked"), "first\n");
-    await native(["-C", source, "add", "tracked"]);
+    await writeFile(join(source, "untouched"), "unchanged\n");
+    await native(["-C", source, "add", "tracked", "untouched"]);
     await native(["-C", source, "commit", "-m", "Initial contents"]);
     await native(["clone", "--no-hardlinks", source, target]);
     await native(["-C", target, "config", "receive.denyCurrentBranch", "updateInstead"]);
@@ -437,6 +472,15 @@ describe("repository credential router", { concurrency: true }, () => {
 
     await writeFile(join(source, "tracked"), "third\n");
     await native(["-C", source, "commit", "-am", "Next contents"]);
+    // Git refuses any unstaged change, even to a file the push does not touch.
+    await writeFile(join(target, "untouched"), "local changes\n");
+    const deniedUntouched = await native(["-C", source, "push", target, "HEAD:refs/heads/main"], {
+      allowFailure: true,
+    });
+    assert.notEqual(deniedUntouched.code, 0);
+    assert.equal(await targetHead(), head);
+    assert.equal(await readFile(join(target, "untouched"), "utf8"), "local changes\n");
+    await native(["-C", target, "checkout", "--", "untouched"]);
     for (const staged of [false, true]) {
       await writeFile(join(target, "tracked"), "local changes\n");
       if (staged) {
@@ -514,19 +558,8 @@ describe("repository credential router", { concurrency: true }, () => {
     assert.equal(pushUrl.stdout.trim(), "https://credentials.example.test/example/other.git");
     assert.notEqual(stale.code, 0);
     const oldConfig = await readFile(join(material.root, "gitconfig"), "utf8");
-    const newManifest = {
-      ...next.manifest,
-      bindings: next.manifest.bindings.map((binding) => ({
-        ...binding,
-        directory: binding.directory.replace(next.root, material.root),
-      })),
-    };
     // Install a fully valid next generation; only the old helper generation pin must reject it.
-    await cp(join(next.root, "sessions"), join(material.root, "sessions"), { recursive: true });
-    newManifest.generation = hash(
-      newManifest.bindings.map(({ repositoryRef, sessionId }) => [repositoryRef, sessionId]),
-    );
-    await writeManifest(material, newManifest);
+    await writeManifest(material, manifestOf(await relocated(material, next)));
     assert.equal(await readFile(join(material.root, "gitconfig"), "utf8"), oldConfig);
     const current = await readRuntimeRepositoryManifest(material.root);
     assert.equal(current.generation, next.manifest.generation);
