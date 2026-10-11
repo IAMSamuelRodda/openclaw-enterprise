@@ -46,7 +46,7 @@ import {
 // The two isolated cases mock child_process for the whole process, so they run
 // alone, first. Every other case owns its directories, servers and children and
 // mostly waits on stock Git; they register here and run two at a time in one
-// suite at the end of the file, so the long push-policy case overlaps the rest.
+// suite at the end of the file.
 const cases = [];
 const test = (...registration) => cases.push(registration);
 
@@ -338,11 +338,11 @@ test("single-session launcher preserves native Git signal exit statuses", async 
         }
       }
     };
+    // A hang guard only: on a loaded host, 10 s could expire after readiness and
+    // kill Git before the process check below.
     const timer = setTimeout(() => {
       readyReject(new Error("native Git signal test timed out"));
       stop();
-      // A hang guard only: on a loaded host, 10 s could expire after readiness and
-      // kill Git before the process check below.
     }, 30000);
     try {
       // A batch reply proves Git is alive, not that the launcher installed its handlers.
@@ -883,7 +883,9 @@ test(
 );
 
 describe("repository credential client configuration", { concurrency: 2 }, () => {
-  for (const registration of cases) {
+  // Reversed, so the long push-policy case (registered last) starts first and the
+  // other cases run beside it.
+  for (const registration of cases.toReversed()) {
     it(...registration);
   }
 });
