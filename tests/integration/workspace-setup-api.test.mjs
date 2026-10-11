@@ -190,6 +190,8 @@ test("Agent save and deployment refuse initial workspace files the Configuration
     "Configuration setting agents.entries must hold only main, or be omitted, for initial workspace files: only the main Agent reads them.";
   for (const [agents, message] of [
     [{ defaults: { ...model.agents.defaults, workspace: "/srv/elsewhere" } }, workspace],
+    // Only a dedicated Agent mounts the second managed workspace; this Agent is embedded.
+    [{ defaults: { ...model.agents.defaults, workspace: "/home/node/workspace" } }, workspace],
     [{ ownership: "explicit", entries: { main: {}, helper: {} } }, roster],
   ]) {
     const stored = await f.request("POST", `/namespaces/${f.namespace.id}/configurations`, {
