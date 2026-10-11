@@ -58,7 +58,7 @@ const googleParsed = {
 };
 
 // A trusted-proxy preset as operators set it, and the API settings the chart renders for it.
-function proxy(preset, cidrs = [], header) {
+function trustedProxy(preset, cidrs = [], header) {
   return {
     values: {
       "api.trustedProxy.preset": preset,
@@ -77,15 +77,15 @@ function proxy(preset, cidrs = [], header) {
 const presets = {
   none: { values: {}, env: {}, parsed: undefined },
   "ingress-nginx": {
-    ...proxy("ingress-nginx", ["10.42.0.0/16"]),
+    ...trustedProxy("ingress-nginx", ["10.42.0.0/16"]),
     parsed: { header: "x-forwarded-for", proxy: "10.42.7.1" },
   },
   aws: {
-    ...proxy("aws", ["10.0.0.0/16", "fd00:10::/64"]),
+    ...trustedProxy("aws", ["10.0.0.0/16", "fd00:10::/64"]),
     parsed: { header: "x-forwarded-for", proxy: "fd00:10::5" },
   },
   generic: {
-    ...proxy("generic", ["192.168.10.0/24"], "X-Real-IP"),
+    ...trustedProxy("generic", ["192.168.10.0/24"], "X-Real-IP"),
     parsed: { header: "x-real-ip", proxy: "192.168.10.9" },
   },
 };
@@ -111,8 +111,9 @@ async function settle(promises) {
   return results.map((result) => result.value);
 }
 
-// At most one child process (helm or Node) per CPU across the whole file: each API start has
-// a 20 s deadline, and starting them all at once on a small runner pushes the last ones past it.
+// At most one child process per CPU (and at least two) across the whole file; a render holds
+// one slot for helm and then yq. Each API start has a 20 s deadline, and starting them all at
+// once on a small runner pushes the last ones past it.
 const slots = Math.max(2, availableParallelism());
 const waiting = [];
 let running = 0;
@@ -148,7 +149,7 @@ await writeFile(join(directory, "gateway-key"), "occ_chart_parity_gateway_key", 
 
 // Runs a Node entrypoint as production with an unreachable database and returns the code of
 // its structured `event` line.
-async function exitCode(script, event, env) {
+async function eventCode(script, event, env) {
   const { killed, output } = await limited(
     () =>
       new Promise((resolve) => {
@@ -170,7 +171,8 @@ async function exitCode(script, event, env) {
         );
       }),
   );
-  assert.ok(!killed, `${script} timed out for ${JSON.stringify(env)}`);
+  // execFile also kills on its output limit, far above what these entrypoints print.
+  assert.ok(!killed, `${script} timed out for OCC_AUTH_BASE_URL ${env.OCC_AUTH_BASE_URL}`);
   const diagnostic = output
     .split("\n")
     .filter((line) => line.startsWith("{") && line.endsWith("}"))
@@ -184,7 +186,7 @@ async function exitCode(script, event, env) {
 // so accepted settings end at PERSISTENCE_UNAVAILABLE, after configuration parsing and
 // composition checks; refused settings end earlier with another startup code.
 function startupCode(settings) {
-  return exitCode("apps/controller/src/server.mjs", "startup-error", {
+  return eventCode("apps/controller/src/server.mjs", "startup-error", {
     OCC_CONFIG_PATH: join(directory, "installation.yaml"),
     OCC_HOST: "192.0.2.10",
     OCC_PORT: "8080",
@@ -199,7 +201,7 @@ function startupCode(settings) {
 // The bootstrap Job's own check, run as the chart's Job runs it (NODE_ENV=production). Its
 // database is unreachable, so an accepted base URL ends at PERSISTENCE_UNAVAILABLE.
 function jobCode(baseUrl) {
-  return exitCode("scripts/bootstrap-installation.mjs", "installation.bootstrap-failed", {
+  return eventCode("scripts/bootstrap-installation.mjs", "installation.bootstrap-failed", {
     OCC_AUTH_SECRET: secrets["occ-auth/secret"],
     OCC_AUTH_BASE_URL: baseUrl,
     OCC_BOOTSTRAP_ADMIN_EMAIL: "admin@oce.example.internal",
@@ -219,7 +221,7 @@ const loginEgress = (objects) =>
 
 // Renders `values` and checks what the chart gives the API: exactly `settings`, a default
 // login egress per listed provider (any address except link-local, on TCP 443 only), and no
-// sign-in or trusted-proxy setting for the worker. Returns the objects and the API's env.
+// sign-in or trusted-proxy setting for the worker. Returns the API's env.
 async function renders(label, values, settings, egress) {
   const objects = await render(values);
   const rendered = signInSettings(deploymentEnv(objects, "api"));
@@ -246,14 +248,14 @@ async function renders(label, values, settings, egress) {
     ),
     label,
   );
-  return { objects, environment: resolveSecrets(rendered) };
+  return resolveSecrets(rendered);
 }
 
 // Each accepted case renders as `settings`, parses as `parsed` and starts the API.
 function acceptsEach(cases) {
   return settle(
     cases.map(async ({ label, values, settings, parsed, egress }) => {
-      const { environment } = await renders(label, values, settings, egress);
+      const environment = await renders(label, values, settings, egress);
       assert.deepEqual(humanLoginConfiguration(environment), parsed, label);
       await startsUp(environment, label);
     }),
@@ -314,7 +316,7 @@ const githubLists = {
       /OCC_AUTH_GITHUB_ALLOWED_TEAMS must be a comma-separated list of org\/team-slug entries/,
   },
 };
-function githubListEntry(name, list, value, signIn) {
+function githubListEntry(name, list, value, { signIn = false } = {}) {
   const { variable, chart, parser } = githubLists[list];
   const values = { [`auth.github.${list}[0]`]: value };
   return {
@@ -346,25 +348,25 @@ const withNativeAdmin = (provider, values) => ({
 const invalid = [
   {
     name: "generic preset without a header",
-    ...proxy("generic", ["10.42.0.0/16"]),
+    ...trustedProxy("generic", ["10.42.0.0/16"]),
     chart: /generic requires api\.trustedProxy\.clientAddressHeader/,
     parser: /generic trusted proxy preset requires OCC_AUTH_CLIENT_IP_HEADER/,
   },
   {
     name: "preset without proxy CIDRs",
-    ...proxy("aws"),
+    ...trustedProxy("aws"),
     chart: /preset aws requires api\.trustedProxy\.cidrs/,
     parser: /require OCC_AUTH_TRUSTED_PROXY_CIDRS/,
   },
   {
     name: "unknown preset",
-    ...proxy("cloudflare", ["10.0.0.0/8"]),
+    ...trustedProxy("cloudflare", ["10.0.0.0/8"]),
     chart: /must be empty, ingress-nginx, aws, or generic/,
     parser: /must be one of ingress-nginx, aws, generic/,
   },
   {
     name: "a proxy CIDR that trusts every address",
-    ...proxy("ingress-nginx", ["0.0.0.0/0"]),
+    ...trustedProxy("ingress-nginx", ["0.0.0.0/0"]),
     chart: /nonzero prefix/,
     parser: /must not trust every address/,
   },
@@ -372,31 +374,31 @@ const invalid = [
   // socket peer supply the header used for sign-in rate limiting.
   ...trustedProxyCidrs.catchAll.map((cidr) => ({
     name: `a trusted-proxy IPv6 CIDR covering every IPv4 address: ${cidr}`,
-    ...proxy("ingress-nginx", [cidr]),
+    ...trustedProxy("ingress-nginx", [cidr]),
     chart: /must not trust every address/,
     parser: /must not trust every address/,
   })),
   ...trustedProxyCidrs.invalidMappedPrefix.map((cidr) => ({
     name: `a trusted-proxy mapped IPv4 address with an IPv6 prefix: ${cidr}`,
-    ...proxy("ingress-nginx", [cidr]),
+    ...trustedProxy("ingress-nginx", [cidr]),
     chart: /prefix must be 1 through 32/,
     parser: /IPv4-mapped address, whose prefix must be 1 through 32/,
   })),
   {
     name: "an invalid proxy address",
-    ...proxy("aws", ["300.1.1.0/24"]),
+    ...trustedProxy("aws", ["300.1.1.0/24"]),
     chart: /invalid IPv4 address/,
     parser: /invalid CIDR/,
   },
   {
     name: "a credential header as the client address",
-    ...proxy("generic", ["10.42.0.0/16"], "Cookie"),
+    ...trustedProxy("generic", ["10.42.0.0/16"], "Cookie"),
     chart: /clientAddressHeader cannot be cookie/,
     parser: /must not be cookie/,
   },
   {
     name: "a named preset with another header",
-    ...proxy("aws", ["10.0.0.0/16"], "x-real-ip"),
+    ...trustedProxy("aws", ["10.0.0.0/16"], "x-real-ip"),
     chart: /preset aws reads x-forwarded-for/,
     parser: /aws trusted proxy preset reads x-forwarded-for/,
   },
@@ -441,7 +443,9 @@ const invalid = [
     ["an allowed organization that is not a login", "allowedOrgs", "acme/platform"],
     ["a team slug padded by U+0085", "allowedTeams", "\u0085acme/platform"],
     ["an allowed team without its organization", "allowedTeams", "platform"],
-  ].map(([name, list, value]) => githubListEntry(`GitHub with ${name}`, list, value, true)),
+  ].map(([name, list, value]) =>
+    githubListEntry(`GitHub with ${name}`, list, value, { signIn: true }),
+  ),
   {
     name: "GitHub with more than ten allowlist entries",
     values: {
@@ -599,11 +603,13 @@ const baseSettings = {
 
 // A pattern list the chart's _helpers.tpl defines, such as $baseUrlHostRefused, as a JavaScript
 // regular expression.
+let helpersSource;
 async function helperPattern(name) {
-  const helpers = await readFile(
+  helpersSource ??= readFile(
     join(repository, "deploy/helm/openclaw-enterprise/templates/_helpers.tpl"),
     "utf8",
   );
+  const helpers = await helpersSource;
   const [, source] = helpers.match(new RegExp(`\\$${name} := "(\\[[^"]+\\])"`)) ?? [];
   assert.ok(source, `_helpers.tpl defines $${name}`);
   return new RegExp(source.replaceAll("\\\\x{", "\\u{"), "u");
@@ -612,7 +618,21 @@ const codePointName = (codePoint) => `U+${codePoint.toString(16).toUpperCase().p
 
 // Base URL cases: `chart` is the refusal (or undefined when it renders), `api` and `job` whether
 // the API and the bootstrap Job accept the URL.
-const urls = (list, chart, api, job = api) => list.map((baseUrl) => ({ baseUrl, chart, api, job }));
+const urls = (list, chart, { api, job = api }) =>
+  list.map((baseUrl) => ({ baseUrl, chart, api, job }));
+
+// Secret placement and egress are chart concerns: the API only ever sees the resolved
+// credentials, so these refusals have no parser counterpart.
+const chartOnly = (provider, cases) =>
+  settle(
+    cases.map(async ([name, values, chart]) => {
+      assert.match(await refusal(values), chart, `${provider}: ${name}`);
+    }),
+  );
+const emptyEgress = (provider) =>
+  new RegExp(
+    `auth\\.${provider}\\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \\[\\] in a values file or with --set-json,`,
+  );
 
 describe("sign-in chart parity", { concurrency: true }, () => {
   after(() => rm(directory, { recursive: true, force: true }));
@@ -629,7 +649,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           const label = `${preset}, GitHub ${githubEnabled ? "on" : "off"}`;
           // Reuse these renders to cover the example install's egress and Secret
           // placement: only the API receives sign-in and trusted-proxy settings.
-          const { environment } = await renders(
+          const environment = await renders(
             label,
             { ...proxy.values, ...(githubEnabled ? githubUpgradeValues(recoveryUserId) : {}) },
             {
@@ -668,7 +688,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
   );
 
   test("the API accepts exactly the GitHub allowlist the chart renders", tooling, async () => {
-    const { environment } = await renders(
+    const environment = await renders(
       "GitHub allowlist",
       {
         ...githubUpgradeValues(recoveryUserId),
@@ -918,7 +938,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       // One render validates every accepted entry; parse its emitted entries individually
       // so another trusted subnet cannot conceal an entry that trusts every IPv4 peer.
       const objects = await render(
-        proxy(
+        trustedProxy(
           "ingress-nginx",
           trustedProxyCidrs.accepted.map(([cidr]) => cidr),
         ).values,
@@ -981,19 +1001,6 @@ describe("sign-in chart parity", { concurrency: true }, () => {
       assert.equal(parsed.header, "x-forwarded-for");
     },
   );
-
-  // Secret placement and egress are chart concerns: the API only ever sees the resolved
-  // credentials, so these refusals have no parser counterpart.
-  const chartOnly = (provider, cases) =>
-    settle(
-      cases.map(async ([name, values, chart]) => {
-        assert.match(await refusal(values), chart, `${provider}: ${name}`);
-      }),
-    );
-  const emptyEgress = (provider) =>
-    new RegExp(
-      `auth\\.${provider}\\.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set \\[\\] in a values file or with --set-json,`,
-    );
 
   test(
     "the chart refuses Google Secret and egress settings the API cannot observe",
@@ -1292,7 +1299,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "http://localhost/occ",
           ],
           notOrigin,
-          false,
+          { api: false },
         ),
         ...urls(
           [
@@ -1330,14 +1337,14 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "http://[::1]:8080",
           ],
           undefined,
-          true,
+          { api: true },
         ),
         // URL parsing strips only C0 controls and spaces from the ends, so other Unicode spaces
         // and invisible characters there reach the parser, which refuses them in the scheme or
         // a host. The chart refuses them all; it is deliberately stricter for U+FEFF and U+200B
         // at the end, which the host parser drops. A trailing unassigned code point (U+0378),
         // which RE2's \p{C} does not cover, is refused too.
-        ...urls(["https://console.oce.example.internal\u0378"], unicodeEdge, false),
+        ...urls(["https://console.oce.example.internal\u0378"], unicodeEdge, { api: false }),
         ...[
           ["\u00a0", false],
           ["\u2003", false],
@@ -1345,9 +1352,13 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           ["\uFEFF", true],
           ["\u200b", true],
         ].flatMap(([space, trailingAccepted]) => [
-          ...urls([`${space}https://console.oce.example.internal`], unicodeEdge, false),
-          ...urls([`https://console.oce.example.internal${space}`], unicodeEdge, trailingAccepted),
-          ...urls([` ${space}https://console.oce.example.internal${space} `], unicodeEdge, false),
+          ...urls([`${space}https://console.oce.example.internal`], unicodeEdge, { api: false }),
+          ...urls([`https://console.oce.example.internal${space}`], unicodeEdge, {
+            api: trailingAccepted,
+          }),
+          ...urls([` ${space}https://console.oce.example.internal${space} `], unicodeEdge, {
+            api: false,
+          }),
         ]),
         // Inside the host, the parser refuses spaces, < and >, and drops tabs and most invisible
         // characters. The chart refuses them all (deliberately stricter for the dropped ones),
@@ -1366,13 +1377,13 @@ describe("sign-in chart parity", { concurrency: true }, () => {
           ["\u200b", true],
           ["\u00ad", true],
         ].flatMap(([space, accepted]) =>
-          urls([`https://console${space}.oce.example.internal`], unicodeInside, accepted),
+          urls([`https://console${space}.oce.example.internal`], unicodeInside, { api: accepted }),
         ),
         // Both parsers percent-decode the host, so the chart checks the decoded name too.
         ...urls(
           ["%C2%A0", "%E3%80%80"].map((space) => `https://console${space}.oce.example.internal`),
           unicodeInside,
-          false,
+          { api: false },
         ),
         // The host parser maps compatibility characters first and refuses those that map to a
         // forbidden host code point (full-width ? # / @, ?? from U+2047) or that UTS #46
@@ -1386,7 +1397,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             ),
           ],
           compatibility,
-          false,
+          { api: false },
         ),
         ...urls(
           [
@@ -1394,7 +1405,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "https://\u0915\u094d\u200d\u0937.oce.example.internal",
           ],
           undefined,
-          true,
+          { api: true },
         ),
         // The API serves plain HTTP anywhere, but the bootstrap Job refuses it off loopback.
         ...urls(
@@ -1407,8 +1418,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "http://localhost.oce.example.internal",
           ],
           plainHttp,
-          true,
-          false,
+          { api: true, job: false },
         ),
         // Node repairs these degenerate spellings into an origin. They are not IPv4 hosts.
         ...urls(
@@ -1418,7 +1428,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "https://console.oce.example.internal/%2e",
           ],
           notOrigin,
-          true,
+          { api: true },
         ),
         // A leading zero is octal (192.168.010.001 publishes 192.168.8.1). Hex, including a
         // bare 0x (which is 0), shorthand, a single integer and a trailing dot also publish
@@ -1464,7 +1474,7 @@ describe("sign-in chart parity", { concurrency: true }, () => {
             "https://example.\u2460",
           ],
           /auth\.baseUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros/,
-          false,
+          { api: false },
         ),
       ];
       // The bootstrap Job, then the chart; a rendered value also starts the real entrypoint.
