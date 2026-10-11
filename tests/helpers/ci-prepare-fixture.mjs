@@ -41,13 +41,16 @@ export function fixturePreparationMetrics(stderr) {
   });
 }
 
-// The CLI watchdog catches a preparation that never ends: one whose own timeouts failed
-// to stop a hung command. It is generous because it only fires on a hang, and several
-// concurrent copies on a loaded host stretch a passing preparation (about 35 s at four
-// copies on four CPUs). A hung fake command exits on its own only after the watchdog has
-// fired, so a preparation that waits for it still fails here instead of finishing late.
-const cliWatchdogMs = 90_000;
-const hungCommandExitMs = cliWatchdogMs + 30_000;
+// The CLI watchdogs catch a preparation that never ends: one whose own timeouts failed
+// to stop a hung command. The asynchronous one is generous because it only fires on a
+// hang, and concurrent cases on a loaded host stretch a passing preparation (up to about
+// 40 s at four copies of the k3d file on four CPUs). The synchronous one runs a single
+// preparation at a time and keeps 30 s, so a file of sequential hung cases still fails
+// within its CI file timeout. A hung fake command exits on its own only after both have
+// fired, so a preparation that waits for it still fails on the watchdog.
+const asyncWatchdogMs = 90_000;
+const syncWatchdogMs = 30_000;
+const hungCommandExitMs = asyncWatchdogMs + 30_000;
 
 // spawnSync's result shape and watchdog, asynchronously: it resolves once the child has
 // exited and closed its output. A child still running after the watchdog gets SIGTERM and
@@ -71,7 +74,7 @@ function runAsync(env, script, args) {
       child.kill("SIGTERM");
       child.stdout.destroy();
       child.stderr.destroy();
-    }, cliWatchdogMs);
+    }, asyncWatchdogMs);
     child.on("error", (spawnError) => (error ??= spawnError));
     child.on("close", (status, signal) => {
       clearTimeout(timer);
@@ -160,7 +163,7 @@ function finish(stdout = "") {
   process.exit(0);
 }
 // An engine or node command that does not answer; preparation must time it out. It exits
-// on its own after the CLI watchdog, so a regression cannot leave it running.
+// on its own after the CLI watchdogs, so a regression cannot leave it running.
 async function hang() {
   setTimeout(() => process.exit(124), ${hungCommandExitMs});
   await new Promise(() => {});
@@ -760,7 +763,7 @@ throw new Error("Unexpected external command: " + command + " " + JSON.stringify
     spawnSync(process.execPath, [join(repositoryRoot, "scripts/ci", script), ...args], {
       cwd: repositoryRoot,
       encoding: "utf8",
-      timeout: cliWatchdogMs,
+      timeout: syncWatchdogMs,
       env,
     });
   const prepareArgs = ["--lane", lane, "--state", statePath, "--github-env", githubEnv];
