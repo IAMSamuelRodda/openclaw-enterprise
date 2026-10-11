@@ -3484,6 +3484,7 @@ for (const [field, enable = {}] of [
   ["gatewayRouting.apiKeySecretName", gatewayRoutingValues],
   ["gatewayRouting.tlsSecretName", gatewayRoutingValues],
   ["gatewayRouting.gatewayClassName", gatewayRoutingValues],
+  ["gatewayRouting.issuerRef.name", externalGatewayRoutingValues],
   [
     "gatewayRouting.caSecretName",
     { ...externalGatewayRoutingValues, "gatewayRouting.caSecretKey": "ca.crt" },

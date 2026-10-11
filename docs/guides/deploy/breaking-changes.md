@@ -46,8 +46,9 @@ again.
 ## 2026-10-11: the chart refuses malformed Secret, ConfigMap and GatewayClass names
 
 **What breaks.** `helm template`, `install` and `upgrade` fail when a Secret
-name the chart reads, `repositoryCredentials.registryConfigMapName` or
-`gatewayRouting.gatewayClassName` is not a Kubernetes resource name: lowercase
+name the chart reads, `repositoryCredentials.registryConfigMapName`,
+`gatewayRouting.gatewayClassName` or `gatewayRouting.issuerRef.name` is not a
+Kubernetes resource name: lowercase
 letters, digits, `-` and `.`, starting and ending with a letter or digit, at
 most 253 characters. Examples are `database.caSecretName`,
 `gatewayRouting.apiKeySecretName`, `auth.*.secretName` and

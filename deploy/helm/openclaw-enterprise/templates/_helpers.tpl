@@ -456,6 +456,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if not $routing.issuerRef -}}{{- fail "gatewayRouting.issuerRef must be configured" -}}{{- end -}}
 {{- if and (hasKey $routing.issuerRef "name") (not (kindIs "string" $routing.issuerRef.name)) -}}{{- fail "gatewayRouting.issuerRef.name must be a string when supplied" -}}{{- end -}}
 {{- if $routing.issuerRef.name -}}
+{{- include "openclaw.validateResourceName" (dict "label" "gatewayRouting.issuerRef.name" "value" $routing.issuerRef.name) -}}
 {{- if or (not $routing.issuerRef.kind) (not $routing.issuerRef.group) -}}{{- fail "gatewayRouting.issuerRef kind and group must be set with an external issuer" -}}{{- end -}}
 {{- else -}}
 {{- if or $routing.caSecretName $routing.caSecretKey -}}{{- fail "gatewayRouting.caSecretName and gatewayRouting.caSecretKey require an external issuerRef.name" -}}{{- end -}}
