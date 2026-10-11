@@ -1143,6 +1143,14 @@ function resolveAgentHarness(
 
 // A Driver names unsupported Configuration content the caller owns; keep that message. Other
 // refusals get this fixed text; the caller is already authorized for the Agent.
+// Whether the Configuration selects a model for the default or any roster entry.
+function selectsModel(values: Readonly<OpenClawConfigurationDocument>): boolean {
+  const agents = asRecord(values.agents);
+  return [asRecord(agents?.defaults), ...Object.values(asRecord(agents?.entries) ?? {})].some(
+    (entry) => asRecord(entry)?.model !== undefined,
+  );
+}
+
 function validateAgentHarnessAuth(
   compute: ComputeDriver,
   ...input: Parameters<NonNullable<ComputeDriver["validateHarnessAuth"]>>
@@ -10162,9 +10170,13 @@ export class OpenClawController {
     }
     const harness = Object.freeze({ ...approved, mode: agent.executionMode });
     const values = this.agentRuntimeConfiguration(configuration.values, harness, compute, sandbox);
-    const auth = await this.savedHarnessAuthSnapshot(state, agent.namespaceId, agent.harnessAuth);
+    // A Configuration that selects no model yet is a draft: the binding has nothing to deliver
+    // to, so deployment refuses that pair and save does not.
+    const auth = selectsModel(configuration.values)
+      ? await this.savedHarnessAuthSnapshot(state, agent.namespaceId, agent.harnessAuth)
+      : undefined;
     if (auth !== undefined && compute.validateHarnessAuth !== undefined) {
-      validateAgentHarnessAuth(compute, harness, auth, values, configuration.secretBindings);
+      validateAgentHarnessAuth(compute, harness, auth, values, null);
     }
     if (
       agent.repositoryBindings !== undefined &&

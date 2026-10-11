@@ -3230,10 +3230,17 @@ export class KubernetesComputeDriver implements ComputeDriver {
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
-    secretBindings?: SecretBindings,
+    secretBindings?: SecretBindings | null,
     credentialSourceType?: CredentialSourceType,
   ): void {
-    requireNativeWorkerSandbox(harness, this.sandboxDriver);
+    // Agent save passes null bindings and checks only what depends on the Agent. What the
+    // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) and
+    // the Configuration's channel bindings, which it may stage after its values, wait for
+    // deployment.
+    const agentSave = secretBindings === null;
+    if (!agentSave) {
+      requireNativeWorkerSandbox(harness, this.sandboxDriver);
+    }
     const openclaw = harness.id === "openclaw";
     const embedded = harness.mode === "embedded" && openclaw;
     const dedicated = harness.mode === "dedicated";
@@ -3349,7 +3356,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError),
       {
         embedded: harness.mode === "embedded",
-        channelRuntime: this.options.runtime?.channels !== undefined,
+        channelRuntime: agentSave || this.options.runtime?.channels !== undefined,
       },
       callerSettingError,
     );
@@ -3390,7 +3397,9 @@ export class KubernetesComputeDriver implements ComputeDriver {
         );
       }
     }
-    this.validateChannelSecretBindings(configuration, secretBindings);
+    if (!agentSave) {
+      this.validateChannelSecretBindings(configuration, secretBindings);
+    }
   }
 
   // The Installation's runtime storage, which preparation also needs, is not the caller's to

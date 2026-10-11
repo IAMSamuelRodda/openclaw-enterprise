@@ -10,7 +10,7 @@ trusted Installation settings, never the backend.
 | Method                                                                            | Called at                                                                                                                                         | Refusal                                                                                                                                                              |
 | --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
 | `validateConfiguration(configuration)`                                            | Configuration create and update, Agent provisioning, and Preset create and update (values rendered with defaults)                                 | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
-| `validateHarnessAuth(harness, auth, configuration, secretBindings?, sourceType?)` | Deployment and provisioning, which require it; Agent create and update when the binding is `runtime` or a Secret                                  | `ConfigurationHarnessError` answers `400` with its message; any other error becomes a fixed `409`. A missing method at deployment is a dependency-unavailable error. |
+| `validateHarnessAuth(harness, auth, configuration, secretBindings?, sourceType?)` | Deployment and provisioning, which require it; Agent create and update, with `null` bindings, when the binding is `runtime` or a Secret           | `ConfigurationHarnessError` answers `400` with its message; any other error becomes a fixed `409`. A missing method at deployment is a dependency-unavailable error. |
 | `validateGatewaySettings(configuration)`                                          | Deployment, after `validateHarnessAuth`                                                                                                           | `ComputeGatewaySettingError` answers `409` with its message. Leave other refusals to preparation.                                                                    |
 | `validateWorkspaceSetup(harness, configuration)`                                  | Agent create with initial workspace files, Agent update and deployment while that setup is pending, and provisioning with initial workspace files | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation of the first deployment applies the same rule.                         |
 | `validateRepositoryCredentials(harness, sandboxDriverId?)`                        | Deployment with repository bindings, which requires it, and Agent create and update with repository bindings                                      | Any error becomes a fixed `409`.                                                                                                                                     |
@@ -31,12 +31,16 @@ will be stored, with the messages deployment uses:
    mode; a Harness approved only for the other mode is refused.
 3. The Compute checks above run on the values deployment would admit, after
    the Sandbox Driver's `configureAgent` and the logging policy.
+   `validateHarnessAuth` receives `null` Secret bindings and applies only
+   rules that depend on the Agent.
 
-Save leaves to deployment what depends on live state: a Harness the
-Installation approves for neither mode, a Configuration whose model selection
-names no supported Harness, ServiceAccount and credential-source Harness
-authentication, and a Secret binding whose Secret is gone. A stored Agent that
-fails a check still reads; its next update must fix the pair.
+Save leaves to deployment what depends on live state or not on the Agent: a
+Harness the Installation approves for neither mode, a Configuration that
+selects no model or no supported Harness, ServiceAccount and credential-source
+Harness authentication, a Secret binding whose Secret is gone, a Configuration
+channel's Secret bindings (which it may stage after its values), and whether
+the Installation provides dedicated OpenClaw or a channel runtime. A stored
+Agent that fails a check still reads; its next update must fix the pair.
 
 ## Kubernetes Compute
 

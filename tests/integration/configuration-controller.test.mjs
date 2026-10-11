@@ -861,6 +861,34 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
       "must be ${OPENAI_API_KEY} or an env SecretRef to OPENAI_API_KEY, which the Agent's Harness authentication binding supplies",
     ),
   );
+  // Agent save checks what depends on the Agent: an embedded Agent cannot serve a channel. The
+  // Installation's channel runtime and the channel's Secret bindings wait for deployment.
+  const slack = {
+    ...valid,
+    channels: {
+      slack: {
+        enabled: true,
+        mode: "socket",
+        appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+      },
+    },
+  };
+  assert.equal(
+    (await request(context.app, "PATCH", item, { body: { values: slack } })).status,
+    200,
+  );
+  const embeddedSlack = setting(
+    "channels.slack",
+    "is enabled, but channels require a dedicated Agent workload",
+  );
+  const agentUpdate = await request(context.app, "PATCH", agentPath, {
+    body: { configurationId },
+  });
+  assert.equal(agentUpdate.status, 400, JSON.stringify(agentUpdate.body));
+  assert.equal(agentUpdate.body.error.message, embeddedSlack);
+  const slackDeploy = await request(context.app, "POST", `${agentPath}/deploy`);
+  assert.equal(slackDeploy.status, 400);
+  assert.equal(slackDeploy.body.error.message, embeddedSlack);
   const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
   assert.deepEqual(revisions.body.data, []);
 
