@@ -1751,6 +1751,29 @@ test("preflight rejects external sign-in and trusted proxy inputs Helm would rej
     externalSignInInput({ github: { clientSecret: "inline" } }),
     /controlPlane.github.clientSecret is not supported/,
   );
+  for (const [provider, key, value] of [
+    ["github", "clientIdKey", "bad/key"],
+    ["google", "clientSecretKey", "a".repeat(254)],
+    ["oidc", "clientIdKey", "bad/key"],
+  ]) {
+    assertPreflightFailure(
+      "openclaw",
+      externalSignInInput({
+        github: undefined,
+        [provider]:
+          provider === "oidc"
+            ? {
+                issuer: "https://tenant.idp.example.test/",
+                authorizationUrl: "https://tenant.idp.example.test/authorize",
+                tokenUrl: "https://tenant.idp.example.test/oauth/token",
+                jwksUrl: "https://tenant.idp.example.test/.well-known/jwks.json",
+                [key]: value,
+              }
+            : { [key]: value },
+      }),
+      new RegExp(`controlPlane\\.${provider}\\.${key} must be a Kubernetes Secret key`),
+    );
+  }
   const oidc = {
     issuer: "https://tenant.idp.example.test/",
     authorizationUrl: "https://tenant.idp.example.test/authorize",

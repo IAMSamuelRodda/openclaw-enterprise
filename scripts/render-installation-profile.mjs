@@ -20,10 +20,15 @@ const dnsSubdomain = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-
 // Kubernetes Service names are DNS-1035 labels. The chart refuses any other
 // repositoryCredentials.serviceName.
 const dns1035Label = /^[a-z]([-a-z0-9]*[a-z0-9])?$/;
+const kubernetesSecretKey = /^[-._A-Za-z0-9]+$/;
 // The rule for a Kubernetes resource name field, such as a GatewayClass or Secret name.
 const resourceNameRule = {
   validate: isKubernetesResourceName,
   description: "a Kubernetes resource name of at most 253 characters",
+};
+const secretKeyRule = {
+  validate: (candidate) => candidate.length <= 253 && kubernetesSecretKey.test(candidate),
+  description: "a Kubernetes Secret key of at most 253 characters",
 };
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 // The controller reference also feeds prepare-bootstrap-volume and the chart.
@@ -697,7 +702,7 @@ function signInProvider(source, name, diagnostics) {
       source,
       [...path, key],
       diagnostics,
-      key === "secretName" ? resourceNameRule : undefined,
+      key === "secretName" ? resourceNameRule : secretKeyRule,
     );
     if (value !== undefined) {
       rendered[key] = value;
