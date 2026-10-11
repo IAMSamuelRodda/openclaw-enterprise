@@ -19,7 +19,10 @@ bundled or installed Configuration Driver: model provider settings,
 an `agents` roster every deployment refuses with deployment's own text, and
 [the settings rules](../../../packages/occ/src/configuration-settings.ts), which
 refuse a Codex approval policy the Gateway refuses and a literal
-`gateway.auth.password`. A stored row that predates a rule still reads. The Driver owns backing document
+`gateway.auth.password`, and the selected Compute Driver's optional
+[`validateConfiguration`](../../reference/drivers/compute-admission.md), which on
+Kubernetes refuses unsupported channels and model credentials outside the Harness
+authentication binding. A stored row that predates a rule still reads. The Driver owns backing document
 storage and checks storage-specific identity and ownership. When the bundled
 Kubernetes implementation is selected, `KubernetesConfigurationDriver` in
 [the Kubernetes Configuration implementation](../../../apps/controller/src/drivers/configuration/kubernetes/index.ts)
@@ -78,7 +81,13 @@ prerequisites.
 `createAgent` and `updateAgent` in
 [OCC](../../../packages/occ/src/index.ts) separately authorize and verify the
 Agent's exact same-Namespace `configurationId` and ensure its Configuration kind
-is `"agent"`. `deployAgent` then locks the Agent, authorizes a read of the
+is `"agent"`. They also run deployment's checks of the Agent against that
+Configuration ([Agent save](../../reference/drivers/compute-admission.md#agent-save)):
+the Sandbox execution mode, the Harness and its mode, and the Compute checks.
+With a Compute Driver and a Harness resolver selected, every Agent save reads
+its Configuration once from the Configuration Driver, inside the save's
+transaction; a Driver outage then fails the save with `503` instead of letting
+an unchecked pair through. `deployAgent` then locks the Agent, authorizes a read of the
 referenced Configuration, and locks its ownership metadata. It authorizes the
 caller's selected Secret bindings and the Agent service principal's consumption,
 checks topology/model-source compatibility, and asks the selected Secret Driver

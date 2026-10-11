@@ -385,6 +385,7 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
     namespaceReady: true,
   });
   const fixture = await createFixture(t, { computeDriver });
+  const { namespace, agent } = await fixture.bootstrapAgent();
   const values = createHarnessConfiguration("openclaw", "gpt-4.1");
   const { openai } = values.models.providers;
   values.agents.defaults = {
@@ -394,20 +395,42 @@ test("Kubernetes deploy names an unsupported Harness authentication model provid
   values.models.providers = {
     zai: { ...openai, models: [{ ...openai.models[0], id: "glm-5", name: "glm-5" }] },
   };
-  const { namespace, agent } = await fixture.bootstrapAgent(values);
-
-  // The Kubernetes Driver projects api_key credentials only for providers it knows; the
-  // caller must learn that, not that the resource already exists.
-  const refused = await fixture.request(
-    "POST",
-    `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
+  // The Configuration alone is valid: only the Agent's api_key binding, which the Kubernetes
+  // Driver projects only for providers it knows, makes the pair undeliverable.
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.id}`;
+  const stored = await fixture.request("GET", agentPath);
+  const replaced = await fixture.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/configurations/${stored.data.configurationId}`,
+    { body: { values } },
   );
+  assert.equal(replaced.status, 200, JSON.stringify(replaced.body));
+  const message =
+    "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.";
+
+  // The caller must learn that, not that the resource already exists: deployment refuses the
+  // pair, and so does the Agent's next save (finding 1117).
+  const refused = await fixture.request("POST", `${agentPath}/deploy`);
   assert.equal(refused.status, 409, JSON.stringify(refused.body));
   assert.equal(refused.body.error.code, "RESOURCE_CONFLICT");
-  assert.equal(
-    refused.body.error.message,
-    "The selected Compute Driver cannot deliver this Harness authentication binding to the configured model and topology.",
-  );
+  assert.equal(refused.body.error.message, message);
+  const updated = await fixture.request("PATCH", agentPath, {
+    body: { configurationId: stored.data.configurationId },
+  });
+  assert.equal(updated.status, 409, JSON.stringify(updated.body));
+  assert.equal(updated.body.error.message, message);
+  const created = await fixture.request("POST", `/namespaces/${namespace.id}/agents`, {
+    body: {
+      name: "Unsupported provider Agent",
+      configurationId: stored.data.configurationId,
+      executionMode: "embedded",
+      harnessAuth: stored.data.harnessAuth,
+    },
+  });
+  assert.equal(created.status, 409, JSON.stringify(created.body));
+  assert.equal(created.body.error.message, message);
+  // The stored Agent still reads.
+  assert.equal((await fixture.request("GET", agentPath)).status, 200);
 });
 
 test("first deployment requires Agent read and operate only when generating credentials", async (t) => {

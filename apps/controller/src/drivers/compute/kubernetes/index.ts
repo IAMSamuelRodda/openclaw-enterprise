@@ -99,8 +99,10 @@ import {
   agentEntryMessage,
   ComputeGatewaySettingError,
   ConfigurationHarnessError,
+  configurationSettingMessage,
   CredentialWithdrawalRefusedError,
   DependencyUnavailableError,
+  keyedSettingPath,
   requireOpenClawRoster,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
@@ -114,11 +116,7 @@ import {
   createKubernetesClientConfiguration,
   KubernetesApiUnavailableError,
 } from "../../kubernetes/client.ts";
-import {
-  WORKSPACE_SETUP_RUNTIME,
-  workspaceSetupMainAgent,
-  workspaceSetupVerifier,
-} from "../workspace-setup-runtime.ts";
+import { WORKSPACE_SETUP_RUNTIME, workspaceSetupVerifier } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import {
   validatePlaintextNativeGateway,
@@ -126,9 +124,13 @@ import {
 } from "../native-gateway-transport.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
 import {
+  enabledChannelProviders,
   OPENCLAW_GATEWAY_PASSWORD,
   requireChannelTopology,
+  requireHarnessCredentialBinding,
   requireWorkspaceNodePlugins,
+  requireWorkspaceSetupConfiguration,
+  selectedModelProviders,
   usesGatewayPasswordEnvironment,
 } from "./configuration-rules.ts";
 import { nodeProgramArguments } from "../node-program.ts";
@@ -232,6 +234,17 @@ const CHANNEL_REQUIREMENTS = {
 } as const;
 
 type ChannelRequirements = (typeof CHANNEL_REQUIREMENTS)[keyof typeof CHANNEL_REQUIREMENTS];
+
+const CHANNEL_PROVIDERS = Object.keys(CHANNEL_REQUIREMENTS);
+
+// A Configuration setting the caller owns, refused at save or admission: HTTP returns the
+// message, which names the setting and what is accepted.
+const callerSettingError = (setting: string, requirement: string) =>
+  new ConfigurationHarnessError(configurationSettingMessage(setting, requirement));
+
+// The same rule refused in preparation, where the message reaches only diagnostics.
+const preparationSettingError = (setting: string, requirement: string) =>
+  new ConfigurationFailure(configurationSettingMessage(setting, requirement));
 
 export interface KubernetesWorkloadPeer {
   readonly namespace: string;
@@ -2092,39 +2105,49 @@ function requireCodexGatewayConfigurationShape(configuration: OpenClawConfigurat
   }
 }
 
-function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument): object {
+// The dedicated OpenClaw model catalog: every selected model is openai/<id> with exactly one
+// entry under models.providers.openai.models that carries the transport, token and cost
+// metadata the native worker needs. The caller owns these settings, so each refusal names
+// the setting (`createError`); a model reference is not echoed.
+function nativeRuntimeConfiguration(
+  configuration: OpenClawConfigurationDocument,
+  createError: (setting: string, requirement: string) => Error,
+): object {
   const models = harnessModels(configuration);
   const providers = asRecord(asRecord(configuration.models)?.providers);
   const openai = asRecord(providers?.openai);
+  const catalog = "models.providers.openai.models";
   if (openai === undefined || !Array.isArray(openai.models)) {
-    throw new ConfigurationFailure(
-      "Dedicated OpenClaw requires an explicit native OpenAI model catalog.",
+    throw createError(
+      catalog,
+      "must list the selected OpenAI models: Dedicated OpenClaw requires an explicit native model catalog",
     );
   }
   if (openai.headers !== undefined) {
-    throw new ConfigurationFailure(
-      "Dedicated OpenClaw does not support provider headers from Agent Configuration.",
-    );
+    throw createError("models.providers.openai.headers", "must be unset on Dedicated OpenClaw");
   }
   const entries = openai.models.map((value) => asRecord(value));
   const runtimeModels = models.map((reference) => {
     const { provider, id } = splitModelRef(reference);
     if (provider !== "openai" || !id) {
-      throw new ConfigurationFailure(
-        "Dedicated OpenClaw currently requires explicit openai model references.",
+      throw createError(
+        "agents.defaults.model",
+        "and every agents.entries.*.model must select openai/<model> references on Dedicated OpenClaw",
       );
     }
-    const matches = entries.filter((entry) => entry?.id === id || entry?.id === reference);
+    const matches = entries.flatMap((entry, index) =>
+      entry?.id === id || entry?.id === reference ? [{ entry: entry!, index }] : [],
+    );
     if (matches.length !== 1) {
-      throw new ConfigurationFailure(
-        `Dedicated OpenClaw model metadata is missing or ambiguous for ${reference}.`,
+      throw createError(
+        catalog,
+        "must hold exactly one entry for each selected openai model on Dedicated OpenClaw",
       );
     }
-    const entry = matches[0]!;
+    const { entry, index } = matches[0]!;
+    const setting = `${catalog}.${index}`;
     if (entry.headers !== undefined) {
-      throw new ConfigurationFailure(
-        "Dedicated OpenClaw does not support model headers from Agent Configuration.",
-      );
+      throw createError(`${setting}.headers`, "must be unset on Dedicated OpenClaw");
     }
     const api = entry.api ?? openai.api;
     const baseUrl = entry.baseUrl ?? openai.baseUrl;
@@ -2143,19 +2166,19 @@ function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument
         (key) => typeof cost[key] !== "number" || !Number.isFinite(cost[key]) || cost[key] < 0,
       )
     ) {
-      throw new ConfigurationFailure(
-        `Dedicated OpenClaw requires API, endpoint, token limits, and cost metadata for ${reference}.`,
+      throw createError(
+        setting,
+        "must set api, baseUrl, positive integer contextWindow and maxTokens, and non-negative cost input, output, cacheRead and cacheWrite (here or on models.providers.openai) on Dedicated OpenClaw",
       );
     }
-    let endpoint: URL;
+    let endpoint: URL | undefined;
     try {
       endpoint = new URL(baseUrl as string);
     } catch {
-      throw new ConfigurationFailure(
-        `Dedicated OpenClaw endpoint metadata is invalid for ${reference}.`,
-      );
+      endpoint = undefined;
     }
     if (
+      endpoint === undefined ||
       endpoint.protocol !== "https:" ||
       endpoint.hostname !== "api.openai.com" ||
       endpoint.port !== "" ||
@@ -2165,14 +2188,13 @@ function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument
       endpoint.hash !== "" ||
       endpoint.pathname.replace(/\/$/u, "") !== "/v1"
     ) {
-      throw new ConfigurationFailure(
-        `Dedicated OpenClaw requires the approved OpenAI API endpoint for ${reference}.`,
+      throw createError(
+        `${setting}.baseUrl`,
+        "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
       );
     }
     if (entry.reasoning !== undefined && typeof entry.reasoning !== "boolean") {
-      throw new ConfigurationFailure(
-        `Dedicated OpenClaw reasoning metadata is invalid for ${reference}.`,
-      );
+      throw createError(`${setting}.reasoning`, "must be true or false");
     }
     const input = entry.input;
     if (
@@ -2181,9 +2203,7 @@ function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument
         input.length === 0 ||
         input.some((kind) => kind !== "text" && kind !== "image"))
     ) {
-      throw new ConfigurationFailure(
-        `Dedicated OpenClaw input metadata is invalid for ${reference}.`,
-      );
+      throw createError(`${setting}.input`, 'must be a nonempty list of "text" and "image"');
     }
     const thinkingLevelMap = asRecord(entry.thinkingLevelMap);
     if (
@@ -2193,8 +2213,9 @@ function nativeRuntimeConfiguration(configuration: OpenClawConfigurationDocument
           (value) => value !== null && typeof value !== "string",
         ))
     ) {
-      throw new ConfigurationFailure(
-        `Dedicated OpenClaw thinking metadata is invalid for ${reference}.`,
+      throw createError(
+        `${setting}.thinkingLevelMap`,
+        "must map thinking levels to strings or null",
       );
     }
     return {
@@ -2240,7 +2261,9 @@ function nativeRuntimeSnapshot(revision: AgentRevision): NativeRuntimeSnapshot |
     );
   }
   return {
-    configuration: JSON.stringify(nativeRuntimeConfiguration(revision.configuration)),
+    configuration: JSON.stringify(
+      nativeRuntimeConfiguration(revision.configuration, preparationSettingError),
+    ),
   };
 }
 
@@ -3226,23 +3249,33 @@ export class KubernetesComputeDriver implements ComputeDriver {
     harness: RevisionHarnessDescriptor,
     auth: HarnessAuthSnapshot,
     configuration: OpenClawConfigurationDocument,
-    secretBindings?: SecretBindings,
+    secretBindings?: SecretBindings | null,
     credentialSourceType?: CredentialSourceType,
   ): void {
-    requireNativeWorkerSandbox(harness, this.sandboxDriver);
+    // Agent save passes null bindings and checks only what depends on the Agent. What the
+    // Installation provides (a Sandbox Driver for dedicated OpenClaw, the channel runtime) and
+    // the Configuration's channel bindings, which it may stage after its values, wait for
+    // deployment.
+    const agentSave = secretBindings === null;
+    if (!agentSave) {
+      requireNativeWorkerSandbox(harness, this.sandboxDriver);
+    }
     const openclaw = harness.id === "openclaw";
     const embedded = harness.mode === "embedded" && openclaw;
     const dedicated = harness.mode === "dedicated";
     const codex = dedicated && harness.id === "codex";
     const native = dedicated && openclaw;
     if (native && asRecord(configuration.cloudWorkers)?.requiredProfile !== undefined) {
-      throw new ConfigurationFailure(
-        `Dedicated OpenClaw required profile ${NATIVE_WORKER_PROFILE} is owned by the selected Compute Driver.`,
+      throw callerSettingError(
+        "cloudWorkers.requiredProfile",
+        `must be unset on Dedicated OpenClaw: Kubernetes Compute owns the ${NATIVE_WORKER_PROFILE} profile`,
       );
     }
     // Every topology's Gateway rejects these rosters, so Configuration save refuses them too.
     // Only dedicated execution serves main, so that rule stays here, at deployment.
     requireOpenClawRoster(configuration);
+    // The same rules as Configuration save, with its messages, for a row stored before them.
+    this.validateConfiguration(configuration);
     if (native || codex) {
       requireDedicatedMainAgentDefault(
         configuration,
@@ -3328,63 +3361,36 @@ export class KubernetesComputeDriver implements ComputeDriver {
       harnessProbeConfiguration(configuration);
     }
     if (native) {
-      nativeRuntimeConfiguration(configuration);
+      nativeRuntimeConfiguration(configuration, callerSettingError);
     }
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
     }
     // Preparation and the Gateway entrypoint would refuse these only after a dedicated
     // deployment stopped its predecessors. The caller owns them, so admission names the setting.
-    const settingError = (setting: string, requirement: string) =>
-      new ConfigurationHarnessError(`Configuration setting ${setting} ${requirement}.`);
     if (this.hostsWorkspaceNode(harness)) {
-      requireWorkspaceNodePlugins(configuration, settingError);
+      requireWorkspaceNodePlugins(configuration, callerSettingError);
     }
     requireChannelTopology(
-      this.enabledChannelProviders(configuration),
+      enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError),
       {
         embedded: harness.mode === "embedded",
-        channelRuntime: this.options.runtime?.channels !== undefined,
+        channelRuntime: agentSave || this.options.runtime?.channels !== undefined,
       },
-      settingError,
+      callerSettingError,
     );
-    const conflictingAuth = () =>
-      new ConfigurationFailure("Model credentials must use the Harness authentication binding.");
-    if (Object.keys(asRecord(configuration.auth) ?? {}).length > 0) {
-      throw conflictingAuth();
-    }
-    const env = asRecord(configuration.env);
-    for (const values of [env, asRecord(env?.vars)]) {
-      if (
-        Object.keys(values ?? {}).some((name) =>
-          /^(?:OPENAI_|ANTHROPIC_|CODEX_(?:ACCESS_TOKEN|CHATGPT_WORKSPACE_ID|LOGIN_MODE)$)/i.test(
-            name,
-          ),
-        )
-      ) {
-        throw conflictingAuth();
-      }
-    }
     const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
-    const selectedProviders = new Set(
-      models.map((model) => splitModelRef(model as string).provider),
-    );
-    for (const provider of selectedProviders) {
+    for (const provider of selectedModelProviders(configuration)) {
       const config = asRecord(providers[provider]);
-      if (
-        [config, ...(Array.isArray(config?.models) ? config.models : [])].some((model) =>
-          Object.keys(asRecord(asRecord(model)?.headers) ?? {}).some((name) =>
-            /^(?:authorization|api-key|x-api-key)$/i.test(name),
-          ),
-        )
-      ) {
-        throw conflictingAuth();
-      }
       if (config?.apiKey === undefined) {
         continue;
       }
+      const setting = `${keyedSettingPath("models.providers", provider)}.apiKey`;
       if (!openclaw) {
-        throw conflictingAuth();
+        throw callerSettingError(
+          setting,
+          "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+        );
       }
       if (config.apiKey === `\${${authentication.environmentName}}`) {
         continue;
@@ -3404,10 +3410,34 @@ export class KubernetesComputeDriver implements ComputeDriver {
           (!Array.isArray(source.allowlist) ||
             !source.allowlist.includes(authentication.environmentName)))
       ) {
-        throw conflictingAuth();
+        throw callerSettingError(
+          setting,
+          `must be \${${authentication.environmentName}} or an env SecretRef to ${authentication.environmentName}, which the Agent's Harness authentication binding supplies`,
+        );
       }
     }
-    this.validateChannelSecretBindings(configuration, secretBindings);
+    if (!agentSave) {
+      this.validateChannelSecretBindings(configuration, secretBindings);
+    }
+  }
+
+  // The Installation's runtime storage, which preparation also needs, is not the caller's to
+  // fix, so it stays with preparation.
+  validateWorkspaceSetup(
+    harness: RevisionHarnessDescriptor,
+    configuration: Readonly<OpenClawConfigurationDocument>,
+  ): void {
+    requireWorkspaceSetupConfiguration(configuration, harness.mode, callerSettingError);
+  }
+
+  /**
+   * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
+   * and Preset defaults refuse the content where it is written: supported channel providers,
+   * and model credentials only through the Harness authentication binding.
+   */
+  validateConfiguration(configuration: Readonly<OpenClawConfigurationDocument>): void {
+    enabledChannelProviders(configuration, CHANNEL_PROVIDERS, callerSettingError);
+    requireHarnessCredentialBinding(configuration, callerSettingError);
   }
 
   getGatewayEndpoint(revision: AgentRevision): string | undefined {
@@ -10226,18 +10256,11 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (this.options.runtime === undefined) {
       throw new ConfigurationFailure("Workspace setup requires durable native runtime storage.");
     }
-    if (workspaceSetupMainAgent(revision.configuration) === undefined) {
-      throw new ConfigurationFailure("Workspace setup requires only the native main Agent.");
-    }
-    const workspace = this.gatewayConfiguration(revision).workspace;
-    if (
-      workspace !== "/home/node/.openclaw/workspace" &&
-      !(revision.harness.mode === "dedicated" && workspace === "/home/node/workspace")
-    ) {
-      throw new ConfigurationFailure(
-        "Workspace setup requires the Agent's managed durable workspace.",
-      );
-    }
+    requireWorkspaceSetupConfiguration(
+      revision.configuration,
+      revision.harness.mode,
+      preparationSettingError,
+    );
     return setup;
   }
 
@@ -11635,85 +11658,56 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private enabledChannels(revision: AgentRevision): readonly ChannelRequirements[] {
-    const providers = this.enabledChannelProviders(revision.configuration);
+    const providers = enabledChannelProviders(
+      revision.configuration,
+      CHANNEL_PROVIDERS,
+      preparationSettingError,
+    );
     requireChannelTopology(
       providers,
       {
         embedded: revision.harness.mode === "embedded",
         channelRuntime: this.options.runtime?.channels !== undefined,
       },
-      (setting, requirement) =>
-        new ConfigurationFailure(`Configuration setting ${setting} ${requirement}.`),
+      preparationSettingError,
     );
     return providers.map(
       (provider) => CHANNEL_REQUIREMENTS[provider as keyof typeof CHANNEL_REQUIREMENTS],
     );
   }
 
-  private enabledChannelProviders(configuration: OpenClawConfigurationDocument): string[] {
-    const configured = asRecord(asRecord(configuration)?.channels);
-    if (configured === undefined) {
-      return [];
-    }
-    const enabled: string[] = [];
-    for (const [provider, channel] of Object.entries(configured)) {
-      if (["defaults", "modelByChannel"].includes(provider)) {
-        continue;
-      }
-      if (asRecord(channel)?.enabled === false) {
-        continue;
-      }
-      if (!Object.hasOwn(CHANNEL_REQUIREMENTS, provider)) {
-        throw new ConfigurationFailure(`Unsupported OpenClaw channel provider "${provider}".`);
-      }
-      enabled.push(provider);
-    }
-    return enabled;
-  }
-
+  // Each enabled channel's credential references (`${NAME}` or an env SecretRef) need a
+  // Configuration Secret binding of that name. The error names the channel, not the reference.
   private validateChannelSecretBindings(
     configuration: OpenClawConfigurationDocument,
     secretBindings: SecretBindings | undefined,
   ): void {
-    const required = this.channelSecretBindingIds(configuration);
-    if (required.size === 0) {
-      return;
-    }
-    let bindings: ReturnType<typeof normalizeSecretBindings>;
-    try {
-      bindings = normalizeSecretBindings(secretBindings);
-    } catch {
-      throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
-    }
-    for (const id of required) {
-      if (bindings[id] === undefined) {
-        throw new ConfigurationFailure(
-          "Configured channel credentials require matching AgentRevision Secret bindings.",
+    const channels = asRecord(configuration.channels) ?? {};
+    let bindings: ReturnType<typeof normalizeSecretBindings> | undefined;
+    for (const provider of enabledChannelProviders(
+      configuration,
+      CHANNEL_PROVIDERS,
+      callerSettingError,
+    )) {
+      const required = new Set<string>();
+      this.collectChannelSecretBindingIds(channels[provider], required);
+      if (required.size === 0) {
+        continue;
+      }
+      if (bindings === undefined) {
+        try {
+          bindings = normalizeSecretBindings(secretBindings);
+        } catch {
+          throw new ConfigurationFailure("AgentRevision Secret bindings are invalid.");
+        }
+      }
+      if ([...required].some((id) => bindings![id] === undefined)) {
+        throw callerSettingError(
+          keyedSettingPath("channels", provider),
+          "uses a credential reference without a matching Configuration Secret binding: bind each referenced name in secretBindings",
         );
       }
     }
-  }
-
-  private channelSecretBindingIds(configuration: OpenClawConfigurationDocument): Set<string> {
-    const configured = asRecord(configuration.channels);
-    const ids = new Set<string>();
-    if (configured === undefined) {
-      return ids;
-    }
-    for (const [provider, value] of Object.entries(configured)) {
-      if (["defaults", "modelByChannel"].includes(provider)) {
-        continue;
-      }
-      const channel = asRecord(value);
-      if (channel?.enabled === false) {
-        continue;
-      }
-      if (!Object.hasOwn(CHANNEL_REQUIREMENTS, provider)) {
-        throw new ConfigurationFailure(`Unsupported OpenClaw channel provider "${provider}".`);
-      }
-      this.collectChannelSecretBindingIds(value, ids);
-    }
-    return ids;
   }
 
   private collectChannelSecretBindingIds(value: unknown, ids: Set<string>): void {

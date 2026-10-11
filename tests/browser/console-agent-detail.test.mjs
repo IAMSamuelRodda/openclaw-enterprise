@@ -2055,7 +2055,6 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
     namespace.id,
     "Uncertain Configuration Agent",
     nativeValues("before-unknown"),
-    { harnessAuth: { method: "runtime" } },
   );
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
@@ -2083,8 +2082,7 @@ test("Agent detail blocks repeat Configuration saves after an uncertain draft up
   requests.length = 0;
 
   const nextValues = nativeValues("after-unknown");
-  await page.getByText("Configured on the runtime host").waitFor();
-  assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isDisabled(), false);
+  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
   await page.getByRole("button", { name: "Edit Configuration" }).click();
   await openAdvancedSettings(page);
   await page.getByLabel("Configuration JSON").fill(JSON.stringify(nextValues, null, 2));

@@ -3389,9 +3389,10 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(created.data.plugins, initialPlugins);
   assert.deepEqual(created.data.pluginApprovers, []);
   assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
-  // This Plugin Driver has no Configuration check, so the save does not read the values: an
-  // unavailable or slow Configuration Driver must not block saves that have nothing to check.
-  assert.equal(configurationReads, readsBeforeSave);
+  // This Plugin Driver has no Configuration check, but Agent save checks the Agent against its
+  // Configuration as deployment would (the Harness and its execution mode), so it reads the
+  // values once, shared by every check.
+  assert.equal(configurationReads, readsBeforeSave + 1);
 
   const saved = await controller.request(
     "GET",
@@ -5756,6 +5757,39 @@ test("Agent provisioning API validates inline configuration with existing Secret
         'Configuration setting plugins.entries.codex.config.appServer.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired: use "on-request".',
     },
   );
+  // Topology-independent Kubernetes rules refuse at provisioning with the Configuration save
+  // message (finding 1116), before any Agent or Configuration is stored.
+  computeDriver.validateConfiguration = (values) => kubernetes.validateConfiguration(values);
+  const agentsBefore = (
+    await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)
+  ).length;
+  for (const [values, message] of [
+    [
+      { ...model, channels: { discord: { enabled: true } } },
+      "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+    ],
+    [
+      { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
+      "Configuration setting env.OPENAI_API_KEY must not be set: the Agent's Harness authentication binding owns model provider environment.",
+    ],
+  ]) {
+    const refused = await injectedRequest(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.data.id}/agents/provision`,
+      { body: provisioningRequestBody(namespace.data.id, secrets, { configuration: { values } }) },
+    );
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(
+      { code: refused.body.error.code, message: refused.body.error.message },
+      { code: "INVALID_REQUEST", message },
+    );
+  }
+  assert.equal(
+    (await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)).length,
+    agentsBefore,
+  );
+  delete computeDriver.validateConfiguration;
   // A refusal the caller cannot fix (here the Installation enables dedicated runtime storage
   // without gateway routing) keeps fixed text, since its reason names Installation settings.
   // The API log names it with the request ID for the operator.
@@ -7099,8 +7133,10 @@ test("deploy audit preserves its authorization decision and rolls back with appe
     yield "forged-iterator-value";
   };
   const computeDriver = createProvisioningCapableComputeDriver();
+  // Agent saves run this check too; only the deployment below swaps the IAM Driver.
+  let deploying = false;
   computeDriver.validateHarnessAuth = () => {
-    if (fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
+    if (!deploying || fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
       return;
     }
     sharedEvidence.push("mutated-after-authorization");
@@ -7136,6 +7172,7 @@ test("deploy audit preserves its authorization decision and rolls back with appe
 
   // Harness validation runs after OCC has checked deploy authorization. Changing
   // Driver selection here proves the audit uses that completed decision.
+  deploying = true;
   const deployed = await controller.request(
     "POST",
     `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,

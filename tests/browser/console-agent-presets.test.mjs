@@ -1271,11 +1271,13 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
   assert.deepEqual(JSON.parse(await configuration.inputValue()), values);
   await page.locator(".launch-runtime:not([open]) > summary").click();
   // Changing only topology must not redirect inference or discard provider settings.
-  for (const mode of ["embedded", "dedicated"]) {
+  for (const mode of ["dedicated", "embedded"]) {
     await page.getByLabel("Execution mode").selectOption(mode);
     assert.equal(await page.getByLabel("Harness", { exact: true }).inputValue(), "openclaw");
     assert.deepEqual(JSON.parse(await configuration.inputValue()), values);
   }
+  // Dedicated OpenClaw needs the native model catalog's endpoint, which Agent save checks, so
+  // this custom transport is created embedded.
   const createdResponse = page.waitForResponse(
     (response) =>
       response.url().endsWith(`/namespaces/${namespace.id}/agents`) &&
@@ -1283,9 +1285,9 @@ test("Dedicated OpenClaw Presets preserve custom provider transport across execu
   );
   await page.getByRole("button", { name: "Create Agent", exact: true }).click();
   const response = await createdResponse;
-  assert.equal(response.status(), 201);
+  assert.equal(response.status(), 201, JSON.stringify(await response.json()));
   const created = (await response.json()).data;
-  assert.equal(created.executionMode, "dedicated");
+  assert.equal(created.executionMode, "embedded");
   assert.deepEqual(created.harnessAuth, harnessAuth);
   const saved = await fixture.request(
     "GET",
