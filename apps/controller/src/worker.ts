@@ -86,10 +86,16 @@ import {
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
-  withYieldingGatewayDrain,
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
-import { StopYields, stopYieldRecheckMs } from "./worker/stop-yields.ts";
+import {
+  isStopYieldedCode,
+  PredecessorStopYieldedError,
+  StopYields,
+  stopWithDrainYield,
+  stopYieldedCode,
+  stopYieldRecheckMs,
+} from "./worker/stop-yields.ts";
 import {
   RepositoryCredentialAuthorityError,
   repositoryCleanupFailureCode,
@@ -1510,7 +1516,8 @@ export class ControllerWorker {
       // The worker aborted Compute itself, on a lost claim or a graceful shutdown: the pass's
       // own claim-loss or interruption record explains it, so there is no Compute failure to
       // describe (finding 1040).
-      if (error instanceof WorkClaimLostError) {
+      // A predecessor's stop that yielded is no preparation failure: the candidate is untouched.
+      if (error instanceof WorkClaimLostError || error instanceof ComputeStopYieldedError) {
         throw error;
       }
       let diagnostic: ComputePrepareRevisionFailureDiagnostic | undefined;
@@ -1569,9 +1576,19 @@ export class ControllerWorker {
     }
   }
 
+  /**
+   * Stops every predecessor before exclusive replacement prepares its candidate, so the
+   * Harness's single-writer volumes are never mounted twice. A predecessor's Gateway drain yields
+   * like a stopped Agent's (`drain` "yield", finding 1090): the pass ends pending as
+   * `PREDECESSOR_STOP_YIELDED` before the candidate is touched, and the next pass repeats the
+   * idempotent stop, which resumes the drain. The Harness is deleted only after the Gateway's Pods
+   * are gone, and the candidate is prepared only after every predecessor's stop returned in this
+   * pass. A newer revision admitted meanwhile supersedes this work and stops both itself.
+   */
   private async stopPredecessors(
     claim: ClaimedWork,
     earlier: readonly Readonly<AgentRevision>[],
+    drain: "yield" | "wait" = "yield",
   ): Promise<void> {
     for (const previous of earlier) {
       const record = this.stoppedPredecessors.get(previous.id);
@@ -1579,7 +1596,17 @@ export class ControllerWorker {
         continue;
       }
       await this.closeRevisionCredentials(claim, previous);
-      await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
+      if (drain === "wait") {
+        await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(previous));
+      } else {
+        try {
+          await this.stopYieldingDrain(claim, previous);
+        } catch (error) {
+          throw error instanceof ComputeStopYieldedError
+            ? new PredecessorStopYieldedError(error)
+            : error;
+        }
+      }
       this.stoppedPredecessors.delete(previous.id);
       this.stoppedPredecessors.set(previous.id, {
         stoppedAt: Date.now(),
@@ -2046,7 +2073,7 @@ export class ControllerWorker {
           return;
         }
         stopping = revision;
-        await this.stopForStoppedAgent(claim, revision);
+        await this.stopYieldingDrain(claim, revision);
       }
       result = {
         outcome: "success",
@@ -2071,26 +2098,21 @@ export class ControllerWorker {
   }
 
   /**
-   * Stops a revision because its Agent is stopped. While the work is younger than the convergence
-   * deadline, the Gateway drain wait ends once other Work is due (ComputeStopYieldedError) and
-   * the work is deferred to repeat the stop. Older work keeps the full bounded wait, so a drain
-   * that never ends cannot defer it forever (finding 1088). Age counts from the work's creation:
-   * maintenance work is created one interval before it is due, so a convergence deadline shorter
-   * than the maintenance interval leaves its stops without yielding. Other stops that yielded
-   * during their own drain do not count as due Work: their next pass only rechecks that drain,
-   * and stops draining at once would otherwise take turns for the whole drain (finding 1093).
+   * Stops a revision whose Gateway drain may yield: a stopped Agent's revision, or a predecessor
+   * that exclusive replacement stops before its successor starts. While the work is younger than
+   * the convergence deadline, the Gateway drain wait ends once other Work is due
+   * (ComputeStopYieldedError) and the work is deferred to repeat the stop. Older work keeps the
+   * full bounded wait, so a drain that never ends cannot defer it forever (finding 1088). Age
+   * counts from the work's creation: maintenance work is created one interval before it is due,
+   * so a convergence deadline shorter than the maintenance interval leaves its stops without
+   * yielding. Stops that yielded during their own drain do not count as due Work (see
+   * withClaimHeartbeat; finding 1093).
    */
-  private stopForStoppedAgent(
-    claim: ClaimedWork,
-    revision: Readonly<AgentRevision>,
-  ): Promise<void> {
+  private stopYieldingDrain(claim: ClaimedWork, revision: Readonly<AgentRevision>): Promise<void> {
     return this.withClaimHeartbeat(claim, () =>
-      Date.now() - claim.createdAt.getTime() < this.convergenceTimeoutMs
-        ? withComputeWorkWaiting(
-            () => this.queue.claimableWorkWaiting({ except: this.stopYields.waiting() }),
-            () => withYieldingGatewayDrain(() => this.compute.stopRevision(revision)),
-          )
-        : this.compute.stopRevision(revision),
+      stopWithDrainYield(Date.now() - claim.createdAt.getTime(), this.convergenceTimeoutMs, () =>
+        this.compute.stopRevision(revision),
+      ),
     );
   }
 
@@ -3424,7 +3446,7 @@ export class ControllerWorker {
                 await this.compute.bindAgent!({ namespace, agent });
               });
             }
-            await this.stopForStoppedAgent(claim, revision);
+            await this.stopYieldingDrain(claim, revision);
           }
           await this.completeStoppedRevisionWork(
             claim,
@@ -3439,7 +3461,7 @@ export class ControllerWorker {
           });
         }
         await this.closeRevisionCredentials(claim, revision);
-        await this.stopForStoppedAgent(claim, revision);
+        await this.stopYieldingDrain(claim, revision);
         // Once this reconciliation has published its candidate, it owns retiring
         // every predecessor even if stop admission clears the active pointer before
         // a recovery attempt. A different active revision means this candidate was
@@ -3604,9 +3626,11 @@ export class ControllerWorker {
           }
           await this.retireEarlierRevisions(claim, revision);
         } catch (error) {
+          // A yielded predecessor stop ends the pass pending below, like a candidate's.
           if (
             error instanceof WorkClaimLostError ||
-            error instanceof RepositoryCredentialAuthorityError
+            error instanceof RepositoryCredentialAuthorityError ||
+            error instanceof ComputeStopYieldedError
           ) {
             throw error;
           }
@@ -3676,8 +3700,9 @@ export class ControllerWorker {
         ) {
           result = { outcome: "permanent", code: error.code };
         } else if (error instanceof ComputeStopYieldedError) {
-          // A stopped Agent's revision stop yielded to other Work; the next pass repeats it.
-          result = { outcome: "pending", code: "AGENT_STOP_YIELDED" };
+          // A predecessor's or a stopped Agent's revision stop yielded to other Work; the next
+          // pass repeats it.
+          result = { outcome: "pending", code: stopYieldedCode(error)! };
         } else if (error instanceof TransientDependencyError) {
           // A dependency that recovers by itself must not spend the attempt budget:
           // five quick retries end long before a Gateway route or an API server
@@ -3947,8 +3972,10 @@ export class ControllerWorker {
         view.agents.findAgent(revision.namespaceId, revision.agentId),
       );
       if (agent?.desiredRuntimeState !== "running") {
+        // The Agent stopped during preparation. A yield ends the pass pending; the next pass
+        // repeats the stop as a stopped Agent's revision.
         await this.closeRevisionCredentials(claim, revision);
-        await this.compute.stopRevision(revision);
+        await this.stopYieldingDrain(claim, revision);
         return { outcome: "success", code: "REVISION_STOPPED" };
       }
       if (this.compute.activationOrder === "beforeCommit") {
@@ -4196,9 +4223,12 @@ export class ControllerWorker {
     try {
       // The worker is serial: Compute may end an optional in-pass wait early
       // when other Work could be claimed, instead of holding it back (D221).
+      // Stops whose latest pass yielded during a Gateway drain are not due Work: their next
+      // pass only rechecks that drain, which runs without the worker. Every wait that asks is
+      // optional and bounded, so this only lets it run to its own end (findings 1093, 1090).
       return await withComputeAbortSignal(operation.signal, () =>
         withComputeWorkWaiting(
-          () => this.queue.claimableWorkWaiting(),
+          () => this.queue.claimableWorkWaiting({ except: this.stopYields.waiting() }),
           () => effect(operation.signal),
         ),
       );
@@ -4285,7 +4315,7 @@ export class ControllerWorker {
     const expired =
       result.outcome === "pending" &&
       result.refusedCandidate === undefined &&
-      result.code !== "AGENT_STOP_YIELDED" &&
+      !isStopYieldedCode(result.code) &&
       Date.now() - claim.createdAt.getTime() >= this.convergenceTimeoutMs;
     // Runtime entrypoints publish a runtime failure only after their own retries
     // end, and then hold the container unready until an explicit restart that
@@ -4359,6 +4389,12 @@ export class ControllerWorker {
       resolved.outcome === "retry" && claim.attemptCount >= this.maxAttempts
         ? "permanent"
         : resolved.outcome;
+    if (committedOutcome === "permanent") {
+      failureLogFields = {
+        ...failureLogFields,
+        ...(await this.finishYieldedPredecessorStops(claim)),
+      };
+    }
     await this.state.transactWithQueue(async (unit, queue) => {
       if ((await queue.heartbeat(claim)) === undefined) {
         throw new WorkClaimLostError();
@@ -4437,7 +4473,7 @@ export class ControllerWorker {
           { code: resolved.code },
           // A transient dependency failure is rechecked on the readiness cadence:
           // like an unready runtime, it waits for convergence, not for a fix.
-          resolved.code === "AGENT_STOP_YIELDED"
+          isStopYieldedCode(resolved.code)
             ? { delayMs: this.stopYieldRecheckMs(claim) }
             : resolved.dependencyFailure !== undefined ||
                 REVISION_READINESS_CODES.has(resolved.code)
@@ -4457,7 +4493,17 @@ export class ControllerWorker {
     }, this.queueOptions);
     if (stoppedCandidate !== undefined) {
       await this.closeRevisionCredentials(claim, stoppedCandidate);
-      await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(stoppedCandidate!));
+      try {
+        await this.stopYieldingDrain(claim, stoppedCandidate);
+      } catch (error) {
+        // Nothing was committed for this claim: the next pass repeats the stop as a stopped
+        // Agent's revision.
+        if (!(error instanceof ComputeStopYieldedError)) {
+          throw error;
+        }
+        await this.finalizeRevision(claim, { outcome: "pending", code: "AGENT_STOP_YIELDED" });
+        return;
+      }
       await this.completeStoppedRevisionWork(claim, stoppedCandidate, "REVISION_STOPPED");
       return;
     }
@@ -4470,7 +4516,7 @@ export class ControllerWorker {
         );
         if (current?.desiredRuntimeState !== "running") {
           await this.closeRevisionCredentials(claim, activated);
-          await this.withClaimHeartbeat(claim, () => compute.stopRevision(activated!));
+          await this.stopYieldingDrain(claim, activated);
           await this.retireEarlierRevisions(claim, activated);
           await this.completeStoppedRevisionWork(claim, activated, "REVISION_STOPPED");
           return;
@@ -4493,6 +4539,12 @@ export class ControllerWorker {
           await this.finalizeRevision(claim, { outcome: "permanent", code: error.code });
           return;
         }
+        if (error instanceof ComputeStopYieldedError) {
+          // The Agent stopped after activation and its stop yielded: the next pass repeats it as
+          // the stopped Agent's active revision, then retires the earlier ones.
+          await this.finalizeRevision(claim, { outcome: "pending", code: "AGENT_STOP_YIELDED" });
+          return;
+        }
         await this.finalizeRevision(
           claim,
           error instanceof ActivationFailedError
@@ -4506,7 +4558,7 @@ export class ControllerWorker {
       return;
     }
     let stopYields: number | undefined;
-    if (resolved.outcome === "pending" && resolved.code === "AGENT_STOP_YIELDED") {
+    if (resolved.outcome === "pending" && isStopYieldedCode(resolved.code)) {
       stopYields = this.recordStopYield(claim);
       if (stopYields === undefined) {
         return;
@@ -4527,6 +4579,50 @@ export class ControllerWorker {
       ...this.deployTimingFields(claim),
       ...stopYieldsField(stopYields),
     });
+  }
+
+  /**
+   * A deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) already removed the
+   * serving revision's Gateway; only its drain and the Harness deletion were left to a later pass.
+   * Before such work ends in failure (a refusal, exhausted attempts, the deadline), it finishes
+   * that stop with the full bounded wait, so the predecessor ends stopped, as when the stop never
+   * yielded, rather than keeping its Harness and workspace with nothing left to stop it
+   * (finding 1090). Work that never yielded its predecessor stop leaves the serving revision alone.
+   * A stop that still fails is logged as `predecessorStop` and the failure is published anyway.
+   */
+  private async finishYieldedPredecessorStops(
+    claim: ClaimedWork,
+  ): Promise<Readonly<Record<string, string | number>>> {
+    if (
+      claim.agentId === undefined ||
+      claim.revisionId === undefined ||
+      claim.namespaceTarget !== undefined ||
+      claim.agentTarget !== undefined ||
+      (await this.queue.findWorkAttempt(claim.idempotencyKey, "PREDECESSOR_STOP_YIELDED")) ===
+        undefined
+    ) {
+      return {};
+    }
+    const revisions = await this.state.read((view) =>
+      view.revisions.listRevisions(claim.namespaceId, claim.agentId!),
+    );
+    const revision = revisions.find((candidate) => candidate.id === claim.revisionId);
+    if (revision === undefined || this.compute.requiresStoppedPredecessors?.(revision) !== true) {
+      return {};
+    }
+    try {
+      await this.stopPredecessors(
+        claim,
+        revisions.filter((candidate) => candidate.revision < revision.revision),
+        "wait",
+      );
+      return {};
+    } catch (error) {
+      if (error instanceof WorkClaimLostError) {
+        throw error;
+      }
+      return { predecessorStop: revisionFailureLogFields(error).cause ?? "Error" };
+    }
   }
 
   /**
@@ -4855,6 +4951,8 @@ export class ControllerWorker {
       outcome: result.outcome,
       code: result.code,
       ...this.deployTimingFields(claim),
+      // A deployment whose predecessor stop yielded counts those yields here (finding 1090).
+      ...stopYieldsField(this.stopYields.count(claim.idempotencyKey)),
     });
   }
 

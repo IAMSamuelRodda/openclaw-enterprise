@@ -2159,6 +2159,80 @@ test(
   },
 );
 
+// Finding 1090: a deployment whose Agent stopped while the deployment's own pass ran stopped its
+// candidate with the full Gateway wait: during preparation, before the commit (Compute that
+// activates first), or after the pointer commit. Each now yields like a stopped Agent's stop, and
+// its next pass repeats the stop as the stopped Agent's revision.
+for (const moment of ["preparation", "commit", "activation"]) {
+  revisionTest(
+    `a deployment whose Agent stops during its ${moment} yields that stop during the drain`,
+    async (fixture) => {
+      const owner = await fixture.agent(`drain-${moment}`);
+      const drain = gatewayDrainCompute(fixture, [owner], { drainMs: 5_000 });
+      let candidate;
+      let stop;
+      const requestStop = async () => {
+        stop ??= await fixture.requestStop(owner);
+      };
+      const compute = {
+        ...drain.compute,
+        async prepareRevision(revision) {
+          const observation = await drain.compute.prepareRevision(revision);
+          if (moment === "preparation" && revision.id === candidate?.id) {
+            await requestStop();
+          }
+          return observation;
+        },
+        ...(moment === "commit"
+          ? {
+              activationOrder: "beforeCommit",
+              async activateRevision(revision) {
+                if (revision.id === candidate?.id) {
+                  await requestStop();
+                }
+              },
+            }
+          : {}),
+      };
+      const events = [];
+      await fixture.start(compute, { emit: (event) => events.push(event) });
+      if (moment === "activation") {
+        // The stop is admitted right after the pass commits the candidate's pointer.
+        const worker = [...fixture.database.workers].at(-1);
+        const transactWithQueue = worker.state.transactWithQueue.bind(worker.state);
+        worker.state.transactWithQueue = async (work, options) => {
+          const result = await transactWithQueue(work, options);
+          if (
+            candidate !== undefined &&
+            stop === undefined &&
+            (await fixture.currentAgent(owner))?.activeRevisionId === candidate.id
+          ) {
+            await requestStop();
+          }
+          return result;
+        };
+      }
+      const busy = await fixture.revision(await fixture.agent(`drain-${moment}-busy`), 1);
+      drain.busy.add(busy.id);
+      candidate = await fixture.revision(owner, 1);
+      const done = await fixture.work(candidate, "succeeded", 30_000);
+      assert.ok(stop !== undefined, "the stop was admitted during the pass");
+      await fixture.work(stop, "succeeded", 30_000);
+      const passes = stopPasses(events, candidate).map(({ code }) => code);
+      assert.ok(passes.includes("AGENT_STOP_YIELDED"), passes.join(", "));
+      assert.equal(passes.at(-1), "REVISION_STOPPED");
+      assert.ok(!passes.includes("DEPENDENCY_UNAVAILABLE"), passes.join(", "));
+      assert.ok(done.attempt_count <= 1, `attempts ${done.attempt_count}`);
+      // The Harness stopped only after the drain, and the Agent ends stopped with no pointer.
+      assert.ok(drain.record.yields >= 1);
+      assert.deepEqual([...new Set(drain.record.harnessStops)], [candidate.id]);
+      const current = await fixture.currentAgent(owner);
+      assert.equal(current.desiredRuntimeState, "stopped");
+      assert.equal(current.activeRevisionId, undefined);
+    },
+  );
+}
+
 for (const recovery of [false, true]) {
   revisionTest(
     `fresh worker binds SSH ownership before ${recovery ? "stopped revision recovery" : "Agent stop"}`,

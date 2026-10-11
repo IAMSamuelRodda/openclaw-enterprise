@@ -92,6 +92,12 @@ export function deploymentProgressForWork(
                 : ""
             }; stopping the refused version before recording the failure. The controller will retry.`;
       break;
+    case "PREDECESSOR_STOP_YIELDED":
+      // Exclusive replacement: the serving version's gateway drains before this one starts.
+      code = attempt.code;
+      message =
+        "Waiting for the previous version's gateway to finish its active work before this version starts.";
+      break;
     case "AGENT_GATEWAY_UNAVAILABLE":
       code = attempt.code;
       message =

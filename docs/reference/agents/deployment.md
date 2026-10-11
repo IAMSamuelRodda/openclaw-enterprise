@@ -114,7 +114,7 @@ block deployment and require operator investigation. A
 successful `202` means the immutable revision was admitted and its work queued;
 it does not mean the workload is ready. Later Configuration edits or changes to
 an account's selected credential reference affect only future deployments. A
-snapshot freezes a Secret reference, not the value stored at that reference.
+snapshot freezes a Secret reference, not its stored value.
 
 The separate PostgreSQL controller worker prepares the exact Agent gateway and
 revision, sets `activeRevisionId`, activates its route, and retires its
@@ -184,8 +184,8 @@ A dependency that fails while it converges is pending too.
 through its route yet (for example, the route answers 404 until the gateway
 proxy has the new route, or 503 until it has the ready Pod), and
 `KUBERNETES_API_UNAVAILABLE` means a Kubernetes API request timed out, could not
-connect, or got 429 or 5xx. Both codes apply during preparation and
-activation alike. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway
+connect, or got 429 or 5xx. Both apply during preparation and
+activation. `SANDBOX_ADMISSION_LIMIT_REACHED` means the OpenShell gateway
 refuses new requests from the controller because it holds OpenShell's limit of
 durable request admissions; see the
 [OpenShell troubleshooting](../drivers/openshell-sandbox.md#troubleshooting).
@@ -194,13 +194,13 @@ The worker retries on the same cadence without spending its
 deadline fails the deployment with its own code.
 
 `REFUSED_CANDIDATE_STOP_PENDING` means the worker refused the candidate but could
-not yet stop its workload, for example because Pods are stuck terminating. The
+not yet stop its workload, such as Pods stuck terminating. The
 message names the refusal, such as `AUTHORIZATION_DENIED`, which `error` carries
 once the stop succeeds. The wait has no deadline or attempt limit, since the
 refused version could still serve. Each failed stop doubles the recheck, from the
-cadence above up to 5 minutes, and waits at least four times the stop's duration,
-so other Agents' deployments keep running; every try moves `lastAttempt.at`, and
-the worker log's `worker.completed` `cause` says why the stop fails. If an
+cadence above up to 5 minutes, and waits at least four times the stop's duration;
+every try moves `lastAttempt.at`, and the worker log's `worker.completed` `cause`
+says why the stop fails. If an
 authorization or backend refusal lifts (`deploy` granted again), the deployment
 continues, or past its convergence deadline stops the candidate and fails
 `CONVERGENCE_DEADLINE_EXCEEDED`; other refusals stand. A deployment that a
@@ -208,8 +208,9 @@ newer revision supersedes still finishes the stop, even of a lifted refusal, and
 then ends superseded.
 
 `AGENT_STOP_YIELDED` means the Agent was stopped and this revision's gateway is
-still draining; the worker runs other due work meanwhile and repeats the stop
-after it, without spending attempts.
+still draining; `PREDECESSOR_STOP_YIELDED` means a dedicated replacement waits for
+the previous version's gateway to drain. Meanwhile the worker runs other due work,
+then repeats the stop without spending attempts.
 
 ### Model check failure cause
 
