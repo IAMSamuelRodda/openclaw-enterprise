@@ -302,7 +302,7 @@ export async function stopQaAgent(f, agent, { timeout } = {}) {
   } catch (error) {
     if (last && /^Timed out: /.test(error.message)) {
       try {
-        const file = await recordPlatformLogs(f, `${agent.id}-stop-timeout`);
+        const file = await recordPlatformLogs(f, `${agent.id}-stop-timeout`, last.pods);
         if (file) {
           error.message += `; API and worker logs: ${file}`;
         }
@@ -354,39 +354,157 @@ const publicLauncherSettings = new Set([
   "OCC_DEVELOPMENT_STATE_DIRECTORY",
 ]);
 
+// The Gateway drains in-flight work for up to 315 s on SIGTERM and logs what it
+// waits for. Keep only its own drain and shutdown messages.
+const gatewayDrainLine =
+  /draining active work|active-work drain|all active work drained|shutdown budget|shutdown drain|received SIG(TERM|INT)/i;
+const gatewayDrainLines = 40;
+// Extra worker reads (rollout Pods, previous containers) keep a shorter tail.
+const extraWorkerLogLines = 200;
+const platformEvents = 60;
+
+// Lifecycle fields only: which Pods ran, when they started and why they restarted.
+function podRestarts({ metadata = {}, status = {} }) {
+  return {
+    name: metadata.name,
+    component: metadata.labels?.["app.kubernetes.io/component"],
+    phase: status.phase,
+    startTime: status.startTime ?? null,
+    deletionTimestamp: metadata.deletionTimestamp ?? null,
+    containers: (status.containerStatuses ?? []).map(({ name, restartCount, lastState }) => ({
+      name,
+      restartCount,
+      lastTerminated: lastState?.terminated
+        ? {
+            reason: lastState.terminated.reason,
+            exitCode: lastState.terminated.exitCode,
+            finishedAt: lastState.terminated.finishedAt,
+          }
+        : null,
+    })),
+  };
+}
+
 // The QA evidence artifact is uploaded on every run, and only its *.json files;
 // keep the API and worker log tails there, redacted, for the kubernetes control
-// plane (Compose runs them as containers outside the cluster). Returns the file name.
-async function recordPlatformLogs(f, label) {
+// plane (Compose runs them as containers outside the cluster), plus each worker
+// Pod during a rollout, a restarted worker's previous log, platform Pod restarts, recent
+// Events in the platform and remaining Agent Namespaces, and the drain lines of each
+// remaining Gateway Pod. Returns the file name.
+async function recordPlatformLogs(f, label, remainingPods = []) {
   if (f.controlPlane !== "kubernetes") {
     return;
   }
   const env = Object.fromEntries(
     Object.entries(f.env ?? {}).filter(([name]) => !publicLauncherSettings.has(name)),
   );
-  const logs = {};
-  for (const component of ["api", "worker"]) {
+  const tail = (text, lines = platformLogLines, lineChars = platformLogLineChars) =>
+    redactedQaTail(text, env, { lines, lineChars });
+  const attempt = async (read) => {
     try {
+      return await read();
+    } catch (error) {
+      return { unavailable: tail(error.message, 12, 800) };
+    }
+  };
+  const platformNamespace = f.state.platformNamespace;
+  const containerTail = async (target, container, ...options) => {
+    const lines = target.startsWith("deployment/") ? platformLogLines : extraWorkerLogLines;
+    return tail(
+      await f.kubectl(
+        "-n",
+        platformNamespace,
+        "logs",
+        target,
+        "--container",
+        container,
+        ...options,
+        "--timestamps",
+        `--tail=${lines}`,
+        "--request-timeout=30s",
+      ),
+      lines,
+    );
+  };
+  const logs = {};
+  logs.api = await attempt(() => containerTail("deployment/openclaw-enterprise-api", "api"));
+  logs.worker = await attempt(() =>
+    containerTail("deployment/openclaw-enterprise-worker", "worker"),
+  );
+  const platformPods = await attempt(async () =>
+    JSON.parse(
+      await f.kubectl(
+        "-n",
+        platformNamespace,
+        "get",
+        "pods",
+        "-o",
+        "json",
+        "--request-timeout=30s",
+      ),
+    ).items.map(podRestarts),
+  );
+  logs.platformPods = platformPods;
+  // `logs deployment/...` reads one Pod and never its previous container: during
+  // a rollout read every worker Pod by name, and a restarted one's previous log.
+  const workerPods = Array.isArray(platformPods)
+    ? platformPods.filter(({ component }) => component === "worker")
+    : [];
+  for (const pod of workerPods) {
+    if (workerPods.length > 1) {
+      (logs.workerPods ??= {})[pod.name] = await attempt(() => containerTail(pod.name, "worker"));
+    }
+    if (pod.containers.find(({ name }) => name === "worker")?.restartCount > 0) {
+      (logs.workerPrevious ??= {})[pod.name] = await attempt(() =>
+        containerTail(pod.name, "worker", "--previous"),
+      );
+    }
+  }
+  const eventNamespaces = [
+    platformNamespace,
+    ...new Set(
+      remainingPods
+        .map(({ metadata }) => metadata?.namespace)
+        .filter((namespace) => namespace && namespace !== platformNamespace),
+    ),
+  ];
+  logs.events = {};
+  for (const namespace of eventNamespaces) {
+    logs.events[namespace] = await attempt(async () =>
+      JSON.parse(
+        await f.kubectl("-n", namespace, "get", "events", "-o", "json", "--request-timeout=30s"),
+      )
+        .items.map((event) => ({
+          time: event.lastTimestamp ?? event.eventTime ?? event.metadata?.creationTimestamp ?? null,
+          type: event.type,
+          reason: event.reason,
+          object: `${event.involvedObject?.kind}/${event.involvedObject?.name}`,
+          count: event.count ?? 1,
+          message: tail(event.message ?? "", 1, 400)[0] ?? "",
+        }))
+        .sort((left, right) => String(left.time ?? "").localeCompare(String(right.time ?? "")))
+        .slice(-platformEvents),
+    );
+  }
+  for (const { metadata = {} } of remainingPods) {
+    if (metadata.labels?.["openclaw.dev/workload-role"] !== "gateway") {
+      continue;
+    }
+    (logs.gatewayDrain ??= {})[metadata.name] = await attempt(async () => {
       const text = await f.kubectl(
         "-n",
-        f.state.platformNamespace,
+        metadata.namespace,
         "logs",
-        `deployment/openclaw-enterprise-${component}`,
+        metadata.name,
         "--container",
-        component,
+        "gateway",
         "--timestamps",
-        `--tail=${platformLogLines}`,
+        `--tail=${platformLogLines * 4}`,
         "--request-timeout=30s",
       );
-      logs[component] = redactedQaTail(text, env, {
-        lines: platformLogLines,
-        lineChars: platformLogLineChars,
-      });
-    } catch (error) {
-      logs[component] = {
-        unavailable: redactedQaTail(error.message, env, { lines: 12, lineChars: 800 }),
-      };
-    }
+      const kept = text.split("\n").filter((line) => gatewayDrainLine.test(line));
+      return kept.length === 0 ? [] : tail(kept.join("\n"), gatewayDrainLines, 800);
+    });
   }
   return f.record(`${label}-platform-logs`, { capturedAt: new Date().toISOString(), logs });
 }

@@ -264,11 +264,53 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
       name: "agent-1-gateway-0",
       deletionTimestamp: "2026-10-11T01:37:00Z",
       finalizers: ["openclaw.dev/runtime"],
-      labels: { "openclaw.dev/agent": "agent-1" },
+      labels: { "openclaw.dev/agent": "agent-1", "openclaw.dev/workload-role": "gateway" },
     },
     spec: { containers: [{ env: [{ name: "GATEWAY_PASSWORD", value: "spec-private-value" }] }] },
     status: { phase: "Running" },
   };
+  // A remaining Agent Pod whose log is not read, in the platform Namespace for the
+  // Events de-duplication.
+  const agentPod = {
+    metadata: {
+      namespace: "oce-system",
+      name: "agent-1-runtime-0",
+      labels: { "openclaw.dev/agent": "agent-1", "openclaw.dev/workload-role": "agent" },
+    },
+    status: { phase: "Running" },
+  };
+  // A rollout: two worker Pods, one restarted, and an API Pod.
+  const platformPods = [
+    {
+      metadata: { name: "worker-a", labels: { "app.kubernetes.io/component": "worker" } },
+      spec: { containers: [{ env: [{ name: "DATABASE_URL", value: "spec-private-value" }] }] },
+      status: {
+        phase: "Running",
+        startTime: "2026-10-11T01:30:00Z",
+        containerStatuses: [
+          {
+            name: "worker",
+            restartCount: 1,
+            lastState: {
+              terminated: { reason: "Error", exitCode: 1, finishedAt: "2026-10-11T01:33:00Z" },
+            },
+          },
+        ],
+      },
+    },
+    {
+      metadata: { name: "worker-b", labels: { "app.kubernetes.io/component": "worker" } },
+      status: { phase: "Running", containerStatuses: [{ name: "worker", restartCount: 0 }] },
+    },
+    { metadata: { name: "api-a", labels: { "app.kubernetes.io/component": "api" } }, status: {} },
+  ];
+  const event = (time, name, message) => ({
+    lastTimestamp: time,
+    type: "Normal",
+    reason: "Killing",
+    involvedObject: { kind: "Pod", name },
+    message,
+  });
   const calls = [];
   const records = new Map();
   const f = {
@@ -291,10 +333,35 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     async kubectl(...args) {
       calls.push(["kubectl", ...args]);
       if (args[0] === "get") {
-        return JSON.stringify({ items: [pod] });
+        return JSON.stringify({ items: [pod, agentPod] });
       }
       if (args.includes("deployment/openclaw-enterprise-worker")) {
         throw new Error("kubectl failed (exit 1); stderr: launcher-private-value unreachable");
+      }
+      const [verb, target] = args.slice(2);
+      if (verb === "get" && target === "pods") {
+        return JSON.stringify({ items: platformPods });
+      }
+      if (verb === "get" && target === "events") {
+        return JSON.stringify({
+          items: [
+            event("2026-10-11T01:36:30Z", "agent-1-gateway-0", "Stopping; launcher-private-value"),
+            event(undefined, "undated", "no time"),
+            event("2026-10-11T01:30:00Z", "worker-a", "Started container worker"),
+          ],
+        });
+      }
+      if (args.includes("--previous")) {
+        throw new Error("kubectl failed (exit 1); stderr: previous launcher-private-value gone");
+      }
+      if (target === "worker-a" || target === "worker-b") {
+        return `2026-10-11T01:36:00Z ${target} worker.completed\n`;
+      }
+      if (target === "agent-1-gateway-0") {
+        return (
+          "2026-10-11T01:32:40Z draining active work before stop with timeout 315000ms: 1 active chat run(s)\n" +
+          "2026-10-11T01:32:41Z assistant reply QA_NATIVE_conversation-text: drain the shutdown queue\n"
+        );
       }
       return (
         "2026-10-11T01:36:00Z kubernetes compute: stop requested for agent-1\n" +
@@ -323,6 +390,13 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
           phase: "Running",
           deletionTimestamp: "2026-10-11T01:37:00Z",
           finalizers: ["openclaw.dev/runtime"],
+        },
+        {
+          namespace: "oce-system",
+          name: "agent-1-runtime-0",
+          phase: "Running",
+          deletionTimestamp: null,
+          finalizers: [],
         },
       ],
     });
@@ -362,6 +436,76 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
   );
   assert.match(logs.worker.unavailable.join("\n"), /unreachable/);
   assert.equal(describeStopObservation(undefined), "none");
+  // During a rollout every worker Pod by name; only a restarted one's previous
+  // container, whose failed read is kept, redacted.
+  assert.deepEqual(logs.workerPods, {
+    "worker-a": ["2026-10-11T01:36:00Z worker-a worker.completed"],
+    "worker-b": ["2026-10-11T01:36:00Z worker-b worker.completed"],
+  });
+  assert.deepEqual(
+    calls.filter((call) => call.includes("--previous")).map((call) => call.slice(1)),
+    [
+      [
+        "-n",
+        "oce-system",
+        "logs",
+        "worker-a",
+        "--container",
+        "worker",
+        "--previous",
+        "--timestamps",
+        "--tail=200",
+        "--request-timeout=30s",
+      ],
+    ],
+  );
+  assert.match(logs.workerPrevious["worker-a"].unavailable.join("\n"), /gone/);
+  assert.deepEqual(logs.platformPods[0], {
+    name: "worker-a",
+    component: "worker",
+    phase: "Running",
+    startTime: "2026-10-11T01:30:00Z",
+    deletionTimestamp: null,
+    containers: [
+      {
+        name: "worker",
+        restartCount: 1,
+        lastTerminated: { reason: "Error", exitCode: 1, finishedAt: "2026-10-11T01:33:00Z" },
+      },
+    ],
+  });
+  // Events from the platform and each other remaining Namespace, oldest first.
+  assert.deepEqual(Object.keys(logs.events), ["oce-system", "oce-agent-1"]);
+  assert.equal(calls.filter((call) => call.includes("events")).length, 2);
+  assert.deepEqual(
+    logs.events["oce-agent-1"].map(({ object }) => object),
+    ["Pod/undated", "Pod/worker-a", "Pod/agent-1-gateway-0"],
+  );
+  // Only a remaining Gateway Pod's own drain messages; the Agent Pod's log is not read.
+  assert.deepEqual(logs.gatewayDrain, {
+    "agent-1-gateway-0": [
+      "2026-10-11T01:32:40Z draining active work before stop with timeout 315000ms: 1 active chat run(s)",
+    ],
+  });
+  assert.ok(!calls.some((call) => call.includes("agent-1-runtime-0")));
+  assert.deepEqual(calls.find((call) => call.includes("agent-1-gateway-0")).slice(1, 7), [
+    "-n",
+    "oce-agent-1",
+    "logs",
+    "agent-1-gateway-0",
+    "--container",
+    "gateway",
+  ]);
+  assert.doesNotMatch(
+    JSON.stringify(logs),
+    /spec-private-value|QA_NATIVE_conversation-text|launcher-private-value/,
+  );
+  // A single worker Pod is the Deployment read: no per-Pod copies.
+  platformPods.splice(0, 1);
+  await assert.rejects(
+    stopQaAgent(f, { id: "agent-3", namespaceId: "namespace-1" }, { timeout: 10 }),
+  );
+  assert.equal(records.get("agent-3-stop-timeout-platform-logs").logs.workerPods, undefined);
 
   // A Compose control plane keeps the observation but has no in-cluster platform logs.
   records.clear();

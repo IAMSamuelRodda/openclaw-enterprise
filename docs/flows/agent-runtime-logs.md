@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: 2026-10-11
-last_updated_session: issue-2114
+last_updated_session: authoring-run/b5dc3ace-2767-4645-9b89-e30d18fa3184
 ---
 
 # Agent runtime logs flow
@@ -77,25 +77,22 @@ reads, so a denial is always audited and never spends a token.
 
 ### 2. Describe the runtime
 
-`KubernetesComputeDriver.describeAgentRuntime` reports the current termination
-when a container is terminated, otherwise its prior termination. It resolves the owned Namespace, then
-lists Pods by the exact Agent, revision and workload-role labels: dedicated
-Gateways and Harnesses in the shared tenant namespace in a single cluster. The
-two-cluster profile reads dedicated Gateways in its control target and Harnesses
-in its execution target. It lists Events by
-`involvedObject.uid`, keeps only that Pod's Events, drops the scheduler's
-`FailedScheduling` retry after a lost PVC update race once the Pod has a node,
-follows Event-list continuation under the same five-second deadline, retains
-the newest 100 eligible Events across all pages, and takes each
-Event's `container` from `involvedObject.fieldPath` (`spec.containers{name}` or
-the init or ephemeral form; `null` for Pod-level Events such as `Scheduled`). A log
-read passes `{ source, events: false }`, so it lists only that source's Pods and
-no Events. Each
+`KubernetesComputeDriver.describeAgentRuntime` resolves the owned Namespace and
+lists Pods by exact Agent, revision and role labels. A single cluster holds
+Gateways and Harnesses in one tenant namespace; a two-cluster profile reads
+Gateways from control and Harnesses from execution. It reports the current
+termination for a terminated container, otherwise the prior termination. Event
+reads keep only the Pod's newest 100 eligible Events across continuation pages,
+drop a settled `FailedScheduling` PVC retry, and derive `container` from
+`involvedObject.fieldPath` (`null` for Pod Events). A log read passes
+`{ source, events: false }`, so it lists one source without Events. Each
 Kubernetes call has a five-second deadline; a `403` becomes
 `RuntimeLogsForbiddenByClusterError`. `runtime-logs/description.ts:validRuntimeDescription`
-checks names, UIDs and counts, masks node, image and Secret names in Event
-messages (`runtime-logs/redact.ts:maskRuntimeEventText`) and redacts reasons and
-Event messages.
+checks names, UIDs, counts and RFC 3339 UTC timestamps. A malformed or impossible
+Driver timestamp makes runtime status unavailable instead of being normalized to
+a different instant. The validator also masks node, image and Secret names in
+Event messages (`runtime-logs/redact.ts:maskRuntimeEventText`) and redacts reasons
+and Event messages.
 
 ### 3. Read one page
 
@@ -247,6 +244,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 15:20: Reject malformed or impossible Compute Driver timestamps at the runtime-description boundary. (authoring-run/b5dc3ace-2767-4645-9b89-e30d18fa3184 - 2a1eae472d6a820a574cdbcb75dd7d31e3619a68)
 
 - 2026-10-11 09:10: Reject sub-second runtime-log `--since` before any API request. (issue-2114 - 724b37bd1630f0b066bb2cbc23e3e965d172f9a7)
 
