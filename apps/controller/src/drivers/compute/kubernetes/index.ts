@@ -1534,10 +1534,6 @@ function parseCidr(value: unknown, description: string): ParsedCidr {
   return { value, address, family: family === 4 ? 4 : 6, prefix: prefixValue };
 }
 
-function validateCidr(value: unknown, description: string): void {
-  parseCidr(value, description);
-}
-
 function providerHarnessUrl(
   endpoint: SandboxHarnessEndpoint,
   network: NonNullable<KubernetesComputeDriverOptions["network"]["providerHarness"]>,
@@ -1574,7 +1570,7 @@ function providerHarnessUrl(
   return url;
 }
 
-function trustedProxyCidrTrustsEverySource(cidr: ParsedCidr): boolean {
+function cidrCoversEveryAddress(cidr: ParsedCidr): boolean {
   if (cidr.prefix === 0) {
     return true;
   }
@@ -1586,19 +1582,37 @@ function trustedProxyCidrTrustsEverySource(cidr: ParsedCidr): boolean {
   return blockList.check("0.0.0.0", "ipv4") && blockList.check("255.255.255.255", "ipv4");
 }
 
+// The one rule for every operator CIDR that grants reach (trusted proxies, status proxy
+// sources, execution endpoints): a range covering every IPv4 or IPv6 address is refused.
+// The profile renderer names the same rule with the same words.
+function scopedCidr(value: unknown, description: string, index: number): ParsedCidr {
+  const parsed = parseCidr(value, `${description} ${index}`);
+  if (cidrCoversEveryAddress(parsed)) {
+    throw new ConfigurationFailure(`${description}s cannot cover every address.`);
+  }
+  return parsed;
+}
+
 function trustedProxyCidrSet(value: unknown, description: string): ReadonlySet<string> {
   if (!Array.isArray(value) || value.length === 0) {
     throw new ConfigurationFailure(`${description} must contain at least one CIDR.`);
   }
-  const cidrs = new Set<string>();
-  value.forEach((entry, index) => {
-    const parsed = parseCidr(entry, `${description} ${index}`);
-    if (trustedProxyCidrTrustsEverySource(parsed)) {
-      throw new ConfigurationFailure(`${description}s cannot trust every source.`);
-    }
-    cidrs.add(parsed.value.toLowerCase());
+  return new Set(
+    value.map((entry, index) => scopedCidr(entry, description, index).value.toLowerCase()),
+  );
+}
+
+// The documented status proxy source is the API server's own address. A wider range, such
+// as the Pod CIDR, admits every Pod in it to each Agent's status port: Compute cannot know
+// the cluster's ranges, so it warns rather than refuses.
+function broadStatusProxySourceCidrs(options: KubernetesComputeDriverOptions): readonly string[] {
+  return [
+    ...(options.network.pluginStatusProxySourceCidrs ?? []),
+    ...(options.executionCluster?.network.pluginStatusProxySourceCidrs ?? []),
+  ].filter((cidr) => {
+    const parsed = parseCidr(cidr, "Plugin status proxy CIDR");
+    return parsed.prefix < (parsed.family === 4 ? 32 : 128);
   });
-  return cidrs;
 }
 
 function cidrSetsEqual(left: ReadonlySet<string>, right: ReadonlySet<string>): boolean {
@@ -2670,7 +2684,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
         throw new ConfigurationFailure("Plugin status proxy source CIDRs must be an array.");
       }
       options.network.pluginStatusProxySourceCidrs.forEach((cidr, index) =>
-        validateCidr(cidr, `Plugin status proxy CIDR ${index}`),
+        scopedCidr(cidr, "Plugin status proxy CIDR", index),
       );
     }
     if (options.network.repositoryCredentials !== undefined) {
@@ -2808,19 +2822,14 @@ export class KubernetesComputeDriver implements ComputeDriver {
         "Harness routing hostname",
       );
       for (const [description, cidrs] of [
-        ["Harness endpoint", execution.network?.harnessEndpointCidrs],
-        ["Gateway endpoint", execution.network?.gatewayEndpointCidrs],
-        ["Execution status proxy", execution.network?.pluginStatusProxySourceCidrs],
+        ["Harness endpoint CIDR", execution.network?.harnessEndpointCidrs],
+        ["Gateway endpoint CIDR", execution.network?.gatewayEndpointCidrs],
+        ["Execution status proxy CIDR", execution.network?.pluginStatusProxySourceCidrs],
       ] as const) {
         if (!Array.isArray(cidrs) || cidrs.length === 0) {
-          throw new ConfigurationFailure(`${description} CIDRs must be explicit and nonempty.`);
+          throw new ConfigurationFailure(`${description}s must be explicit and nonempty.`);
         }
-        for (const cidr of cidrs) {
-          validateCidr(cidr, description);
-          if (cidr.endsWith("/0")) {
-            throw new ConfigurationFailure(`${description} must not allow all addresses.`);
-          }
-        }
+        cidrs.forEach((cidr, index) => scopedCidr(cidr, description, index));
       }
       if (execution.caBundle !== undefined) {
         const certificates = execution.caBundle.match(
@@ -2933,7 +2942,16 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   async preflight(): Promise<ComputePreflightResult> {
-    const warnings: { code: "KUBERNETES_VERSION_BELOW_MINIMUM"; message: string }[] = [];
+    const warnings: {
+      code: "KUBERNETES_VERSION_BELOW_MINIMUM" | "KUBERNETES_STATUS_PROXY_SOURCE_BROAD";
+      message: string;
+    }[] = broadStatusProxySourceCidrs(this.options).map((cidr) => ({
+      code: "KUBERNETES_STATUS_PROXY_SOURCE_BROAD",
+      // The worker log keeps only plain text (logging.ts SAFE_STRING): no commas or quotes.
+      message:
+        `Plugin status proxy CIDR ${cidr} covers more than one address: every Pod in it ` +
+        "can reach the Agent status port. Use the API server /32 or /128 source addresses.",
+    }));
     let controlIdentity: string | undefined;
     const planes =
       this.options.executionCluster === undefined
@@ -8280,6 +8298,20 @@ export class KubernetesComputeDriver implements ComputeDriver {
     container: "agent" | "gateway",
     path: string,
   ): Promise<PrivateStatusReadback | undefined> {
+    // A provider-fenced Harness admits only its Gateway's transport (the status proxy
+    // policy selects ordinary Pods, and the provider's own fence denies the API server),
+    // so a Pod proxy read could never answer: report no status without the round-trip.
+    // Checked without harnessNetworkProfile, which throws for a revision pinned to an
+    // unavailable SandboxDriver: such a revision keeps the read it had.
+    if (
+      container === "agent" &&
+      revision.harness.mode === "dedicated" &&
+      revision.sandboxDriverId !== undefined &&
+      this.sandboxDriver?.id === revision.sandboxDriverId &&
+      this.sandboxDriver.provisionHarness !== undefined
+    ) {
+      return undefined;
+    }
     namespace = container === "gateway" ? this.gatewayNamespace(revision, namespace) : namespace;
     const pods = (await this.revisionPods(revision, namespace, container)).filter(
       (pod) => asRecord(pod.metadata)?.deletionTimestamp === undefined,
