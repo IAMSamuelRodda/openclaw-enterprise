@@ -2063,7 +2063,9 @@ export class ControllerWorker {
    * Stops a revision because its Agent is stopped. While the work is younger than the convergence
    * deadline, the Gateway drain wait ends once other Work is due (ComputeStopYieldedError) and
    * the work is deferred to repeat the stop. Older work keeps the full bounded wait, so a drain
-   * that never ends cannot defer it forever (finding 1088).
+   * that never ends cannot defer it forever (finding 1088). Age counts from the work's creation:
+   * maintenance work is created one interval before it is due, so a convergence deadline shorter
+   * than the maintenance interval leaves its stops without yielding.
    */
   private stopForStoppedAgent(
     claim: ClaimedWork,

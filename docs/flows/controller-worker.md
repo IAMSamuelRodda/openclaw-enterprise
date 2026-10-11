@@ -1,6 +1,6 @@
 ---
 created: 2026-08-28
-updated: 2026-10-05
+updated: 2026-10-11
 last_updated_session: 01a0fe72-58b2-7cc3-b770-7310f5401deb
 ---
 
@@ -202,9 +202,9 @@ failed. Other Computes' revisions are excluded, but an active one fails closed.
 Before each shutdown, the worker rechecks the Agent owner and stopped desired state;
 later admissions are not added. Partial failure retries idempotent shutdowns,
 keeping the active pointer and retained workspace data. Before the convergence
-deadline, this or revision work's Gateway drain yields to due work
-(`withYieldingGatewayDrain`), deferring as `AGENT_STOP_YIELDED` without spending an
-attempt.
+deadline, a stopped Agent's Gateway drain, here or in revision work, yields to due
+work (`withYieldingGatewayDrain`), deferring as `AGENT_STOP_YIELDED` without
+spending an attempt.
 
 Before shutdown or retirement, including stopped-revision recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
