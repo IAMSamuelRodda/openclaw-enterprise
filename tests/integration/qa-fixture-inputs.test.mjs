@@ -931,7 +931,7 @@ test("QA error redaction covers causes, AggregateError errors and command output
   assertClean(parent);
 
   // A getter-only field (node:test prints getters) forces a replacement that
-  // keeps the other redacted fields and drops non-data ones.
+  // keeps the other fields, redacted.
   const getter = Object.assign(new Error(`getter ${value}`), {
     code: "EGETTER",
     stderr: `stderr ${value}`,
@@ -944,8 +944,68 @@ test("QA error redaction covers causes, AggregateError errors and command output
   assert.equal(fromGetter.stdout, "stdout [REDACTED]");
   assert.equal(fromGetter.stderr, "stderr [REDACTED]");
   assert.equal(fromGetter.code, "EGETTER");
-  assert.equal(fromGetter.request, undefined);
+  assert.deepEqual(fromGetter.request, { headers: { authorization: "[REDACTED]" } });
   assertClean(fromGetter);
+
+  // Object-valued fields: a parsed response body, a Map, a symbol key, a
+  // self-containing array. Binary bytes around a secret in a Buffer survive.
+  const symbol = Symbol("detail");
+  const loop = [`loop ${value}`];
+  loop.push(loop);
+  const objects = Object.assign(new Error("objects"), {
+    response: { status: 403, body: { message: `denied ${value}` } },
+    headers: new Map([["authorization", value]]),
+    loop,
+    [symbol]: `symbol ${value}`,
+    stdout: Buffer.concat([Buffer.from([0xff, 0x00]), Buffer.from(value), Buffer.from([0xfe])]),
+  });
+  assert.equal(redactQaError(objects), objects);
+  assert.equal(objects.response.body.message, "denied [REDACTED]");
+  assert.equal(objects.response.status, 403);
+  assert.match(objects.headers, /\[REDACTED\]/);
+  assert.equal(objects.loop[0], "loop [REDACTED]");
+  assert.equal(objects.loop[1], "[Circular]");
+  assert.equal(objects[symbol], "symbol [REDACTED]");
+  assert.deepEqual(
+    objects.stdout,
+    Buffer.concat([Buffer.from([0xff, 0x00]), Buffer.from("[REDACTED]"), Buffer.from([0xfe])]),
+  );
+  assertClean(objects);
+
+  // A frozen error reached again through another field of its cause.
+  const frozenTop = new Error(`frozen top ${value}`);
+  const holder = Object.assign(new Error("holder"), { original: frozenTop });
+  frozenTop.cause = holder;
+  Object.freeze(frozenTop);
+  const replacedTop = redactQaError(frozenTop);
+  assert.notEqual(replacedTop, frozenTop);
+  assert.equal(replacedTop.cause, holder);
+  assert.equal(holder.original, "[Circular]");
+  assertClean(replacedTop);
+
+  // A setter that throws makes the field unwritable, not redaction itself fail.
+  const throwing = new Error(`setter ${value}`);
+  Object.defineProperty(throwing, "detail", {
+    enumerable: true,
+    get: () => `detail ${value}`,
+    set: () => {
+      throw new Error("read-only");
+    },
+  });
+  const fromThrowing = redactQaError(throwing);
+  assert.notEqual(fromThrowing, throwing);
+  assert.equal(fromThrowing.detail, "detail [REDACTED]");
+  assertClean(fromThrowing);
+
+  // A proxy whose traps throw falls back to a bare error with the message.
+  const hostile = new Proxy(new Error(`proxy ${value}`), {
+    ownKeys() {
+      throw new Error("no keys");
+    },
+  });
+  const fromHostile = redactQaError(hostile);
+  assert.equal(fromHostile.message, "proxy [REDACTED]");
+  assertClean(fromHostile);
 
   // A cause chain deeper than the bound is cut rather than left unredacted.
   let deep = new Error(`deepest ${value}`);
@@ -957,16 +1017,19 @@ test("QA error redaction covers causes, AggregateError errors and command output
   assertClean(shallow);
 });
 
-test("node:test failure output carries no QA secret from nested error fields", async (t) => {
-  const { qaSecretVariants } = await import("../helpers/qa-secrets.mjs");
-  const value = "synthetic-qa-reporter-secret-2026";
-  const directory = await mkdtemp(join(tmpdir(), "qa-reporter-"));
-  t.after(() => rm(directory, { recursive: true, force: true }));
-  const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
-  const file = join(directory, "redacted.test.mjs");
-  await writeFile(
-    file,
-    `
+test(
+  "node:test failure output carries no QA secret from nested error fields",
+  { timeout: 60_000 },
+  async (t) => {
+    const { qaSecretVariants } = await import("../helpers/qa-secrets.mjs");
+    const value = "synthetic-qa-reporter-secret-2026";
+    const directory = await mkdtemp(join(tmpdir(), "qa-reporter-"));
+    t.after(() => rm(directory, { recursive: true, force: true }));
+    const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
+    const file = join(directory, "redacted.test.mjs");
+    await writeFile(
+      file,
+      `
     import { execFile } from 'node:child_process';
     import test from 'node:test';
     import { promisify } from 'node:util';
@@ -982,37 +1045,38 @@ test("node:test failure output carries no QA secret from nested error fields", a
       throw redactQaError(error);
     });
   `,
-  );
-  // NODE_TEST_CONTEXT would make the child report to this runner instead of printing.
-  const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
-  const child = spawn(process.execPath, ["--test", "--test-reporter=spec", file], {
-    env,
-    stdio: ["ignore", "pipe", "pipe"],
-  });
-  t.after(() => {
-    if (child.exitCode === null) {
-      child.kill("SIGKILL");
-    }
-  });
-  let output = "";
-  for (const stream of [child.stdout, child.stderr]) {
-    stream.on("data", (chunk) => {
-      output += chunk;
+    );
+    // NODE_TEST_CONTEXT would make the child report to this runner instead of printing.
+    const { NODE_TEST_CONTEXT: _context, ...env } = process.env;
+    const child = spawn(process.execPath, ["--test", "--test-reporter=spec", file], {
+      env,
+      stdio: ["ignore", "pipe", "pipe"],
     });
-  }
-  const code = await new Promise((resolve, reject) => {
-    child.once("error", reject);
-    child.once("exit", resolve);
-  });
-  assert.equal(code, 1, output);
-  // The failure printed the redacted fields, and no form of the secret.
-  assert.match(output, /cmd: '.* \[REDACTED\]'/, output);
-  assert.match(output, /detail: 'getter \[REDACTED\]'/, output);
-  assert.match(output, /stdout: <Buffer 5b 52 45 44 41 43 54 45 44 5d>/, output);
-  for (const variant of [...qaSecretVariants(value), inspectedBytes(value)]) {
-    assert.ok(!output.includes(variant), `variant survived: ${output}`);
-  }
-});
+    t.after(() => {
+      if (child.exitCode === null) {
+        child.kill("SIGKILL");
+      }
+    });
+    let output = "";
+    for (const stream of [child.stdout, child.stderr]) {
+      stream.on("data", (chunk) => {
+        output += chunk;
+      });
+    }
+    const code = await new Promise((resolve, reject) => {
+      child.once("error", reject);
+      child.once("exit", resolve);
+    });
+    assert.equal(code, 1, output);
+    // The failure printed the redacted fields, and no form of the secret.
+    assert.match(output, /cmd: '.* \[REDACTED\]'/, output);
+    assert.match(output, /detail: 'getter \[REDACTED\]'/, output);
+    assert.match(output, /stdout: <Buffer 5b 52 45 44 41 43 54 45 44 5d>/, output);
+    for (const variant of [...qaSecretVariants(value), inspectedBytes(value)]) {
+      assert.ok(!output.includes(variant), `variant survived: ${output}`);
+    }
+  },
+);
 
 // How util.inspect prints the start of a Buffer holding `value`: hex bytes.
 function inspectedBytes(value) {

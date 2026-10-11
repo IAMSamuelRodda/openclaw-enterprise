@@ -1,6 +1,7 @@
 import assert from "node:assert/strict";
 import { constants } from "node:fs";
 import { open } from "node:fs/promises";
+import { inspect } from "node:util";
 import {
   failureSecrets,
   maskPrivateKeyLines,
@@ -38,67 +39,76 @@ export function registerQaSecret(value) {
   }
 }
 
-// How far redaction follows `cause` and AggregateError `errors`. A deeper
-// value is cut to "[Truncated]" rather than left unredacted.
+// How deep redaction follows nested values (a cause chain, AggregateError
+// errors, a parsed response body). A deeper value is cut to "[Truncated]"
+// rather than left unredacted.
 const maxErrorDepth = 8;
 // Read even when inherited: a DOMException's message, name and code are getters
 // on its prototype.
 const inheritedErrorFields = ["name", "message", "stack", "code"];
-// Fields followed into nested errors; every other field is redacted as a leaf.
-const nestedErrorFields = new Set(["cause", "errors"]);
 
-// Primitives, Buffers and arrays of them: values a replacement error can copy
-// without holding a reference back to the original.
-function isData(value) {
-  return (
-    value === null ||
-    (typeof value !== "object" && typeof value !== "function") ||
-    ArrayBuffer.isView(value) ||
-    (Array.isArray(value) && value.every(isData))
-  );
+// Errors, arrays and plain objects are redacted field by field. Any other object
+// (a Map, a class instance) is checked through its printed form instead.
+function walkable(value) {
+  if (Array.isArray(value) || value instanceof Error) {
+    return true;
+  }
+  const prototype = Object.getPrototypeOf(value);
+  return prototype === Object.prototype || prototype === null;
 }
 
 // Redacts registered secrets from every field of a thrown value that the test
-// runner prints: message and stack, an execFile error's cmd, stdout and stderr
-// (strings or Buffers), any other own string field, and the `cause` chain and
-// AggregateError `errors`, recursively. A thrown string is redacted too.
+// runner prints (it uses util.inspect, getters included): message and stack, an
+// execFile error's cmd, stdout and stderr (strings or Buffers), every other own
+// field, the `cause` chain and AggregateError `errors`, recursively. A thrown
+// string is redacted too.
 //
 // It returns the value to rethrow: the same error when every field could be
 // updated in place, otherwise a plain Error carrying the redacted fields. Some
 // errors cannot be updated: a DOMException (AbortSignal.timeout's TimeoutError)
 // has a getter-only `message`, a field can be an own getter, and a frozen error
-// has read-only fields. A replacement copies only redacted data (primitives,
-// Buffers, arrays and redacted nested errors), never the original or an object
-// that could reach it. A cause that points back up its own chain becomes
-// "[Circular]", so no cycle can lead from a replacement to an unredacted original.
+// has read-only fields. A replacement keeps only redacted values, never the
+// original. A value that points back up its own chain becomes "[Circular]", so
+// no cycle leads from a replacement to an unredacted original. If redaction
+// itself throws (a throwing setter or proxy trap), a bare Error carrying only the
+// redacted message is returned instead.
 export function redactQaError(error) {
   // Longest first, so a value containing another is replaced whole.
   const secrets = [...protectedValues].sort((a, b) => b.length - a.length);
   const redactText = (text) =>
     secrets.reduce((value, secret) => value.replaceAll(secret, "[REDACTED]"), text);
+  const marker = Buffer.from("[REDACTED]");
+  const secretBytes = secrets.map((secret) => Buffer.from(secret, "utf8"));
+  // Byte for byte, so the rest of a binary buffer survives unchanged.
+  const redactBytes = (view) => {
+    let bytes = Buffer.from(view.buffer, view.byteOffset, view.byteLength);
+    let changed = false;
+    for (const secret of secretBytes) {
+      const parts = [];
+      let start = 0;
+      for (let index = bytes.indexOf(secret); index !== -1; index = bytes.indexOf(secret, start)) {
+        parts.push(bytes.subarray(start, index), marker);
+        start = index + secret.length;
+      }
+      if (parts.length > 0) {
+        bytes = Buffer.concat([...parts, bytes.subarray(start)]);
+        changed = true;
+      }
+    }
+    return changed ? bytes : view;
+  };
   const done = new Map();
   const active = new Set();
 
-  // Strings, Buffers and arrays of them (a spawn error's spawnargs).
-  const redactLeaf = (value) => {
+  const redactValue = (value, depth) => {
     if (typeof value === "string") {
       return redactText(value);
     }
+    if (value === null || typeof value !== "object") {
+      return value;
+    }
     if (ArrayBuffer.isView(value)) {
-      const text = Buffer.from(value.buffer, value.byteOffset, value.byteLength).toString("utf8");
-      const redacted = redactText(text);
-      return redacted === text ? value : Buffer.from(redacted, "utf8");
-    }
-    if (Array.isArray(value)) {
-      const items = value.map(redactLeaf);
-      return items.every((item, index) => item === value[index]) ? value : items;
-    }
-    return value;
-  };
-
-  const redactNested = (value, depth) => {
-    if (value === null || typeof value !== "object" || ArrayBuffer.isView(value)) {
-      return redactLeaf(value);
+      return redactBytes(value);
     }
     if (done.has(value)) {
       return done.get(value);
@@ -111,20 +121,27 @@ export function redactQaError(error) {
     }
     active.add(value);
     let result;
-    if (Array.isArray(value)) {
-      const items = value.map((item) => redactNested(item, depth));
-      result = items.every((item, index) => item === value[index]) ? value : items;
-    } else {
-      result = redactObject(value, depth);
+    try {
+      if (Array.isArray(value)) {
+        const items = value.map((item) => redactValue(item, depth + 1));
+        result = items.every((item, index) => item === value[index]) ? value : items;
+      } else if (walkable(value)) {
+        result = redactObject(value, depth);
+      } else {
+        const text = inspect(value, { depth: maxErrorDepth, getters: true });
+        const redacted = redactText(text);
+        result = redacted === text ? value : redacted;
+      }
+    } finally {
+      active.delete(value);
     }
-    active.delete(value);
     done.set(value, result);
     return result;
   };
 
   const redactObject = (object, depth) => {
     const fields = [];
-    for (const key of new Set([...inheritedErrorFields, ...Object.getOwnPropertyNames(object)])) {
+    for (const key of new Set([...inheritedErrorFields, ...Reflect.ownKeys(object)])) {
       let value;
       try {
         value = object[key];
@@ -134,36 +151,52 @@ export function redactQaError(error) {
       if (value === undefined && !Object.hasOwn(object, key)) {
         continue;
       }
-      const redacted = nestedErrorFields.has(key)
-        ? redactNested(value, depth + 1)
-        : redactLeaf(value);
-      fields.push([key, value, redacted]);
+      fields.push([key, value, redactValue(value, depth + 1)]);
     }
-    const changed = fields.filter(([, value, redacted]) => value !== redacted);
-    if (
-      changed.every(
-        ([key, , redacted]) => Reflect.set(object, key, redacted) && object[key] === redacted,
-      )
-    ) {
+    const write = (key, value) => {
+      try {
+        return Reflect.set(object, key, value) && object[key] === value;
+      } catch {
+        return false;
+      }
+    };
+    if (fields.every(([key, value, redacted]) => value === redacted || write(key, redacted))) {
       return object;
     }
-    const redacted = Object.fromEntries(fields.map(([key, , value]) => [key, value]));
-    const replacement = new Error(
-      typeof redacted.message === "string" ? redacted.message : "[REDACTED]",
-    );
-    for (const [key, value] of Object.entries(redacted)) {
-      if ((isData(value) || nestedErrorFields.has(key)) && key !== "message" && key !== "stack") {
+    // Every kept value went through redactValue; functions are dropped.
+    const kept = fields
+      .map(([key, , redacted]) => [key, redacted])
+      .filter(([, value]) => typeof value !== "function");
+    if (!(object instanceof Error)) {
+      return Object.fromEntries(kept);
+    }
+    const values = new Map(kept);
+    const message = values.get("message");
+    const replacement = new Error(typeof message === "string" ? message : "[REDACTED]");
+    for (const [key, value] of kept) {
+      if (key !== "message" && key !== "stack") {
         replacement[key] = value;
       }
     }
+    const stack = values.get("stack");
     replacement.stack =
-      typeof redacted.stack === "string"
-        ? redacted.stack
-        : `${replacement.name}: ${replacement.message}`;
+      typeof stack === "string" ? stack : `${replacement.name}: ${replacement.message}`;
     return replacement;
   };
 
-  return redactNested(error, 0);
+  try {
+    return redactValue(error, 0);
+  } catch {
+    let message = "[REDACTED: the thrown value could not be redacted]";
+    try {
+      if (typeof error?.message === "string") {
+        message = redactText(error.message);
+      }
+    } catch {
+      // Keep the placeholder.
+    }
+    return new Error(message);
+  }
 }
 
 // Command arguments and stdout can contain API payloads. Publish only a bounded
