@@ -5757,6 +5757,38 @@ test("Agent provisioning API validates inline configuration with existing Secret
         'Configuration setting plugins.entries.codex.config.appServer.approvalPolicy must not be "untrusted", which the OpenClaw runtime retired: use "on-request".',
     },
   );
+  // Topology-independent Kubernetes rules refuse at provisioning with the Configuration save
+  // message (finding 1116), before any Agent or Configuration is stored.
+  computeDriver.validateConfiguration = (values) => kubernetes.validateConfiguration(values);
+  const agentsBefore = (await fixture.controller.listAgents(fixture.principal.id, namespace.data.id))
+    .length;
+  for (const [values, message] of [
+    [
+      { ...model, channels: { discord: { enabled: true } } },
+      "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+    ],
+    [
+      { ...model, env: { OPENAI_API_KEY: "${OPENAI_API_KEY}" } },
+      "Configuration setting env.OPENAI_API_KEY must not be set: model credentials come from the Agent's Harness authentication binding.",
+    ],
+  ]) {
+    const refused = await injectedRequest(
+      fixture.app,
+      "POST",
+      `/namespaces/${namespace.data.id}/agents/provision`,
+      { body: provisioningRequestBody(namespace.data.id, secrets, { configuration: { values } }) },
+    );
+    assert.equal(refused.status, 400, JSON.stringify(refused.body));
+    assert.deepEqual(
+      { code: refused.body.error.code, message: refused.body.error.message },
+      { code: "INVALID_REQUEST", message },
+    );
+  }
+  assert.equal(
+    (await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)).length,
+    agentsBefore,
+  );
+  delete computeDriver.validateConfiguration;
   // A refusal the caller cannot fix (here the Installation enables dedicated runtime storage
   // without gateway routing) keeps fixed text, since its reason names Installation settings.
   // The API log names it with the request ID for the operator.

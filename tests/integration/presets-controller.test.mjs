@@ -803,6 +803,14 @@ describe("Presets", { concurrency: 2 }, () => {
     const fixture = await shared();
     const namespace = await fixture.createNamespace("Preset errors", { ready: true });
     const contract = "The request does not match the operation contract:";
+    const openaiModel = {
+      agents: {
+        defaults: {
+          model: "openai/gpt-4.1",
+          models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+        },
+      },
+    };
     const unsupportedType = `${contract} body /template/variables/model/type has an unsupported value (expected one of "string", "number", "boolean", "password").`;
     // Each rejection names one field and what it accepts, so a CLI or API user can fix it directly.
     const cases = [
@@ -838,6 +846,23 @@ describe("Presets", { concurrency: 2 }, () => {
         { variables: { model: { type: "number", extra: 1 } } },
         `${contract} body /template/variables/model/extra is not an accepted field.`,
         [{ path: "/template/variables/model/extra", code: "UNKNOWN_FIELD" }],
+      ],      // Kubernetes Compute's topology-independent rules refuse the rendered values with the
+      // Configuration save message (finding 1116), not at the first deployment.
+      [
+        {
+          configuration: {
+            values: { ...openaiModel, channels: { discord: { enabled: true } } },
+          },
+        },
+        "Configuration setting channels.discord is not a supported channel: use slack or msteams, or set its enabled to false.",
+      ],
+      [
+        {
+          configuration: {
+            values: { ...openaiModel, env: { vars: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" } } },
+          },
+        },
+        "Configuration setting env.vars.ANTHROPIC_API_KEY must not be set: model credentials come from the Agent's Harness authentication binding.",
       ],
     ];
     for (const [template, message, details] of cases) {
