@@ -673,11 +673,9 @@ if (command === "kubectl") {
         }] }));
       }
       if (equals(args.slice(6), ["get", "events", "-o", "json"])) {
-        if (scenario === "nodes-unready-diagnostics-failed") {
-          // Keep this external command alive until the real preparation deadline kills it.
-          setInterval(() => {}, 60_000);
-          await new Promise(() => {});
-        }
+        // The diagnostic command timeout kills this read. Like the other hung commands, it
+        // exits on its own if preparation is killed first.
+        if (scenario === "nodes-unready-diagnostics-failed") await hang();
         finish(JSON.stringify({ items: [{ type: "Warning", reason: "FailedScheduling",
           message: "fixture network is not ready", involvedObject: { kind: "Pod", name: "coredns-fixture" },
         }] }));
