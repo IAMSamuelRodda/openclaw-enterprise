@@ -203,8 +203,8 @@ Before each shutdown, the worker rechecks the Agent owner and stopped desired st
 later admissions are not added. Partial failure retries idempotent shutdowns,
 keeping the active pointer and retained workspace data. Before the convergence
 deadline, a stopped Agent's Gateway drain, here or in revision work, yields to due
-work (`withYieldingGatewayDrain`), deferring as `AGENT_STOP_YIELDED` without
-spending an attempt.
+work other than yielded stops (`withYieldingGatewayDrain`), deferring as
+`AGENT_STOP_YIELDED` without spending an attempt.
 
 Before shutdown or retirement, including stopped-revision recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
@@ -417,6 +417,6 @@ failed retry keeps the active runtime.
 
 ## Changelog
 
-- 2026-10-11 09:30: Yield an Agent stop's Gateway drain to due work. (fix-1088)
+- 2026-10-11 10:30: Draining stops skip yielded stops. (fix-1093-1095)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.

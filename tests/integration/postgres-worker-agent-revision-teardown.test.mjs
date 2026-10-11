@@ -1980,39 +1980,85 @@ revisionTest(
   },
 );
 
-revisionTest("two Agents stopping at once both finish after their drains", async (fixture) => {
-  const first = await fixture.admitInitialRevision("drain-pair-a");
-  const second = await fixture.admitInitialRevision("drain-pair-b");
-  const { compute, records } = gatewayDrainCompute(fixture, [first.owner, second.owner], {
-    drainMs: 4_000,
-  });
-  const events = [];
-  await fixture.start(compute, { emit: (event) => events.push(event) });
-  await Promise.all([
-    fixture.work(first.candidate, "succeeded"),
-    fixture.work(second.candidate, "succeeded"),
-  ]);
-  const requestedAt = Date.now();
-  const stops = [await fixture.requestStop(first.owner), await fixture.requestStop(second.owner)];
-  // Each stop counts the other as due Work. They alternate, and both end once the drains do.
-  await Promise.all(stops.map((stop) => fixture.work(stop, "succeeded", 30_000)));
-  assert.ok(Date.now() - requestedAt < 4_000 + 10_000, `${Date.now() - requestedAt} ms`);
-  assert.ok(records.get(first.owner.id).yields >= 1);
-  for (const { owner, candidate } of [first, second]) {
-    const record = records.get(owner.id);
-    assert.deepEqual(record.harnessStops, [candidate.id]);
-    assert.deepEqual([...record.pointers], [candidate.id]);
-    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
-  }
-  for (const stop of stops) {
+// Finding 1093: two draining stops were each other's due Work, so they took turns, each pass
+// repeating the whole stop, for the whole drain. A stop now yields to the other's first pass
+// (real Work: it starts that Gateway's drain) but not to its rechecks.
+revisionTest(
+  "two Agents stopping at once do not take turns during their drains",
+  async (fixture) => {
+    const first = await fixture.admitInitialRevision("drain-pair-a");
+    const second = await fixture.admitInitialRevision("drain-pair-b");
+    const { compute, records } = gatewayDrainCompute(fixture, [first.owner, second.owner], {
+      drainMs: 6_000,
+    });
+    const events = [];
+    await fixture.start(compute, { emit: (event) => events.push(event) });
+    await Promise.all([
+      fixture.work(first.candidate, "succeeded"),
+      fixture.work(second.candidate, "succeeded"),
+    ]);
+    const requestedAt = Date.now();
+    const stops = [await fixture.requestStop(first.owner), await fixture.requestStop(second.owner)];
+    await Promise.all(stops.map((stop) => fixture.work(stop, "succeeded", 30_000)));
+    assert.ok(Date.now() - requestedAt < 6_000 + 10_000, `${Date.now() - requestedAt} ms`);
+    // Taking turns yields about once a second per stop (3 each in a CI mutation run); now only
+    // the stop that runs first yields, once, to the other's first pass (2 tolerates one more).
+    const yields = [first, second].map(({ owner }) => records.get(owner.id).yields);
+    assert.ok(yields[0] + yields[1] <= 2, `yields ${yields.join(", ")}`);
+    for (const { owner } of [first, second]) {
+      assert.ok(records.get(owner.id).calls <= 3, `calls ${records.get(owner.id).calls}`);
+    }
+    for (const { owner, candidate } of [first, second]) {
+      const record = records.get(owner.id);
+      assert.deepEqual(record.harnessStops, [candidate.id]);
+      assert.deepEqual([...record.pointers], [candidate.id]);
+      assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
+    }
+    for (const stop of stops) {
+      assert.deepEqual(
+        stopPasses(events, stop)
+          .map(({ code }) => code)
+          .filter((code) => code !== "AGENT_STOP_YIELDED"),
+        ["AGENT_STOPPED"],
+      );
+    }
+  },
+);
+
+// Finding 1094: every yield wrote a `worker.completed` line, up to about 300 per stop. The first
+// is logged, then at most one a minute (the rule's clock is in the stop-yields conformance test).
+revisionTest(
+  "a draining stop that keeps yielding to real Work logs its first yield only",
+  async (fixture) => {
+    const { owner, candidate } = await fixture.admitInitialRevision("drain-log");
+    const { compute, record } = gatewayDrainCompute(fixture, [owner], { drainMs: 6_000 });
+    const events = [];
+    await fixture.start(compute, { emit: (event) => events.push(event) });
+    await fixture.work(candidate, "succeeded");
+    // Another Agent's deployment never becomes ready, so its rechecks keep Work due: real Work
+    // still preempts the drain each time.
+    const busy = await fixture.revision(await fixture.agent("drain-log-busy"), 1);
+    record.busy.add(busy.id);
+    const stop = await fixture.requestStop(owner);
+    await fixture.work(stop, "succeeded", 30_000);
+    assert.ok(record.yields >= 2, `yields ${record.yields}`);
+    const passes = stopPasses(events, stop);
+    // The completion carries the count of every yield, logged or not.
     assert.deepEqual(
-      stopPasses(events, stop)
-        .map(({ code }) => code)
-        .filter((code) => code !== "AGENT_STOP_YIELDED"),
-      ["AGENT_STOPPED"],
+      passes.map(({ code, stopYields }) => [code, stopYields]),
+      [
+        ["AGENT_STOP_YIELDED", 1],
+        ["AGENT_STOPPED", record.yields],
+      ],
     );
-  }
-});
+    assert.ok(
+      events.some(
+        ({ event, workId }) => event === "worker.completed" && workId === busy.idempotencyKey,
+      ),
+    );
+    assert.deepEqual(record.harnessStops, [candidate.id]);
+  },
+);
 
 for (const change of ["redeploy", "deletion"]) {
   revisionTest(
@@ -2057,7 +2103,12 @@ for (const change of ["redeploy", "deletion"]) {
           },
           30_000,
         );
+        // Quiet: one logged yield, and no failed pass or failure audit for the deleted Agent.
         assert.deepEqual(await stopAudit(fixture, owner), []);
+        assert.deepEqual(
+          stopPasses(events, stop).map(({ code }) => code),
+          ["AGENT_STOP_YIELDED"],
+        );
       }
       // While yielded the Harness kept running and the pointer named it.
       assert.deepEqual(record.harnessStops, []);

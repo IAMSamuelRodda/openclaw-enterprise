@@ -126,8 +126,7 @@ and topologies before deployment. Kubernetes Compute starts either an Agent-owne
 Codex workload with its separate ServiceAccount, or one embedded combined
 gateway/Harness. Without a SandboxDriver, Compute owns the Codex Deployment;
 with one selected, that Driver provisions the dedicated Harness workload.
-Both embedded and dedicated modes are supported in production, subject to the
-selected Drivers' mode constraints. Unless Compute requests
+Unless Compute requests
 [exclusive replacement](../drivers/compute.md#production-revision-stages), as
 Kubernetes does for dedicated Agents, a replacement must preserve its
 predecessor's Service selector until activation succeeds. Without an
@@ -138,8 +137,7 @@ the worker passes private setup state to Compute before starting execution.
 Compute must support initialization in the exact Agent's durable workspace;
 unsupported Drivers or storage layouts fail deployment. Native setup, file
 application, and the durable completion marker must succeed before the gateway
-or Harness runs. A `202` deployment response does not establish that this gate
-has passed. After activation, OCC clears staged contents and retains setup
+or Harness runs. After activation, OCC clears staged contents and retains setup
 identity and completion metadata. Later revisions check completion without
 reapplying the original text, preserving edits made in the live workspace.
 
@@ -208,6 +206,10 @@ continues, or past its convergence deadline stops the candidate and fails
 `CONVERGENCE_DEADLINE_EXCEEDED`; other refusals stand. A deployment that a
 newer revision supersedes still finishes the stop, even of a lifted refusal, and
 then ends superseded.
+
+`AGENT_STOP_YIELDED` means the Agent was stopped and this revision's gateway is
+still draining; the worker runs other due work meanwhile and repeats the stop
+after it, without spending attempts.
 
 ### Model check failure cause
 

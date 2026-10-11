@@ -564,6 +564,12 @@ test(
       [`${prefix}:second`],
     );
     assert.equal(await queue.claimableWorkWaiting(), true);
+    // A draining stop names the stops that yielded during their own drain (finding 1093): they
+    // do not count, while any other claimable Work still does.
+    assert.equal(await queue.claimableWorkWaiting({ except: [`${prefix}:second`] }), false);
+    assert.equal(await queue.claimableWorkWaiting({ except: [`${prefix}:first-successor`] }), true);
+    assert.equal(await queue.claimableWorkWaiting({ except: [] }), true);
+    await assert.rejects(queue.claimableWorkWaiting({ except: [7] }), /keys are invalid/);
 
     await queue.complete(firstClaim);
     await queue.complete(await claimExpected(queue, `${prefix}:first-successor`));
