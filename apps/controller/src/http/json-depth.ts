@@ -15,6 +15,9 @@ export function tooDeepFailure(path: string): RequestFailure {
   ]);
 }
 
+// Longer than any key a capped detail path can show.
+const MAX_KEY_LENGTH = 1024;
+
 const QUOTE = 0x22;
 const BACKSLASH = 0x5c;
 const COMMA = 0x2c;
@@ -32,8 +35,9 @@ const CARRIAGE_RETURN = 0x0d;
  * Finds the first value in raw JSON `text` that sits more than `maxDepth` levels below the
  * root, in document order, before anything parses the text: building the objects of a deeply
  * nested body costs memory in proportion to its depth, and recursive checks of them overflow
- * the stack. One pass, with state bounded by `maxDepth`. Returns that value's JSON Pointer, or
- * undefined. It does not check syntax; invalid text that it passes still fails to parse.
+ * the stack. One pass, with state bounded by `maxDepth`. Returns that value's JSON Pointer
+ * (keys cut to MAX_KEY_LENGTH characters), or undefined. It does not check syntax; invalid
+ * text that it passes still fails to parse.
  */
 export function tooDeepJsonPath(
   text: string,
@@ -115,7 +119,8 @@ function pathAt(
     if (isArray[level] === true) {
       segment = String(index[level]);
     } else {
-      // Invalid text can hold an object entry without a key; never parse more than one string.
+      // Invalid text can hold an object entry without a key (or name a stale one); never parse
+      // more than one string.
       const start = keyStart[level];
       const raw = start === undefined ? '""' : text.slice(start, keyEnd[level]);
       try {
@@ -124,8 +129,13 @@ function pathAt(
         // Not valid JSON: the body fails to parse anyway, so name the key as sent.
         segment = raw.slice(1, -1);
       }
-      // As unstorableTextFailure names keys: text a client cannot store is shown as "?".
-      segment = segment.replaceAll("\u0000", "?").replace(/\p{Cs}/gu, "?");
+      // The detail path shows at most 512 characters, so a longer key is cut before the
+      // per-character work below, which on a 6 MB key would cost hundreds of megabytes.
+      // As unstorableTextFailure names keys, text a client cannot store is shown as "?".
+      segment = segment
+        .slice(0, MAX_KEY_LENGTH)
+        .replaceAll("\u0000", "?")
+        .replace(/\p{Cs}/gu, "?");
     }
     path += `/${jsonPointer(segment)}`;
   }

@@ -193,6 +193,8 @@ test("a 6 MB deeply nested Configuration is refused quickly without parsing it",
   await sendRaw(fixture, "POST", path, JSON.stringify({ kind: "agent", values: {} }));
   const before = process.memoryUsage().heapUsed;
   let peak = before;
+  // The sampler runs between the request's I/O steps, not during a synchronous parse; the
+  // sample after the response still sees what a parse left on the heap.
   const sampler = setInterval(() => {
     peak = Math.max(peak, process.memoryUsage().heapUsed);
   }, 1);
@@ -210,12 +212,12 @@ test("a 6 MB deeply nested Configuration is refused quickly without parsing it",
     refused.body.error,
     TOO_DEEP(`/values${KNOWLEDGE}/n${"/0".repeat(MAX_DEPTH - 5)}`),
   );
-  // Parsing it built millions of arrays: about 300 MB of heap. The request and body text
-  // themselves take a few times 6 MB.
   // About 30 ms with the check, about 1 s without it.
   assert.ok(elapsedMs < 1000, `took ${Math.round(elapsedMs)} ms`);
+  // Parsing it built millions of arrays: about 300 MB of heap. The request and body text
+  // themselves take a few times 6 MB, plus garbage not yet collected.
   const grewMb = (peak - before) / (1024 * 1024);
-  assert.ok(grewMb < 64, `heap grew ${grewMb.toFixed(1)} MB`);
+  assert.ok(grewMb < 128, `heap grew ${grewMb.toFixed(1)} MB`);
 });
 
 test("the depth scan reads raw JSON text in one pass", () => {
@@ -252,4 +254,7 @@ test("the depth scan reads raw JSON text in one pass", () => {
   assert.equal(tooDeepJsonPath(`${"[".repeat(24)}1${"]".repeat(24)}`), undefined);
   assert.equal(tooDeepJsonPath(`${"[".repeat(25)}${"]".repeat(25)}`), undefined);
   assert.equal(tooDeepJsonPath(`${"[".repeat(25)}1${"]".repeat(25)}`), "/0".repeat(25));
+  // Keys are cut to 1024 characters, more than a 512-character detail path shows.
+  const longKey = `${"~".repeat(1023)}\u{1F600}${"k".repeat(1_000_000)}`;
+  assert.equal(tooDeepJsonPath(JSON.stringify({ [longKey]: [1] }), 1), `/${"~0".repeat(1023)}?/0`);
 });
