@@ -3877,6 +3877,10 @@ test(
         { ...chatgptValues, "backend.chatgpt.key": "bad/key" },
       ],
       [
+        "ChatGPT Backend with a reserved admin Secret key",
+        { ...chatgptValues, "backend.chatgpt.key": "..admin-key" },
+      ],
+      [
         "ChatGPT Backend with an overlong admin Secret name",
         { ...chatgptValues, "backend.chatgpt.secretName": "a".repeat(254) },
       ],

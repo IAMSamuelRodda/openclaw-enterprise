@@ -868,7 +868,7 @@ for (const { name, profile = "openclaw", input = baseInput, cases } of [
       ],
       [
         "codex.managedServiceAccounts.adminSecretKey",
-        ["bad/key", "a".repeat(254)],
+        ["bad/key", ".", "..admin-key", "a".repeat(254)],
         "must be a Kubernetes Secret key of at most 253 characters",
       ],
     ],

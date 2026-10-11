@@ -40,6 +40,14 @@ const secretKeyRule = {
 };
 const digestImage = /^[^@\s]+@sha256:[a-f0-9]{64}$/;
 const kubernetesSecretKey = /^[-._A-Za-z0-9]+$/;
+function isKubernetesSecretKey(value) {
+  return (
+    value !== "." &&
+    !value.startsWith("..") &&
+    value.length <= 253 &&
+    kubernetesSecretKey.test(value)
+  );
+}
 // The controller reference also feeds prepare-bootstrap-volume and the chart.
 const controllerDigestImage = /^[A-Za-z0-9][A-Za-z0-9._:/-]*@sha256:[a-f0-9]{64}$/;
 // The chart and Node's URL parser both refuse an octet above 255 and a port above 65535.
@@ -1762,7 +1770,7 @@ function buildRendered(profile, parsed, diagnostics) {
               ["codex", "managedServiceAccounts", "adminSecretKey"],
               diagnostics,
               {
-                validate: (value) => value.length <= 253 && kubernetesSecretKey.test(value),
+                validate: isKubernetesSecretKey,
                 description: "a Kubernetes Secret key of at most 253 characters",
               },
             ) ?? "admin-key",

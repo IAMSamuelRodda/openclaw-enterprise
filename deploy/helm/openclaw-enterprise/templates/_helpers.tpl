@@ -318,7 +318,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (gt (len (toString $chatgpt.secretName)) 253) (not (regexMatch "^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$" (toString $chatgpt.secretName))) -}}
 {{- fail "backend.chatgpt.secretName must be a Kubernetes resource name of at most 253 characters" -}}
 {{- end -}}
-{{- if or (gt (len (toString $chatgpt.key)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString $chatgpt.key))) -}}
+{{- if or (eq (toString $chatgpt.key) ".") (hasPrefix ".." (toString $chatgpt.key)) (gt (len (toString $chatgpt.key)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString $chatgpt.key))) -}}
 {{- fail "backend.chatgpt.key must be a Kubernetes Secret key of at most 253 characters" -}}
 {{- end -}}
 {{- end -}}
