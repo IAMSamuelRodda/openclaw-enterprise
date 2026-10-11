@@ -661,12 +661,11 @@ test("Codex startup preserves explicit session approval choices and native defau
   // Native startup gets the policy the pinned Gateway runs: it runs on-failure as on-request.
   // A reviewer request must never silently upgrade an incompatible session policy to
   // on-request; the native readiness check owns that rejection, and deployment refuses
-  // untrusted and an omitted policy with an automatic reviewer before rendering.
+  // an omitted policy with an automatic reviewer before rendering.
   for (const [policy, native] of [
     ["on-request", "on-request"],
     ["on-failure", "on-request"],
     ["never", "never"],
-    ["untrusted", "untrusted"],
     [undefined, undefined],
   ]) {
     const candidate = revision({ plugins: codexLinearPluginState() });
@@ -682,11 +681,33 @@ test("Codex startup preserves explicit session approval choices and native defau
     const delivered = JSON.parse(pluginRuntimeEnvironment(runtime)[PLUGIN_RUNTIME_ENVIRONMENT]);
     assert.equal(delivered.codexConfigurationToml, config);
   }
-  const malformed = revision();
-  malformed.configuration.plugins.entries.codex.config.appServer.approvalPolicy = "invalid";
-  assert.throws(
-    () => pluginRuntimeSpecForRevision(malformed),
-    /session approval policy is invalid/,
+  // Preparation applies admission's rule again (codexApprovalPolicy): a value outside the
+  // Gateway's enum, the retired untrusted included, is refused before anything renders.
+  const setting = "plugins.entries.codex.config.appServer.approvalPolicy";
+  for (const [policy, requirement] of [
+    ["invalid", 'must be "never", "on-request" or "on-failure"'],
+    [null, 'must be "never", "on-request" or "on-failure"'],
+    ["untrusted", 'must not be "untrusted", which the OpenClaw runtime retired: use "on-request"'],
+  ]) {
+    const malformed = revision();
+    malformed.configuration.plugins.entries.codex.config.appServer.approvalPolicy = policy;
+    assert.throws(() => pluginRuntimeSpecForRevision(malformed), {
+      message: `Configuration setting ${setting} ${requirement}.`,
+    });
+  }
+  const notObject = revision();
+  notObject.configuration.plugins.entries.codex.config.appServer = "on-request";
+  assert.throws(() => pluginRuntimeSpecForRevision(notObject), {
+    message: "Configuration setting plugins.entries.codex.config.appServer must be an object.",
+  });
+  // The Gateway entrypoint replaces a null plugin config, so it sets no policy.
+  const nullConfig = revision();
+  nullConfig.configuration.plugins.entries.codex.config = null;
+  assert.doesNotMatch(
+    pluginRuntimeConfigMapData(pluginRuntimeSpecForRevision(nullConfig))[
+      PLUGIN_RUNTIME_CODEX_CONFIG
+    ],
+    /approval_policy/,
   );
 });
 
