@@ -83,6 +83,11 @@ test("a yielded stop this worker has not run for ten minutes is forgotten", () =
   assert.deepEqual(yields.waiting(), ["stop-b"]);
   // Forgotten, its next yield is logged as a first one.
   assert.equal(yields.yielded("stop-a"), 1);
-  now.value += 300_000;
+  // Ten minutes count from the latest yield, logged or not.
+  now.value += 59_000;
+  assert.equal(yields.yielded("stop-a"), undefined);
+  now.value += 541_000;
   assert.deepEqual(yields.waiting(), ["stop-a"]);
+  now.value += 59_000;
+  assert.deepEqual(yields.waiting(), []);
 });
