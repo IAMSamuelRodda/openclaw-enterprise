@@ -207,7 +207,7 @@ continues, or past its convergence deadline stops the candidate and fails
 newer revision supersedes still finishes the stop, even of a lifted refusal, and
 then ends superseded.
 
-`AGENT_STOP_YIELDED` means the Agent was stopped and this revision's gateway is
+`AGENT_STOP_YIELDED` means the Agent was stopped and its gateway is
 still draining; `PREDECESSOR_STOP_YIELDED` means a dedicated replacement waits for
 the previous version's gateway to drain. Meanwhile the worker runs other due work,
 then repeats the stop without spending attempts.
