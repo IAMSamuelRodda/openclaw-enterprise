@@ -1881,7 +1881,10 @@ test("runtime log cursor codec refuses other bindings, altered envelopes and fut
   assert.equal(status(cursor, { now: issuedAt + RUNTIME_LOG_CURSOR_TTL_MS + 1 }), "expired");
   assert.equal(status(cursor, { now: issuedAt - 60_000 }), "valid");
   assert.equal(status(cursor, { now: issuedAt - 60_001 }), "invalid");
-  // The codec keeps the newest 48 frontier hashes.
+});
+
+test("runtime log cursor codec keeps the newest 48 hashes, hashes raw lines exactly and needs a 32-character secret", () => {
+  const { codec, binding, issuedAt, position } = cursorCodecFixture();
   const hashes = Array.from({ length: 49 }, (_, index) => runtimeLogLineHash(`worker ${index}`));
   const many = codec.encode(binding, { ...position, lastHashes: hashes, frontierCount: 49 });
   assert.deepEqual(codec.decode(many, binding, issuedAt).position.lastHashes, hashes.slice(-48));
@@ -1893,6 +1896,7 @@ test("runtime log cursor codec refuses other bindings, altered envelopes and fut
 
 test("runtime log cursor refuses signed positions with malformed fields", () => {
   const { codec, binding, position, status } = cursorCodecFixture();
+  assert.equal(status(codec.encode(binding, position)), "valid");
   for (const change of [
     { viewId: 7 },
     { podUid: null },
