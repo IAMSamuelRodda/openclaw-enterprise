@@ -4012,6 +4012,15 @@ test(
         { ...externalGatewayRoutingValues, "gatewayRouting.caSecretName": "occ-private-ca" },
       ],
       [
+        "private Envoy Gateway with an invalid external CA Secret key",
+        {
+          ...externalGatewayRoutingValues,
+          "gatewayRouting.caSecretName": "occ-private-ca",
+          "gatewayRouting.caSecretKey": "bad/key",
+        },
+        /gatewayRouting\.caSecretKey must be a Kubernetes Secret key/,
+      ],
+      [
         "private Envoy Gateway with leaf TLS colliding with installation Secret",
         { ...gatewayRoutingValues, "gatewayRouting.tlsSecretName": "occ-installation-startup" },
       ],
