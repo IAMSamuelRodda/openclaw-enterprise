@@ -138,8 +138,9 @@ test("JSON bodies nested past the depth bound get 400 TOO_DEEP before schema val
     ]) {
       index += 1;
       const text = JSON.stringify(route.body(inner, index));
-      // The escaped form of the same body names the same path.
-      for (const sent of [text, text.replaceAll("é", String.raw`é`)]) {
+      // A key sent with a \u escape is named decoded.
+      const sends = text.includes("é") ? [text, text.replaceAll("é", "\\u00e9")] : [text];
+      for (const sent of sends) {
         const refused = await sendRaw(fixture, "POST", route.path, sent);
         assert.equal(refused.status, 400, `${route.name}: ${JSON.stringify(refused.body)}`);
         assert.deepEqual(refused.body.error, TOO_DEEP(path), route.name);
