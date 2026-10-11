@@ -2089,6 +2089,33 @@ await ${name}();
     assert.ok(violates(changed, source));
   });
 
+  test("binds an unknown-load exception to the whole source once its provenance trace hits the limit", async (t) => {
+    const source = "apps/app/src/public/long-chain.mjs";
+    const { write, check } = await workspace(t, { boundaries: [] });
+    // An unknown import whose target flows through `links` local constants.
+    const chain = (links) =>
+      [
+        'const s0 = "./secret.mjs";',
+        ...Array.from({ length: links - 1 }, (_, index) => `const s${index + 1} = s${index};`),
+        `function pick() { return s${links - 1}; }`,
+        "await import(pick());",
+      ].join("\n");
+    // Below the 64-symbol limit the identity covers only the chain, so an unrelated
+    // statement keeps the exception; past it, any source change invalidates it.
+    for (const [links, kept] of [
+      [8, true],
+      [80, false],
+    ]) {
+      await write(source, chain(links));
+      const exceptions = exceptionsFor(violation(await check(), source));
+      assert.equal((await check({ exceptions })).ok, true, `${links} links`);
+      await write(source, `${chain(links)}\nconsole.log("unrelated");`);
+      const edited = await check({ exceptions });
+      assert.equal(edited.ok, kept, `${links} links`);
+      assert.equal(violates(edited, source, "stale-exception"), !kept, `${links} links`);
+    }
+  });
+
   test("invalidates an unknown-path exception when its imported provider changes", async (t) => {
     const source = "apps/app/src/public/provider-load.mjs";
     const { write, check, native, observe, decoys } = await workspace(t, { boundaries: [] });
