@@ -37,6 +37,11 @@ const secretShapes = [
   /\b(?:xox[abposr]|xapp)-[A-Za-z0-9-]{8,}/gu,
   /\bA[KS]IA[A-Z0-9]{16}\b/gu,
 ];
+// URL userinfo, after the controller's URL_CREDENTIAL (apps/controller/src/logging.ts):
+// a user part without "/", then an optional password that may hold "/" (or an
+// unescaped "@", whose remainder the trailing group takes).
+const urlCredentialSource = String.raw`:\/\/[^\s/?#@:]*(?::[^\s@]*)?@(?:[^\s/?#@]*@)*`;
+const urlCredential = new RegExp(urlCredentialSource, "gu");
 const secretAssignment =
   /\b([A-Za-z_-]{0,40}(?:password|passwd|secret|token|(?:api|private|client)[_-]?key|authorization|cookie|credential)s?["']?\s*[:=]\s*["']?)[^\s"',;}&]+/giu;
 
@@ -104,7 +109,7 @@ function redactText(text, limit, secrets, root, cut = text?.length >= failureInp
   }
   result = result
     .replace(secretAssignment, "$1[redacted]")
-    .replace(/:\/\/[^/\s@]+@/gu, "://[redacted]@")
+    .replace(urlCredential, "://[redacted]@")
     .replace(/[^\P{Cc}\n\t]/gu, "");
   if (cut) {
     // The reporter's cut can split a value so no rule matches it; drop that tail.
@@ -135,7 +140,11 @@ export function redactFailure(error, secrets, root) {
 
 // Value-level redaction cannot see every credential, so lines that name one are
 // dropped whole, as for followed container logs (k3d-diagnostics.mjs).
-const credentialLine = /authorization|bearer\s|private.?key|-----BEGIN|https?:\/\/[^\s/]+@/i;
+// Any scheme's userinfo counts (postgresql://, redis://, git+ssh://).
+export const credentialLine = new RegExp(
+  String.raw`authorization|bearer\s|private.?key|-----BEGIN|${urlCredentialSource}`,
+  "i",
+);
 // Case-sensitive, so "Unexpected token" lines survive.
 const credentialToken = /\b(?:Basic|Token)\s+\S{8,}/;
 const namesCredential = (line) => credentialLine.test(line) || credentialToken.test(line);
@@ -174,6 +183,42 @@ export function redactFailureDetail(error, secrets, root) {
   const message = redactDetailText(error.message, secrets, root);
   const stack = redactDetailText(error.stack, secrets, root);
   return message === undefined && stack === undefined ? undefined : { message, stack };
+}
+
+const privateKeyEnd = /-----END [A-Z ]*PRIVATE KEY-----/u;
+const privateKeyLine = "[redacted credential-bearing line]";
+
+// Output is redacted line by line, so a plain-text private key spread over lines
+// would keep its body. This replaces every line of a key with a marker, keeping
+// the line count: privateKeyShape runs over the joined text, an unterminated key
+// runs to the end, and an END line with no BEGIN before it (a tail that starts
+// inside a key) takes every line above it.
+export function maskPrivateKeyLines(lines) {
+  const clean = lines.map((line) => stripControl(String(line)));
+  const text = clean.join("\n");
+  const masked = [...lines];
+  const mask = (from, to) => {
+    for (let index = from; index <= to && index < masked.length; index += 1) {
+      masked[index] = privateKeyLine;
+    }
+  };
+  const lineAt = (offset) => text.slice(0, offset).split("\n").length - 1;
+  const end = privateKeyEnd.exec(text);
+  let first = text.length;
+  for (const match of text.matchAll(privateKeyShape)) {
+    first = Math.min(first, match.index);
+    mask(lineAt(match.index), lineAt(match.index + match[0].length));
+  }
+  if (end && end.index < first) {
+    mask(0, lineAt(end.index));
+  }
+  return masked;
+}
+
+// Lines of a failed file's output (or a component log) for the diagnostics
+// report, with private keys removed across lines first.
+export function redactOutputLines(lines, secrets, root, limit) {
+  return maskPrivateKeyLines(lines).map((line) => redactOutputLine(line, secrets, root, limit));
 }
 
 // One line of a failed file's output for the diagnostics report.

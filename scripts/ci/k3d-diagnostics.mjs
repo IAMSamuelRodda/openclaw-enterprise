@@ -4,7 +4,12 @@ import { once } from "node:events";
 import { mkdir, open, readdir, readFile, rm, statfs, writeFile } from "node:fs/promises";
 import { join } from "node:path";
 import { cpus, freemem, loadavg, totalmem } from "node:os";
-import { failureSecrets, redactLogLine } from "./failure-redaction.mjs";
+import {
+  credentialLine,
+  failureSecrets,
+  maskPrivateKeyLines,
+  redactLogLine,
+} from "./failure-redaction.mjs";
 
 export async function k3dHostMetrics(directory) {
   const disk = await statfs(directory).catch(() => undefined);
@@ -412,9 +417,8 @@ const MAX_CONTAINER_LOG_INPUT_BYTES = 4 * 1024 * 1024;
 const CONTAINER_LOG_LINES = 1_500;
 const CONTAINER_LOG_LINE_CHARS = 1_000;
 // Value-level redaction keeps the credential lifecycle lines a slow stop needs;
-// these lines are dropped whole.
-const CONTAINER_LOG_SECRET_LINE =
-  /authorization|bearer\s|private.?key|-----BEGIN|https?:\/\/[^\s/]+@/i;
+// these lines (failure-redaction.mjs's credentialLine) are dropped whole.
+const CONTAINER_LOG_SECRET_LINE = credentialLine;
 
 function eventStatus(object) {
   return {
@@ -443,7 +447,8 @@ export function projectContainerLog(value, secrets = []) {
   const text = (field, limit = 200) =>
     typeof field === "string" ? redactLogLine(field, secrets, limit) : undefined;
   const count = (field) => (Number.isSafeInteger(field) && field >= 0 ? field : 0);
-  const lines = value.lines.filter((line) => typeof line === "string");
+  // Lines are redacted one at a time, so a private key's body lines go first.
+  const lines = maskPrivateKeyLines(value.lines.filter((line) => typeof line === "string"));
   const kept = lines
     .slice(-CONTAINER_LOG_LINES)
     .map((line) =>
@@ -472,8 +477,7 @@ export function projectContainerLog(value, secrets = []) {
       error:
         typeof stream.error === "string"
           ? text(
-              stream.error
-                .split("\n")
+              maskPrivateKeyLines(stream.error.split("\n"))
                 .map((line) =>
                   CONTAINER_LOG_SECRET_LINE.test(line)
                     ? "[redacted credential-bearing line]"

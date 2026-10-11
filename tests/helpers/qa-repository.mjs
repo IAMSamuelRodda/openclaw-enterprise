@@ -338,10 +338,19 @@ export function describeStopObservation(observation) {
 
 const platformLogLines = 600;
 const platformLogLineChars = 2_000;
-// Fixed launcher settings, not secrets; redacting "kubernetes" would garble the logs.
+// Fixed launcher settings, not secrets: the generated cluster name, its state
+// directory and the public k3s image appear on many lines, and replacing them (or
+// "kubernetes") would garble the logs. Image overrides and anything secret-bearing
+// stay private.
 const publicLauncherSettings = new Set([
+  "OCC_DEVELOPMENT_COMPOSE_PROJECT",
   "OCC_DEVELOPMENT_COMPUTE_DRIVER",
+  "OCC_DEVELOPMENT_CONTAINER_ENGINE",
   "OCC_DEVELOPMENT_CONTROL_PLANE",
+  "OCC_DEVELOPMENT_K3S_IMAGE",
+  "OCC_DEVELOPMENT_KUBERNETES_CLUSTER",
+  "OCC_DEVELOPMENT_SANDBOX_DRIVER",
+  "OCC_DEVELOPMENT_STATE_DIRECTORY",
 ]);
 
 // The QA evidence artifact is uploaded on every run, and only its *.json files;
