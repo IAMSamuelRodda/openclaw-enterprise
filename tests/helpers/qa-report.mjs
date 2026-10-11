@@ -37,8 +37,9 @@ export function createQaReport(path, metadata) {
       try {
         value = await work();
         outcome.outcome = "passed";
-      } catch (error) {
-        redactQaError(error);
+      } catch (thrown) {
+        // A replacement error when the original's text can't be redacted in place.
+        const error = redactQaError(thrown);
         outcome.outcome = /blocked by/.test(error.message) ? "blocked" : "failed";
         outcome.reason = error.message;
         throw error;

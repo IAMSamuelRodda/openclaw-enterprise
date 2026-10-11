@@ -34,18 +34,24 @@ test(
     t.after(() => rm(directory, { recursive: true, force: true }));
     const output = join(directory, "matrix.json");
     const reportModule = new URL("../helpers/qa-report.mjs", import.meta.url).href;
+    const secretsModule = new URL("../helpers/qa-secrets.mjs", import.meta.url).href;
     // Exercise the real reporter under node:test, including failed subtests.
     // A shared writeFile without a serialized snapshot can lose concurrent rows
     // or leave a trailing fragment of the previous JSON document.
     const source = `
     import test from 'node:test';
     import { createQaReport } from ${JSON.stringify(reportModule)};
+    import { registerQaSecret } from ${JSON.stringify(secretsModule)};
+    // Real runs register fixture secrets, so redaction always has work to do.
+    registerQaSecret('synthetic-stage-secret-value');
     const report = createQaReport(${JSON.stringify(output)}, { scope: 'full', concurrency: 4 });
     test('parallel report', { concurrency: 4 }, async (t) => {
       await Promise.all(Array.from({length: 20}, (_, i) =>
         report.stage(t, 'compose/Codex', 'stage-' + i, async () => {
           if (i === 2) throw new Error('blocked by unavailable test prerequisite');
           if (i === 7) throw new Error('expected assertion failure');
+          // A DOMException's message is getter-only; redaction must keep it.
+          if (i === 11) throw new DOMException('The operation was aborted due to timeout', 'TimeoutError');
         }, 'scenario-' + i)
       ));
       await report.save();
@@ -82,7 +88,7 @@ test(
       let expectedOutcome = "passed";
       if (i === 2) {
         expectedOutcome = "blocked";
-      } else if (i === 7) {
+      } else if (i === 7 || i === 11) {
         expectedOutcome = "failed";
       }
       assert.equal(row.outcome, expectedOutcome);
@@ -93,6 +99,10 @@ test(
     assert.match(
       report.outcomes.find((row) => row.stage === "stage-7").reason,
       /expected assertion/,
+    );
+    assert.equal(
+      report.outcomes.find((row) => row.stage === "stage-11").reason,
+      "The operation was aborted due to timeout",
     );
     assert.equal((await stat(output)).mode & 0o777, 0o600);
     assert.deepEqual(await readdir(directory), ["matrix.json"]);
@@ -776,6 +786,52 @@ test("QA log redaction hides JSON-escaped, base64 and percent-encoded copies of 
   );
   const error = redactQaError(new Error(`failed: ${encoded[2]}`));
   assert.equal(error.message, "failed: [REDACTED]");
+});
+
+test("QA error redaction keeps errors whose message cannot be written", async () => {
+  const { inspect } = await import("node:util");
+  const { redactQaError, registerQaSecret } = await import("../helpers/qa-secrets.mjs");
+  const value = "synthetic-qa-error-secret-2026";
+  registerQaSecret(value);
+
+  // An ordinary error is redacted in place, message and stack.
+  const ordinary = new Error(`request failed: ${value}`);
+  assert.equal(redactQaError(ordinary), ordinary);
+  assert.equal(ordinary.message, "request failed: [REDACTED]");
+  assert.ok(!ordinary.stack.includes(value), ordinary.stack);
+  assert.match(ordinary.stack, /request failed: \[REDACTED\]/);
+
+  // AbortSignal.timeout's error: nothing to redact, so it is returned untouched.
+  const timeout = new DOMException("The operation was aborted due to timeout", "TimeoutError");
+  assert.equal(redactQaError(timeout), timeout);
+  assert.equal(timeout.message, "The operation was aborted due to timeout");
+
+  // A DOMException carrying a secret: its message is getter-only, so a plain
+  // Error replaces it, with the name, code and redacted stack, and without the
+  // original as `cause` (inspecting that would print the secret).
+  const dom = new DOMException(`timed out reading ${value}`, "TimeoutError");
+  const replaced = redactQaError(dom);
+  assert.notEqual(replaced, dom);
+  assert.ok(replaced instanceof Error);
+  assert.equal(replaced.message, "timed out reading [REDACTED]");
+  assert.equal(replaced.name, "TimeoutError");
+  assert.equal(replaced.code, dom.code);
+  assert.equal(replaced.cause, undefined);
+  assert.match(replaced.stack, /^TimeoutError: timed out reading \[REDACTED\]/);
+  assert.ok(!inspect(replaced).includes(value), inspect(replaced));
+
+  // A frozen error cannot be updated either.
+  const frozen = Object.freeze(Object.assign(new Error(`denied ${value}`), { code: "EACCES" }));
+  const unfrozen = redactQaError(frozen);
+  assert.notEqual(unfrozen, frozen);
+  assert.equal(unfrozen.message, "denied [REDACTED]");
+  assert.equal(unfrozen.name, "Error");
+  assert.equal(unfrozen.code, "EACCES");
+  assert.match(unfrozen.stack, /^Error: denied \[REDACTED\]\n/);
+  assert.ok(!inspect(unfrozen).includes(value), inspect(unfrozen));
+
+  // A thrown non-object passes through.
+  assert.equal(redactQaError(undefined), undefined);
 });
 
 test("QA log tails drop the body of an unregistered key that starts above the tail", async () => {
