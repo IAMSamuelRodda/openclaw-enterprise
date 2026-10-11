@@ -889,6 +889,8 @@ test("Kubernetes Configuration accepts only whole credential references", async 
     provider({ headers: { Authorization: `Bearer \${MODEL_TOKEN}${sentinel}` } }),
     provider({ headers: { Authorization: `${sentinel} Bearer \${MODEL_TOKEN}` } }),
     provider({ headers: { "api-key": sentinel } }),
+    // The Bearer form is a reference only in an Authorization header.
+    provider({ apiKey: "Bearer ${OPENAI_API_KEY}" }),
     // A SecretRef names a source, provider and ID, and carries nothing else.
     provider({ apiKey: { source: "store", provider: "teamstore", id: "KEY", value: sentinel } }),
     provider({ apiKey: { source: "store", provider: "", id: sentinel } }),
@@ -926,7 +928,10 @@ class RacedConfigurationCoreV1Api extends FlakyConfigurationCoreV1Api {
   async replaceNamespacedConfigMap(request) {
     const stored = this.configMaps.get(`${request.namespace}/${request.name}`);
     const expected = request.body.metadata?.resourceVersion;
-    if (expected !== undefined && expected !== stored?.metadata.resourceVersion) {
+    if (stored === undefined) {
+      throw Object.assign(new Error("missing ConfigMap"), { code: 404 });
+    }
+    if (expected !== undefined && expected !== stored.metadata.resourceVersion) {
       throw Object.assign(new Error("the object has been modified"), { code: 409 });
     }
     return super.replaceNamespacedConfigMap(request);
@@ -935,7 +940,10 @@ class RacedConfigurationCoreV1Api extends FlakyConfigurationCoreV1Api {
   async deleteNamespacedConfigMap(request) {
     const stored = this.configMaps.get(`${request.namespace}/${request.name}`);
     const uid = request.body?.preconditions?.uid;
-    if (uid !== undefined && uid !== stored?.metadata.uid) {
+    if (stored === undefined) {
+      throw Object.assign(new Error("missing ConfigMap"), { code: 404 });
+    }
+    if (uid !== undefined && uid !== stored.metadata.uid) {
       throw Object.assign(new Error("precondition failed: UID"), { code: 409 });
     }
     return super.deleteNamespacedConfigMap(request);
