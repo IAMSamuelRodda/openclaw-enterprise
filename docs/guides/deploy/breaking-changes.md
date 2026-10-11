@@ -11,6 +11,61 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-11: Agent and Configuration saves refuse what deployment refuses
+
+**What breaks.** On Kubernetes Compute, Configuration create and update,
+provisioning and Preset saves answer `400` for an enabled unsupported
+`channels.<provider>`, a non-empty `auth`, an `env` or `env.vars` name starting
+`OPENAI_` or `ANTHROPIC_` (or a Codex login variable), and an authorization
+header on a selected model provider. Agent create and update refuse what
+deployment refused for the same Agent and Configuration: an Agent that is not
+`dedicated` (including an omitted `executionMode`) when a Sandbox Driver is
+selected (`400`; deployment answered `404`), a Harness the Configuration
+selects for the other execution mode (`400`), a Harness authentication,
+repository or initial workspace file setup the Compute Driver cannot deliver
+(`400` naming the setting, or `409`). Deployment names those Kubernetes
+settings too, instead of answering with fixed Harness authentication text:
+
+- Deployment answers `400` naming the setting, where it answered `409`, for
+  the dedicated OpenClaw model catalog, a provider `apiKey`, channel Secret
+  bindings and `cloudWorkers.requiredProfile`.
+- Deployment refuses a pending initial workspace setup the Configuration
+  cannot deliver with `400`, where the first deployment's preparation failed.
+- Switching an embedded OpenClaw Agent to `dedicated` needs the Configuration
+  to carry the dedicated model catalog first: save the Configuration, then
+  the Agent.
+
+**Who is affected.** Clients that saved such values and fixed them before
+deploying. Stored Configurations and Agents still read.
+
+**How to tell.** The `400` names the setting or the execution mode.
+
+**Steps.** Fix the named setting or the Agent's `executionMode`, then save
+again.
+
+## 2026-10-11: the chart refuses malformed Secret, ConfigMap and GatewayClass names
+
+**What breaks.** `helm template`, `install` and `upgrade` fail when a Secret
+name the chart reads, `repositoryCredentials.registryConfigMapName`,
+`gatewayRouting.gatewayClassName` or `gatewayRouting.issuerRef.name` is not a
+Kubernetes resource name: lowercase
+letters, digits, `-` and `.`, starting and ending with a letter or digit, at
+most 253 characters. Examples are `database.caSecretName`,
+`gatewayRouting.apiKeySecretName`, `auth.*.secretName` and
+`executionCluster.*KubeconfigSecretName`. Kubernetes either refused such a Pod
+or left it waiting for a Secret that cannot exist. Profile preflight already
+refused the names it writes.
+
+**Who is affected.** Hand-written values files with such a name. No working
+Installation is affected, since Kubernetes cannot create a Secret, ConfigMap or
+GatewayClass with that name. Settings of disabled features are not checked.
+
+**How to tell.** Rendering fails with
+`<setting> must be a Kubernetes resource name of at most 253 characters`.
+
+**Steps.** Create the Secret or ConfigMap under a valid name, set it in your
+values, and run the upgrade again. _untested_
+
 ## 2026-10-11: status proxy sources that cover every address are refused
 
 **What breaks.** Controller startup refuses a
