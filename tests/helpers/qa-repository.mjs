@@ -339,8 +339,9 @@ export function describeStopObservation(observation) {
 const platformLogLines = 600;
 const platformLogLineChars = 2_000;
 // The Gateway drains in-flight work for up to 315 s on SIGTERM and logs what it
-// waits for; keep only those lifecycle lines, not conversation content.
-const gatewayDrainLine = /drain|shut ?down|active work|SIGTERM/i;
+// waits for. Keep only its own drain and shutdown messages.
+const gatewayDrainLine =
+  /draining active work|active-work drain|all active work drained|shutdown budget|shutdown drain|received SIG(TERM|INT)/i;
 const gatewayDrainLines = 40;
 const platformEvents = 60;
 // Fixed launcher settings, not secrets; redacting "kubernetes" would garble the logs.
@@ -394,41 +395,23 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
     }
   };
   const platformNamespace = f.state.platformNamespace;
+  const containerTail = async (target, container, ...options) =>
+    tail(
+      await f.kubectl(
+        "-n",
+        platformNamespace,
+        "logs",
+        target,
+        "--container",
+        container,
+        ...options,
+        "--timestamps",
+        `--tail=${platformLogLines}`,
+        "--request-timeout=30s",
+      ),
+    );
   const logs = {};
-  logs.api = await attempt(async () =>
-    tail(
-      await f.kubectl(
-        "-n",
-        platformNamespace,
-        "logs",
-        "deployment/openclaw-enterprise-api",
-        "--container",
-        "api",
-        "--timestamps",
-        `--tail=${platformLogLines}`,
-        "--request-timeout=30s",
-      ),
-    ),
-  );
-  // `logs deployment/...` reads one Pod; a rollout or restart leaves the stop's
-  // worker elsewhere, so read every worker Pod, each line prefixed by its Pod.
-  logs.worker = await attempt(async () =>
-    tail(
-      await f.kubectl(
-        "-n",
-        platformNamespace,
-        "logs",
-        "-l",
-        "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/component=worker",
-        "--container",
-        "worker",
-        "--prefix",
-        "--timestamps",
-        `--tail=${platformLogLines}`,
-        "--request-timeout=30s",
-      ),
-    ),
-  );
+  logs.api = await attempt(() => containerTail("deployment/openclaw-enterprise-api", "api"));
   const platformPods = await attempt(async () =>
     JSON.parse(
       await f.kubectl(
@@ -443,30 +426,33 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
     ).items.map(podRestarts),
   );
   logs.platformPods = platformPods;
-  for (const pod of Array.isArray(platformPods) ? platformPods : []) {
-    const worker = pod.containers.find(({ name }) => name === "worker");
-    if (pod.component === "worker" && worker?.restartCount > 0) {
-      (logs.workerPrevious ??= {})[pod.name] = await attempt(async () =>
-        tail(
-          await f.kubectl(
-            "-n",
-            platformNamespace,
-            "logs",
-            pod.name,
-            "--container",
-            "worker",
-            "--previous",
-            "--timestamps",
-            `--tail=${platformLogLines}`,
-            "--request-timeout=30s",
-          ),
-        ),
+  // `logs deployment/...` reads one Pod and never its previous container; a
+  // rollout or restart can leave the stop's worker elsewhere, so read each worker
+  // Pod by name (the Deployment only when the Pods cannot be listed).
+  const workerPods = Array.isArray(platformPods)
+    ? platformPods.filter(({ component }) => component === "worker")
+    : [];
+  logs.worker = {};
+  for (const pod of workerPods) {
+    logs.worker[pod.name] = await attempt(() => containerTail(pod.name, "worker"));
+    if (pod.containers.find(({ name }) => name === "worker")?.restartCount > 0) {
+      (logs.workerPrevious ??= {})[pod.name] = await attempt(() =>
+        containerTail(pod.name, "worker", "--previous"),
       );
     }
   }
+  if (workerPods.length === 0) {
+    logs.worker["deployment/openclaw-enterprise-worker"] = await attempt(() =>
+      containerTail("deployment/openclaw-enterprise-worker", "worker"),
+    );
+  }
   const eventNamespaces = [
     platformNamespace,
-    ...new Set(remainingPods.map(({ metadata }) => metadata?.namespace).filter(Boolean)),
+    ...new Set(
+      remainingPods
+        .map(({ metadata }) => metadata?.namespace)
+        .filter((namespace) => namespace && namespace !== platformNamespace),
+    ),
   ];
   logs.events = {};
   for (const namespace of eventNamespaces) {
@@ -482,7 +468,7 @@ async function recordPlatformLogs(f, label, remainingPods = []) {
           count: event.count ?? 1,
           message: tail(event.message ?? "", 1, 400)[0] ?? "",
         }))
-        .sort((left, right) => String(left.time).localeCompare(String(right.time)))
+        .sort((left, right) => String(left.time ?? "").localeCompare(String(right.time ?? "")))
         .slice(-platformEvents),
     );
   }

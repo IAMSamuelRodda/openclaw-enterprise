@@ -269,7 +269,15 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     spec: { containers: [{ env: [{ name: "GATEWAY_PASSWORD", value: "spec-private-value" }] }] },
     status: { phase: "Running" },
   };
-  const workerPod = {
+  const agentPod = {
+    metadata: {
+      namespace: "oce-agent-1",
+      name: "agent-1-runtime-0",
+      labels: { "openclaw.dev/agent": "agent-1", "openclaw.dev/workload-role": "agent" },
+    },
+    status: { phase: "Running" },
+  };
+  const restartedWorker = {
     metadata: {
       name: "worker-a",
       labels: { "app.kubernetes.io/component": "worker" },
@@ -289,6 +297,21 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
       ],
     },
   };
+  const workerPods = [
+    restartedWorker,
+    {
+      metadata: { name: "worker-b", labels: { "app.kubernetes.io/component": "worker" } },
+      status: { phase: "Running", containerStatuses: [{ name: "worker", restartCount: 0 }] },
+    },
+    { metadata: { name: "api-a", labels: { "app.kubernetes.io/component": "api" } }, status: {} },
+  ];
+  const event = (time, name, message) => ({
+    lastTimestamp: time,
+    type: "Normal",
+    reason: "Killing",
+    involvedObject: { kind: "Pod", name },
+    message,
+  });
   const calls = [];
   const records = new Map();
   const f = {
@@ -306,38 +329,35 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     },
     async kubectl(...args) {
       calls.push(["kubectl", ...args]);
-      if (args[0] === "get") {
-        return JSON.stringify({ items: [pod] });
+      const [verb, target] = args[0] === "-n" ? args.slice(2) : args;
+      if (verb === "get" && args.includes("-A")) {
+        return JSON.stringify({ items: [pod, agentPod] });
       }
-      if (args.includes("pods")) {
-        return JSON.stringify({ items: [workerPod] });
+      if (verb === "get" && target === "pods") {
+        return JSON.stringify({ items: workerPods });
       }
-      if (args.includes("events")) {
+      if (verb === "get" && target === "events") {
         return JSON.stringify({
           items: [
-            {
-              lastTimestamp: "2026-10-11T01:36:30Z",
-              type: "Normal",
-              reason: "Killing",
-              involvedObject: { kind: "Pod", name: "agent-1-gateway-0" },
-              count: 1,
-              message: "Stopping container gateway; launcher-private-value",
-            },
+            event("2026-10-11T01:36:30Z", "agent-1-gateway-0", "Stopping; launcher-private-value"),
+            event(undefined, "undated", "no time"),
+            event("2026-10-11T01:30:00Z", "worker-a", "Started container worker"),
           ],
         });
       }
-      if (args.includes("--previous")) {
+      if (target === "worker-a" && args.includes("--previous")) {
         throw new Error("kubectl failed (exit 1); stderr: launcher-private-value unreachable");
       }
-      if (args.includes("gateway")) {
+      if (target === "worker-a" || target === "worker-b") {
+        return `2026-10-11T01:36:00Z ${target} worker.completed\n`;
+      }
+      if (target === "agent-1-gateway-0") {
         return (
           "2026-10-11T01:32:40Z draining active work before stop with timeout 315000ms: 1 active chat run(s)\n" +
           "2026-10-11T01:32:41Z assistant reply QA_NATIVE_conversation-text\n"
         );
       }
-      if (args.includes("-l")) {
-        return "[pod/worker-a/worker] 2026-10-11T01:36:00Z worker.completed\n";
-      }
+      assert.equal(target, "deployment/openclaw-enterprise-api");
       return (
         "2026-10-11T01:36:00Z kubernetes compute: stop requested for agent-1\n" +
         "2026-10-11T01:36:01Z authenticated with stop-fixture-service-key\n" +
@@ -364,6 +384,13 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
           phase: "Running",
           deletionTimestamp: "2026-10-11T01:37:00Z",
           finalizers: ["openclaw.dev/runtime"],
+        },
+        {
+          namespace: "oce-agent-1",
+          name: "agent-1-runtime-0",
+          phase: "Running",
+          deletionTimestamp: null,
+          finalizers: [],
         },
       ],
     });
@@ -396,43 +423,69 @@ test("a QA Agent stop timeout names the remaining Pods and keeps redacted platfo
     /stop-fixture-service-key|abcdefghijklmnop|launcher-private-value/,
   );
   assert.equal(logs.api.length, 3);
-  // Every worker Pod, by label, each line naming its Pod.
-  const workerCall = calls.find((call) => call.includes("logs") && call.includes("-l"));
-  assert.ok(workerCall.includes("--prefix"));
-  assert.ok(
-    workerCall.includes(
-      "app.kubernetes.io/name=openclaw-enterprise,app.kubernetes.io/component=worker",
-    ),
+  // Every worker Pod by name; only a restarted one's previous container, whose
+  // failed read is kept, redacted.
+  assert.deepEqual(logs.worker, {
+    "worker-a": ["2026-10-11T01:36:00Z worker-a worker.completed"],
+    "worker-b": ["2026-10-11T01:36:00Z worker-b worker.completed"],
+  });
+  const previousCalls = calls.filter((call) => call.includes("--previous"));
+  assert.deepEqual(
+    previousCalls.map((call) => call.slice(1, 7)),
+    [["-n", "oce-system", "logs", "worker-a", "--container", "worker"]],
   );
-  assert.deepEqual(logs.worker, ["[pod/worker-a/worker] 2026-10-11T01:36:00Z worker.completed"]);
-  // A restarted worker's previous container is read; a failed read is kept, redacted.
+  assert.deepEqual(Object.keys(logs.workerPrevious), ["worker-a"]);
   assert.match(logs.workerPrevious["worker-a"].unavailable.join("\n"), /unreachable/);
-  assert.deepEqual(logs.platformPods, [
-    {
-      name: "worker-a",
-      component: "worker",
-      phase: "Running",
-      startTime: "2026-10-11T01:30:00Z",
-      deletionTimestamp: null,
-      containers: [
-        {
-          name: "worker",
-          restartCount: 1,
-          lastTerminated: { reason: "Error", exitCode: 1, finishedAt: "2026-10-11T01:33:00Z" },
-        },
-      ],
-    },
-  ]);
+  assert.deepEqual(logs.platformPods[0], {
+    name: "worker-a",
+    component: "worker",
+    phase: "Running",
+    startTime: "2026-10-11T01:30:00Z",
+    deletionTimestamp: null,
+    containers: [
+      {
+        name: "worker",
+        restartCount: 1,
+        lastTerminated: { reason: "Error", exitCode: 1, finishedAt: "2026-10-11T01:33:00Z" },
+      },
+    ],
+  });
+  // Events from the platform and the remaining Agent Namespace, oldest first.
   assert.deepEqual(Object.keys(logs.events), ["oce-system", "oce-agent-1"]);
-  assert.equal(logs.events["oce-agent-1"][0].object, "Pod/agent-1-gateway-0");
-  // Only the terminating Gateway's drain lines, never conversation content.
+  assert.deepEqual(
+    logs.events["oce-agent-1"].map(({ object }) => object),
+    ["Pod/undated", "Pod/worker-a", "Pod/agent-1-gateway-0"],
+  );
+  // Only the terminating Gateway's drain lines; the Agent Pod's log is not read.
   assert.deepEqual(logs.gatewayDrain, {
     "agent-1-gateway-0": [
       "2026-10-11T01:32:40Z draining active work before stop with timeout 315000ms: 1 active chat run(s)",
     ],
   });
+  assert.ok(!calls.some((call) => call.includes("agent-1-runtime-0")));
   assert.doesNotMatch(JSON.stringify(logs), /spec-private-value|QA_NATIVE_conversation-text/);
   assert.equal(describeStopObservation(undefined), "none");
+
+  // Unlisted platform Pods fall back to the worker Deployment's log.
+  const unlisted = {
+    ...f,
+    async kubectl(...args) {
+      if (args[3] === "pods" && !args.includes("-A")) {
+        throw new Error("kubectl failed (exit 1); stderr: forbidden");
+      }
+      return args[3] === "deployment/openclaw-enterprise-worker"
+        ? "2026-10-11T01:36:00Z deployment worker\n"
+        : f.kubectl(...args);
+    },
+  };
+  await assert.rejects(
+    stopQaAgent(unlisted, { id: "agent-3", namespaceId: "namespace-1" }, { timeout: 10 }),
+  );
+  const fallback = records.get("agent-3-stop-timeout-platform-logs").logs;
+  assert.match(fallback.platformPods.unavailable.join("\n"), /forbidden/);
+  assert.deepEqual(fallback.worker, {
+    "deployment/openclaw-enterprise-worker": ["2026-10-11T01:36:00Z deployment worker"],
+  });
 
   // A Compose control plane keeps the observation but has no in-cluster platform logs.
   records.clear();
