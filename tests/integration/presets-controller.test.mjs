@@ -1380,13 +1380,22 @@ describe("Presets", { concurrency: 2 }, () => {
     assert.equal(audit.length, runtime.defaultPresets.length);
     assert.ok(audit.every((event) => event.actorId === principal.id));
 
-    // With no administrator able to create them, startup still fails, and says why.
+    // With no administrator able to create them, startup still fails, and says why: the
+    // administrator's Preset refusal, never a later non-administrator's.
     const unseeded = await persistedNamespace(fixture, "Existing without a capable administrator");
+    const { principal: member } = await fixture.createAccountWithPolicy("member", () => {});
     await assert.rejects(
-      initializeInstallationPresets(fixture.controller, iam, [scoped], runtime.defaultPresets),
+      initializeInstallationPresets(
+        fixture.controller,
+        iam,
+        [scoped, member],
+        runtime.defaultPresets,
+      ),
       (error) =>
         /can create Presets in every Namespace/.test(error.message) &&
-        error.cause instanceof AuthorizationDeniedError,
+        error.cause instanceof AuthorizationDeniedError &&
+        error.cause.authorization?.action === "create" &&
+        error.cause.evidence?.identityId === scoped.id,
     );
     assert.deepEqual(await listPresets(fixture, unseeded.id), []);
 
@@ -1592,6 +1601,40 @@ describe("Presets", { concurrency: 2 }, () => {
       runtime.defaultPresets,
     );
     assert.deepEqual((await readPreset(fixture, namespace.id, copy.id)).data, rolledBack);
+    assert.deepEqual(auditFrom(fixture, "installation-defaults-refresh"), []);
+  });
+
+  test("startup refreshes a copy only from its own bundled file's history, not another file reusing its name", async (t) => {
+    const runtime = await bundledRuntime(t, { includeDefaults: true });
+    // standard-codex.json once shipped as "standard-codex"; a later release bundles a
+    // different file, here with the OpenClaw template, under that retired name.
+    const retired = await archivedDefault("standard-codex.json", "a07d1e2070d95c99");
+    const { template } = runtime.bundledPresetVersions.find(
+      (version) => version.current && version.file === "standard-openclaw.json",
+    );
+    const reused = { name: retired.name, template };
+    const fixture = await createFixture(t, {
+      defaultPresets: [...runtime.defaultPresets, reused],
+      bundledPresetVersions: [
+        ...runtime.bundledPresetVersions,
+        { ...reused, file: "reused-name.json", version: "0".repeat(16), current: true },
+      ],
+      refreshBundledDefaultPresets: true,
+    });
+    const namespace = await fixture.createNamespace("Retired name reused", { ready: true });
+    const copy = (await listPresets(fixture, namespace.id)).find(
+      (preset) => preset.name === retired.name,
+    );
+    // The copy an earlier release seeded from standard-codex.json under the retired name.
+    const earlier = await patchTemplate(fixture, namespace.id, copy.id, retired.template);
+
+    await initializeInstallationPresets(
+      fixture.controller,
+      iamOf(fixture),
+      fixture.policy.identities,
+      [...runtime.defaultPresets, reused],
+    );
+    assert.deepEqual((await readPreset(fixture, namespace.id, copy.id)).data, earlier);
     assert.deepEqual(auditFrom(fixture, "installation-defaults-refresh"), []);
   });
 

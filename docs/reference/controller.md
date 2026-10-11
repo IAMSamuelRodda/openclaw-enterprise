@@ -157,7 +157,8 @@ Startup failures write `startup-error`, `worker.startup-error`,
 `installation.bootstrap-failed`, or `migration.failed` and exit before serving
 or processing work. Log sanitization keeps only reviewed scalar fields and drops
 credentials, provider payloads, request objects, and unbounded error values. The
-worker does not expose an HTTP health endpoint.
+worker does not expose an HTTP health endpoint. A startup Installation with an
+invalid Gateway StorageClass name emits `GATEWAY_STORAGE_CLASS_INVALID`.
 
 ## Failures and diagnostics
 

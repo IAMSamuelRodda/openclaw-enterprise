@@ -1325,3 +1325,14 @@ test(
     }
   },
 );
+
+test("the control client refuses socket paths over 103 bytes before connecting", async () => {
+  const { callControl } = await appModule("drivers/repo/github/credentials/client/operator");
+  const request = { method: "GET", path: "/v1/sessions" };
+  // 104 ASCII bytes, and 61 characters that encode to 115 bytes. Neither file exists,
+  // so only the length guard can produce invalid-control-request.
+  for (const socket of [`/${"a".repeat(103)}`, `/${"\u00e9".repeat(54)}x.sock`]) {
+    assert.ok(Buffer.byteLength(socket) > 103);
+    await assert.rejects(callControl(socket, request), { message: "invalid-control-request" });
+  }
+});

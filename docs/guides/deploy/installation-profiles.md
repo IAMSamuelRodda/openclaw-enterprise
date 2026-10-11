@@ -264,6 +264,10 @@ If you opt in to repositories, add the broker inputs:
 }
 ```
 
+The repository registry ConfigMap and all four repository Secret names must be
+Kubernetes DNS-subdomain resource names of at most 253 characters. Invalid names
+fail preflight before deployable files are written.
+
 `serviceName` is optional. When omitted, the renderer leaves it out of
 `values.yaml`: a new installation gets the chart's `git` Service, and a Helm
 upgrade fails until you set it. When upgrading an installation whose broker
