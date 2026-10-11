@@ -46,7 +46,9 @@ import {
 // The two isolated cases mock child_process for the whole process, so they run
 // alone, first. Every other case owns its directories, servers and children and
 // mostly waits on stock Git; they register here and run two at a time in one
-// suite at the end of the file.
+// suite at the end of the file. The long push-policy case is registered last on
+// purpose: started first, it shares the CPU with every other case, and on an
+// overloaded host (8 copies on 1 CPU) that pushed it past its timeout.
 const cases = [];
 const test = (...registration) => cases.push(registration);
 
@@ -883,9 +885,7 @@ test(
 );
 
 describe("repository credential client configuration", { concurrency: 2 }, () => {
-  // Reversed, so the long push-policy case (registered last) starts first and the
-  // other cases run beside it.
-  for (const registration of cases.toReversed()) {
+  for (const registration of cases) {
     it(...registration);
   }
 });
