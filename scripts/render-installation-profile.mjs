@@ -1801,15 +1801,32 @@ function buildRendered(profile, parsed, diagnostics) {
         repository,
         ["repository", "registryConfigMapName"],
         diagnostics,
+        {
+          validate: isKubernetesResourceName,
+          description: "a Kubernetes resource name of at most 253 characters",
+        },
       ),
       serviceConfigSecretName: asString(
         repository,
         ["repository", "serviceConfigSecretName"],
         diagnostics,
+        {
+          validate: isKubernetesResourceName,
+          description: "a Kubernetes resource name of at most 253 characters",
+        },
       ),
-      appKeySecretName: asString(repository, ["repository", "appKeySecretName"], diagnostics),
-      tlsSecretName: asString(repository, ["repository", "tlsSecretName"], diagnostics),
-      publicCaSecretName: asString(repository, ["repository", "publicCaSecretName"], diagnostics),
+      appKeySecretName: asString(repository, ["repository", "appKeySecretName"], diagnostics, {
+        validate: isKubernetesResourceName,
+        description: "a Kubernetes resource name of at most 253 characters",
+      }),
+      tlsSecretName: asString(repository, ["repository", "tlsSecretName"], diagnostics, {
+        validate: isKubernetesResourceName,
+        description: "a Kubernetes resource name of at most 253 characters",
+      }),
+      publicCaSecretName: asString(repository, ["repository", "publicCaSecretName"], diagnostics, {
+        validate: isKubernetesResourceName,
+        description: "a Kubernetes resource name of at most 253 characters",
+      }),
       serviceName: optionalString(repository, ["repository", "serviceName"], diagnostics, {
         validate: (value) => value.length <= 63 && dns1035Label.test(value),
         description: "a Kubernetes Service DNS-1035 label of at most 63 characters",
