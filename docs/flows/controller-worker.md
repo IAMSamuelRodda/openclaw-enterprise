@@ -187,8 +187,8 @@ When Compute's `requiresStoppedPredecessors` capability is set,
 it loads earlier snapshots, including failed candidates, closes their credential
 sessions, and stops them before preparing the candidate; a release failure
 prevents preparation. Their drains yield like a stopped Agent's
-(`PREDECESSOR_STOP_YIELDED`); failing or superseded work first finishes that stop. The dispatch
-guard keeps maintenance from recreating a predecessor.
+(`PREDECESSOR_STOP_YIELDED`); failing, superseded or stopped work first finishes that stop. The
+dispatch guard keeps maintenance from recreating a predecessor.
 
 The worker validates Compute's startup plugin warning codes and selection keys
 against the immutable revision; the
@@ -203,8 +203,8 @@ Before each shutdown, the worker rechecks the Agent owner and stopped desired st
 later admissions are not added. Partial failure retries idempotent shutdowns,
 keeping the active pointer and retained workspace data. Before the convergence
 deadline, a stopped Agent's Gateway drain, here or in revision work, yields to due
-work (`withYieldingGatewayDrain`), deferring as `AGENT_STOP_YIELDED` without
-spending an attempt. In-pass waits ignore yielded stops.
+work (`withYieldingGatewayDrain`) as `AGENT_STOP_YIELDED`, refunding the attempt.
+A drain ignores yielded stops; other waits, only stopped Agents'.
 
 Before shutdown or retirement, including stopped-revision recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
@@ -359,10 +359,10 @@ waits for the loop, closes PostgreSQL, and emits `worker.stopped`.
 
 Each `PostgresWorkQueue.recoverStale()` statement atomically publishes exhausted
 work, failure of a still-provisioning Namespace targeted for `ready`, and audit
-evidence for expired claims and exhausted queued work, so final-attempt crashes
-cannot strand provisioning. A deployment whose last claim expires after it
-published its revision gets one more attempt (`ACTIVE_REVISION_RECOVERY`); a
-failed retry keeps the active runtime.
+evidence, so final-attempt crashes cannot strand provisioning. At the limit, one more attempt
+goes to a deployment that published its revision (`ACTIVE_REVISION_RECOVERY`;
+a failed retry keeps the active runtime) or whose predecessor stop yielded
+(`PREDECESSOR_STOP_RECOVERY`).
 
 ## Debugging and Verification
 

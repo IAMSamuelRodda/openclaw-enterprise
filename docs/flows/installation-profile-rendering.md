@@ -1,7 +1,7 @@
 ---
 created: 2026-09-28
 updated: 2026-10-11
-last_updated_session: authoring-run/c4350829-13f6-40e0-902f-9d96e622a27c
+last_updated_session: authoring-run/a792f860-0966-4b83-8955-7d864ba96f61
 ---
 
 # Installation Profile Rendering Flow
@@ -109,21 +109,19 @@ branch writes only `preflight.json`, leaving no deployable artifacts.
 already apply to `installation.name`: 1 to 200 characters, with no leading or
 trailing whitespace and no control characters or line or paragraph separators.
 
-Preflight applies the downstream contracts for IPv4 CIDRs, native-admin DNS
-hostnames and their shared cookie parent domain (not a public suffix, checked
-with the API's `tldts` list), Google hosted domains (at most 253 characters,
-last label starting with a letter), GatewayClass, gateway API key Secret, database
-CA Secret, ChatGPT admin Secret, gateway StorageClass, repository ConfigMap, Secret
-and Service resource names, and paired metrics scraper selectors. Invalid values
-fail preflight.
+Preflight applies downstream contracts for IPv4 CIDRs, native-admin hostnames
+and shared cookie parent (not a public suffix under `tldts`), Google hosted
+domains (at most 253 characters,
+last label starting with a letter), GatewayClass, gateway API key, database CA,
+ChatGPT admin and sign-in Secrets, gateway StorageClass, repository ConfigMap,
+Secret and Service names, and paired metrics selectors. Invalid values fail
+preflight.
 
-`scripts/render-installation-profile.mjs:signInProvider` refuses equal client-ID
-and client-secret Secret keys for GitHub, Google and OIDC, considering the chart's
-`client-id` and `client-secret` defaults when only one key is overridden.
-`dedicatedSecrets` applies the chart's dedicated-Secret rule in the chart's
-order: the ChatGPT admin, database CA, gateway API key, sign-in and repository
-Secrets must each differ from `occ-installation-startup`, `occ-database`,
-`occ-auth`, the generated Gateway TLS and root CA Secrets
+`signInProvider` validates GitHub, Google and OIDC Secret names and keys, and
+refuses equal client-ID and client-secret keys after applying chart defaults.
+`dedicatedSecrets` applies the chart's ordering: ChatGPT admin, database CA,
+gateway API key, sign-in and repository Secrets must differ from
+`occ-installation-startup`, `occ-database`, `occ-auth`, and generated Gateway Secrets
 (`chartGatewaySecretNames`), the enabled log collector's Secrets and every Secret
 listed before it; only the two public CA Secrets may share one. A collision fails
 preflight.
@@ -280,6 +278,8 @@ activation, and repository registry creation need separate evidence.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 18:12: Validate sign-in Secret names and keys alongside current database CA and repository checks. (authoring-run/a792f860-0966-4b83-8955-7d864ba96f61 - ec6d41d1ac7f4cbe889ff7cdf45b60ebef99ffb7)
 
 - 2026-10-10: Public CA Secrets may share one Secret, as in the chart.
 

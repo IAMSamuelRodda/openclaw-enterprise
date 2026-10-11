@@ -91,6 +91,7 @@ import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
 import {
   isStopYieldedCode,
   PredecessorStopYieldedError,
+  type StopYieldedCode,
   StopYields,
   stopWithDrainYield,
   stopYieldedCode,
@@ -2122,12 +2123,12 @@ export class ControllerWorker {
   }
 
   /**
-   * Records a committed AGENT_STOP_YIELDED deferral. Returns the work's yield count when its
+   * Records a committed stop-yield deferral (`code`). Returns the work's yield count when its
    * `worker.completed` line is due: the first yield, then at most one a minute (finding 1094).
    */
-  private recordStopYield(claim: ClaimedWork): number | undefined {
+  private recordStopYield(claim: ClaimedWork, code: StopYieldedCode): number | undefined {
     this.stopYieldedThisPass = true;
-    return this.stopYields.yielded(claim.idempotencyKey);
+    return this.stopYields.yielded(claim.idempotencyKey, code);
   }
 
   private async processAgentDeletion(claim: ClaimedWork): Promise<void> {
@@ -2523,7 +2524,7 @@ export class ControllerWorker {
     }
     let stopYields: number | undefined;
     if (result.outcome === "pending" && result.code === "AGENT_STOP_YIELDED") {
-      stopYields = this.recordStopYield(claim);
+      stopYields = this.recordStopYield(claim, result.code);
       if (stopYields === undefined) {
         return;
       }
@@ -3468,6 +3469,23 @@ export class ControllerWorker {
         // never published, so its authorized stop work remains solely responsible.
         if (agent.activeRevisionId === revision.id || agent.activeRevisionId === undefined) {
           await this.retireEarlierRevisions(claim, revision);
+        } else {
+          // A predecessor stop this work started and yielded already removed that revision's
+          // Gateway. Finish it before ending stopped, rather than leave its Harness and workspace
+          // to the Agent-stop work alone (finding 1109). It is this work's own effect, authorized
+          // when it started; a failure retries like this revision's own stop above, and a yield
+          // waits on the stopped Agent's drain like that stop's (AGENT_STOP_YIELDED).
+          try {
+            await this.finishYieldedPredecessorStops(
+              claim,
+              this.refusalWait === undefined ? "yield" : "wait",
+              "throw",
+            );
+          } catch (error) {
+            throw error instanceof PredecessorStopYieldedError
+              ? new ComputeStopYieldedError(error.message)
+              : error;
+          }
         }
         await this.completeStoppedRevisionWork(claim, revision, "REVISION_STOPPED");
         return;
@@ -4231,12 +4249,14 @@ export class ControllerWorker {
     try {
       // The worker is serial: Compute may end an optional in-pass wait early
       // when other Work could be claimed, instead of holding it back (D221).
-      // Stops whose latest pass yielded during a Gateway drain are not due Work: their next
-      // pass only rechecks that drain, which runs without the worker. Every wait that asks is
-      // optional and bounded, so this only lets it run to its own end (findings 1093, 1090).
+      // Stops whose latest pass yielded during a Gateway drain are not due Work for a draining
+      // stop, so draining stops do not take turns. Other waits skip only a stopped Agent's yielded
+      // stop, whose next pass just rechecks its drain; a deployment whose predecessor's drain
+      // ended deploys next. Every wait that asks is optional and bounded, so this only lets it
+      // run to its own end (findings 1093, 1090, 1108).
       return await withComputeAbortSignal(operation.signal, () =>
         withComputeWorkWaiting(
-          () => this.queue.claimableWorkWaiting({ except: this.stopYields.waiting() }),
+          (wait) => this.queue.claimableWorkWaiting({ except: this.stopYields.waiting(wait) }),
           () => effect(operation.signal),
         ),
       );
@@ -4567,7 +4587,7 @@ export class ControllerWorker {
     }
     let stopYields: number | undefined;
     if (resolved.outcome === "pending" && isStopYieldedCode(resolved.code)) {
-      stopYields = this.recordStopYield(claim);
+      stopYields = this.recordStopYield(claim, resolved.code);
       if (stopYields === undefined) {
         return;
       }
@@ -4592,16 +4612,19 @@ export class ControllerWorker {
   /**
    * A deployment whose predecessor stop yielded (PREDECESSOR_STOP_YIELDED) already removed the
    * serving revision's Gateway; only its drain and the Harness deletion were left to a later pass.
-   * Before such work ends in failure (a refusal, exhausted attempts, the deadline) or superseded,
-   * it finishes that stop, so the predecessor ends stopped, as when the stop never yielded, rather
-   * than keeping its Harness and workspace with nothing left to stop it (finding 1090). A failure
-   * finishes it with the full bounded wait (`drain` "wait"); a superseded pass may still yield.
+   * Before such work ends in failure (a refusal, exhausted attempts, the deadline), superseded or
+   * stopped, it finishes that stop, so the predecessor ends stopped, as when the stop never
+   * yielded, rather than keeping its Harness and workspace with nothing left to stop it (findings
+   * 1090, 1109). A failure finishes it with the full bounded wait (`drain` "wait"); a superseded
+   * or stopped pass may still yield.
    * Work that never yielded its predecessor stop leaves the serving revision alone. A stop that
-   * still fails is logged as `predecessorStop` and the result is published anyway.
+   * still fails is logged as `predecessorStop` and the result is published anyway, unless
+   * `failures` is "throw": a stopped Agent's revision pass retries it instead (finding 1109).
    */
   private async finishYieldedPredecessorStops(
     claim: ClaimedWork,
     drain: "yield" | "wait" = "wait",
+    failures: "log" | "throw" = "log",
   ): Promise<Readonly<Record<string, string | number>>> {
     if (
       claim.agentId === undefined ||
@@ -4628,7 +4651,11 @@ export class ControllerWorker {
       );
       return {};
     } catch (error) {
-      if (error instanceof WorkClaimLostError || error instanceof ComputeStopYieldedError) {
+      if (
+        failures === "throw" ||
+        error instanceof WorkClaimLostError ||
+        error instanceof ComputeStopYieldedError
+      ) {
         throw error;
       }
       return { predecessorStop: revisionFailureLogFields(error).cause ?? "Error" };
