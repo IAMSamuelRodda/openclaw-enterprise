@@ -210,7 +210,7 @@ zero or positive sub-second `--since` before revision selection or API client
 setup; omission keeps the unfiltered default. Its `--follow` loop re-sends the
 cursor every 2 seconds.
 `internal/occcli/agent_runtime.go:runAgentLogs` treats command-context cancellation as a
-clean follow exit during both initial revision selection and page polling.
+clean follow exit.
 Without `--follow`, a canceled request remains an error. Driver errors map to
 fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 
@@ -243,6 +243,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11: Reject impossible OpenShell timestampMessage values before gRPC. (#2146)
 
 - 2026-10-11 09:48: Refuse impossible or offset Kubernetes Pod and Event times. (fix-1096 - 839b0c90cb1c54d7ed70eb23229bd117f25278be)
 

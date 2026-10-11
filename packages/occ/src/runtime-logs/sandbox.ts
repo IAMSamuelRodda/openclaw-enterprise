@@ -332,7 +332,12 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
     // Lines the source dropped by time were older than the resume time: nothing between
     // pages is missing. A cursor with no remembered lines has nothing to anchor on.
     const olderSeen = chunk.lines.length < chunk.bufferTotal;
-    if (baseHashes.length > 0 && matched.length === 0 && !olderSeen) {
+    const lossAlreadyRecorded = leading.some(
+      (record) =>
+        record.type === "gap" &&
+        (record.reason === "window_exceeded" || record.reason === "buffer_lost"),
+    );
+    if (baseHashes.length > 0 && matched.length === 0 && !olderSeen && !lossAlreadyRecorded) {
       const earliest = eligible.find(({ line }) => line.time !== null)?.line.time ?? null;
       // The gap covers everything before the lines read now; resume from the oldest.
       for (const { line } of eligible) {
@@ -441,7 +446,8 @@ export async function readSandboxLogPage(input: ReadSandboxLogPageInput): Promis
         ? [runtimeLogGap("window_exceeded", stream)]
         : []),
       ...sanitized.records,
-      ...(window.overflow === null
+      ...(window.overflow === null ||
+      leading.some((record) => record.type === "gap" && record.reason === "window_exceeded")
         ? []
         : [runtimeLogGap("window_exceeded", stream, window.overflow)]),
       ...(pageCut ? [runtimeLogGap("truncated", stream, delivered.at(-1)?.time ?? null)] : []),

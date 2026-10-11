@@ -1412,6 +1412,45 @@ test("sandbox byte-window changes report a gap before a fresh value snapshot", a
   }
 });
 
+test("sandbox checkpoint loss records one window notice for an unremembered ordered replacement", async () => {
+  const fixture = await sandboxFixture();
+  const early = new Date(Date.now() - 5_000).toISOString().replace("Z", "000000Z");
+  const later = new Date(Date.now() - 1_000).toISOString().replace("Z", "000000Z");
+  const row = (index, time) => ({
+    sandboxId: SANDBOX_ID,
+    time,
+    level: "INFO",
+    target: "supervisor",
+    source: "sandbox",
+    message: `row=${index}; quoted diagnostic ${'"a" '.repeat(1000)}`,
+    fields: {},
+  });
+  fixture.gateway.state.lines = Array.from({ length: 100 }, (_, index) => row(index, later));
+  const first = await fixture.request(
+    "GET",
+    fixture.target.logsPath("source=sandbox&tailLines=100"),
+  );
+  assert.equal(first.status, 200);
+  assert.equal(first.data.truncated, true);
+  fixture.gateway.state.lines = [
+    row(0, early),
+    ...Array.from({ length: 99 }, (_, index) => row(index + 1000, later)),
+  ];
+  const next = await fixture.request(
+    "GET",
+    fixture.target.logsPath(`source=sandbox&tailLines=100&cursor=${first.data.cursor}`),
+  );
+  assert.equal(next.status, 200);
+  const gaps = next.data.records.filter(
+    ({ type, reason }) =>
+      type === "gap" && (reason === "window_exceeded" || reason === "buffer_lost"),
+  );
+  assert.deepEqual(
+    gaps.map(({ reason }) => reason),
+    ["window_exceeded"],
+  );
+});
+
 test("sandbox byte-window checkpoints notice changes to an undelivered suffix", async () => {
   const fixture = await sandboxFixture();
   const row = (index) => ({
