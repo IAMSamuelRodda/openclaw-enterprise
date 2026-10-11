@@ -5760,8 +5760,9 @@ test("Agent provisioning API validates inline configuration with existing Secret
   // Topology-independent Kubernetes rules refuse at provisioning with the Configuration save
   // message (finding 1116), before any Agent or Configuration is stored.
   computeDriver.validateConfiguration = (values) => kubernetes.validateConfiguration(values);
-  const agentsBefore = (await fixture.controller.listAgents(fixture.principal.id, namespace.data.id))
-    .length;
+  const agentsBefore = (
+    await fixture.controller.listAgents(fixture.principal.id, namespace.data.id)
+  ).length;
   for (const [values, message] of [
     [
       { ...model, channels: { discord: { enabled: true } } },

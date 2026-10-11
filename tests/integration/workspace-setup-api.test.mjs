@@ -204,7 +204,9 @@ test("Agent save and deployment refuse initial workspace files the Configuration
     assert.equal(refused.status, 400, JSON.stringify(refused.body));
     assert.equal(refused.body.error.message, message);
     // Without initial workspace files the same Configuration saves.
-    const plain = await f.create(`Plain ${configuration.id}`, { configurationId: configuration.id });
+    const plain = await f.create(`Plain ${configuration.id}`, {
+      configurationId: configuration.id,
+    });
     assert.equal(plain.status, 201, JSON.stringify(plain.body));
   }
   assert.equal(
@@ -214,7 +216,11 @@ test("Agent save and deployment refuse initial workspace files the Configuration
 
   // A pending setup whose Configuration changes after the Agent saved still reads; its next
   // update and its deployment are refused with the same message.
-  const key = await f.createSecret(f.namespace.id, "Pending setup key", "workspace-setup-model-key");
+  const key = await f.createSecret(
+    f.namespace.id,
+    "Pending setup key",
+    "workspace-setup-model-key",
+  );
   const created = await f.create("Pending setup", {
     configurationId: valid.id,
     initialWorkspaceFiles: files,

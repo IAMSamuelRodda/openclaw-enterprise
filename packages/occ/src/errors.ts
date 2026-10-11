@@ -349,7 +349,9 @@ function keyedSettingMessage(
  */
 export function keyedSettingPath(parent: string, key: string): string {
   const shown = key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
-  return /^[A-Za-z0-9_-]+$/.test(shown) ? `${parent}.${shown}` : `${parent}[${JSON.stringify(shown)}]`;
+  return /^[A-Za-z0-9_-]+$/.test(shown)
+    ? `${parent}.${shown}`
+    : `${parent}[${JSON.stringify(shown)}]`;
 }
 
 /**
@@ -357,7 +359,10 @@ export function keyedSettingPath(parent: string, key: string): string {
  * the 256-character cap. Build a path that holds a submitted key with keyedSettingPath.
  */
 export function configurationSettingMessage(setting: string, requirement: string): string {
-  return configurationFieldMessage(setting, (path) => `Configuration setting ${path} ${requirement}.`);
+  return configurationFieldMessage(
+    setting,
+    (path) => `Configuration setting ${path} ${requirement}.`,
+  );
 }
 
 /** Builds a message that names the Configuration setting `agents.entries.<key>`. */

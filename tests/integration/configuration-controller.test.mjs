@@ -794,7 +794,10 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
       ),
     ],
     [
-      { ...valid, auth: { profiles: { "openai:default": { provider: "openai", mode: "api_key" } } } },
+      {
+        ...valid,
+        auth: { profiles: { "openai:default": { provider: "openai", mode: "api_key" } } },
+      },
       setting("auth", `must be empty: ${binding}`),
     ],
     [
@@ -808,7 +811,10 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
           providers: { openai: { headers: { "X-Api-Key": "${OPENAI_API_KEY}" }, models: [] } },
         },
       },
-      setting("models.providers.openai.headers", `must not set an authorization header: ${binding}`),
+      setting(
+        "models.providers.openai.headers",
+        `must not set an authorization header: ${binding}`,
+      ),
     ],
   ]) {
     const label = JSON.stringify(values);
@@ -864,7 +870,11 @@ test("Configuration save and Kubernetes deployment refuse caller-owned credentia
     { ...valid, env: { vars: { HTTP_PROXY: "http://proxy:3128" } } },
   ]) {
     const accepted = await request(context.app, "PATCH", item, { body: { values } });
-    assert.equal(accepted.status, 200, `${JSON.stringify(values)}: ${JSON.stringify(accepted.body)}`);
+    assert.equal(
+      accepted.status,
+      200,
+      `${JSON.stringify(values)}: ${JSON.stringify(accepted.body)}`,
+    );
   }
 });
 

@@ -846,7 +846,7 @@ describe("Presets", { concurrency: 2 }, () => {
         { variables: { model: { type: "number", extra: 1 } } },
         `${contract} body /template/variables/model/extra is not an accepted field.`,
         [{ path: "/template/variables/model/extra", code: "UNKNOWN_FIELD" }],
-      ],      // Kubernetes Compute's topology-independent rules refuse the rendered values with the
+      ], // Kubernetes Compute's topology-independent rules refuse the rendered values with the
       // Configuration save message (finding 1116), not at the first deployment.
       [
         {
@@ -859,7 +859,10 @@ describe("Presets", { concurrency: 2 }, () => {
       [
         {
           configuration: {
-            values: { ...openaiModel, env: { vars: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" } } },
+            values: {
+              ...openaiModel,
+              env: { vars: { ANTHROPIC_API_KEY: "${ANTHROPIC_API_KEY}" } },
+            },
           },
         },
         "Configuration setting env.vars.ANTHROPIC_API_KEY must not be set: model credentials come from the Agent's Harness authentication binding.",

@@ -180,9 +180,10 @@ export function requireHarnessCredentialBinding(
     const path = keyedSettingPath("models.providers", provider);
     const rows: [string, unknown][] = [
       [path, row],
-      ...(Array.isArray(row?.models) ? row.models : []).map(
-        (model, index): [string, unknown] => [`${path}.models.${index}`, model],
-      ),
+      ...(Array.isArray(row?.models) ? row.models : []).map((model, index): [string, unknown] => [
+        `${path}.models.${index}`,
+        model,
+      ]),
     ];
     for (const [setting, model] of rows) {
       if (
@@ -224,7 +225,10 @@ export function requireWorkspaceSetupConfiguration(
   const setting =
     main?.workspace !== undefined ? "agents.entries.main.workspace" : "agents.defaults.workspace";
   const workspace = main?.workspace ?? asRecord(agents?.defaults)?.workspace ?? MANAGED_WORKSPACE;
-  if (workspace !== MANAGED_WORKSPACE && !(mode === "dedicated" && workspace === DEDICATED_WORKSPACE)) {
+  if (
+    workspace !== MANAGED_WORKSPACE &&
+    !(mode === "dedicated" && workspace === DEDICATED_WORKSPACE)
+  ) {
     throw createError(
       setting,
       `must be ${MANAGED_WORKSPACE}${mode === "dedicated" ? ` or ${DEDICATED_WORKSPACE}` : ""}, or unset, for initial workspace files`,

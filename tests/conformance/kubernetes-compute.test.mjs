@@ -11055,7 +11055,11 @@ test("revision lifecycle rejects another driver or missing identity before clust
       "models.providers.openai.models.0.baseUrl",
       "(or models.providers.openai.baseUrl) must be https://api.openai.com/v1 on Dedicated OpenClaw",
     ],
-    [withEntry({ reasoning: "yes" }), "models.providers.openai.models.0.reasoning", "must be true or false"],
+    [
+      withEntry({ reasoning: "yes" }),
+      "models.providers.openai.models.0.reasoning",
+      "must be true or false",
+    ],
     [
       withEntry({ input: ["audio"] }),
       "models.providers.openai.models.0.input",
@@ -11074,7 +11078,10 @@ test("revision lifecycle rejects another driver or missing identity before clust
           apiKeyAuth,
           configuration,
         ),
-      { name: "ConfigurationHarnessError", message: `Configuration setting ${setting} ${requirement}.` },
+      {
+        name: "ConfigurationHarnessError",
+        message: `Configuration setting ${setting} ${requirement}.`,
+      },
       setting,
     );
   }

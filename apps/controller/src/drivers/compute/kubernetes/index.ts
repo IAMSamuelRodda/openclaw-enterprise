@@ -116,10 +116,7 @@ import {
   createKubernetesClientConfiguration,
   KubernetesApiUnavailableError,
 } from "../../kubernetes/client.ts";
-import {
-  WORKSPACE_SETUP_RUNTIME,
-  workspaceSetupVerifier,
-} from "../workspace-setup-runtime.ts";
+import { WORKSPACE_SETUP_RUNTIME, workspaceSetupVerifier } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
 import {
   validatePlaintextNativeGateway,

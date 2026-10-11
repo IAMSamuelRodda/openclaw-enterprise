@@ -7,13 +7,13 @@ trusted Installation settings, never the backend.
 
 ## When OCC calls each check
 
-| Method                                                                         | Called at                                                                                                                                                   | Refusal                                                                                                                                                                                          |
-| ------------------------------------------------------------------------------ | ----------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `validateConfiguration(configuration)`                                         | Configuration create and update, Agent provisioning, and Preset create and update (values rendered with defaults)                                           | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.                                      |
-| `validateHarnessAuth(harness, auth, configuration, secretBindings?, sourceType?)` | Deployment and provisioning, which require it; Agent create and update when the binding is `runtime` or a Secret                                             | `ConfigurationHarnessError` answers `400` with its message; any other error becomes a fixed `409`. A missing method at deployment is a dependency-unavailable error.                               |
-| `validateGatewaySettings(configuration)`                                       | Deployment, after `validateHarnessAuth`                                                                                                                     | `ComputeGatewaySettingError` answers `409` with its message. Leave other refusals to preparation.                                                                                                |
-| `validateWorkspaceSetup(harness, configuration)`                               | Agent create with initial workspace files, Agent update while that setup is pending, and provisioning with initial workspace files                         | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation of the first deployment applies the same rule.                                                     |
-| `validateRepositoryCredentials(harness, sandboxDriverId?)`                     | Deployment with repository bindings, which requires it, and Agent create and update with repository bindings                                                | Any error becomes a fixed `409`.                                                                                                                                                                 |
+| Method                                                                            | Called at                                                                                                                                         | Refusal                                                                                                                                                              |
+| --------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
+| `validateConfiguration(configuration)`                                            | Configuration create and update, Agent provisioning, and Preset create and update (values rendered with defaults)                                 | `ConfigurationHarnessError` answers `400` with its message. Use it for rules every topology applies; `validateHarnessAuth` applies them again at deployment.         |
+| `validateHarnessAuth(harness, auth, configuration, secretBindings?, sourceType?)` | Deployment and provisioning, which require it; Agent create and update when the binding is `runtime` or a Secret                                  | `ConfigurationHarnessError` answers `400` with its message; any other error becomes a fixed `409`. A missing method at deployment is a dependency-unavailable error. |
+| `validateGatewaySettings(configuration)`                                          | Deployment, after `validateHarnessAuth`                                                                                                           | `ComputeGatewaySettingError` answers `409` with its message. Leave other refusals to preparation.                                                                    |
+| `validateWorkspaceSetup(harness, configuration)`                                  | Agent create with initial workspace files, Agent update and deployment while that setup is pending, and provisioning with initial workspace files | `ConfigurationHarnessError` answers `400`; any other error becomes a fixed `409`. Preparation of the first deployment applies the same rule.                         |
+| `validateRepositoryCredentials(harness, sandboxDriverId?)`                        | Deployment with repository bindings, which requires it, and Agent create and update with repository bindings                                      | Any error becomes a fixed `409`.                                                                                                                                     |
 
 A message names the setting and what the Driver accepts, never a submitted
 value, in at most 256 characters. Agent provisioning also calls
@@ -51,11 +51,12 @@ fails a check still reads; its next update must fix the pair.
 - an `authorization`, `api-key` or `x-api-key` header on a selected model
   provider or one of its models.
 
-`validateHarnessAuth` also names a provider `apiKey` other than the Harness
-authentication reference, a channel credential reference without a
-Configuration Secret binding, and the dedicated OpenClaw model catalog
-settings. `validateWorkspaceSetup` needs runtime storage, an `agents.entries`
-roster of `main` alone (or none), and the managed workspace path.
+`validateHarnessAuth` applies these first, then names a provider `apiKey` other
+than the Harness authentication reference, a channel credential reference
+without a Configuration Secret binding, and the dedicated OpenClaw model catalog
+settings. `validateWorkspaceSetup` needs an `agents.entries` roster of `main`
+alone (or none) and the managed workspace path; preparation also needs runtime
+storage, an Installation setting.
 
 ## Related
 
