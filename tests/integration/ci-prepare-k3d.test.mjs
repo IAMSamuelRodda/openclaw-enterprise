@@ -62,7 +62,15 @@ describe("CI k3d preparation", { concurrency: true }, () => {
     },
   ]) {
     test(`fixture preparation preserves bootstrap failure with bounded diagnostics: ${scenario}`, async (t) => {
-      const commands = await fixtureImageCommands(t, scenario);
+      // The hung events read waits out the diagnostic command timeout (10 s in CI).
+      const commands = await fixtureImageCommands(
+        t,
+        scenario,
+        undefined,
+        scenario === "nodes-unready-diagnostics-failed"
+          ? { OPENCLAW_CI_K3D_DIAGNOSTICS_TIMEOUT_MS: "5000" }
+          : {},
+      );
       const result = await commands.prepareAsync();
       assert.equal(result.error, undefined, "diagnostics must finish within the CLI watchdog");
       assert.equal(result.status, 1);
@@ -194,6 +202,7 @@ describe("CI k3d preparation", { concurrency: true }, () => {
   test("k3d preparation stops waiting for create output held outside its process group", async (t) => {
     const commands = await fixtureImageCommands(t, "cluster-create-hangs-escaped", undefined, {
       OPENCLAW_CI_K3D_CREATE_TIMEOUT_MS: "4000",
+      OPENCLAW_CI_COMMAND_KILL_GRACE_MS: "1000",
     });
     // Read before the fixture's own after hook removes the directory: hooks run in order.
     const escapedPids = join(dirname(commands.statePath), "escaped-pids");
@@ -221,10 +230,10 @@ describe("CI k3d preparation", { concurrency: true }, () => {
       timings.map(({ stage, status }) => `${stage}:${status}`),
       ["k3d-create:failed", "k3d-create-discard:passed", "k3d-create:passed"],
     );
-    // SIGTERM is ignored: SIGKILL follows after 5 s, and the held pipes are
-    // abandoned 5 s later.
+    // SIGTERM is ignored: SIGKILL follows after the 1 s grace, and the held
+    // pipes are abandoned 1 s later.
     assert.ok(
-      timings[0].elapsedMs >= 13_500,
+      timings[0].elapsedMs >= 5_500,
       `first attempt ended after ${timings[0].elapsedMs} ms`,
     );
     for (const pid of await hungK3dProcesses(commands)) {
