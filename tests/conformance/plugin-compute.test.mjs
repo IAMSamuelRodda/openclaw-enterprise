@@ -2695,6 +2695,7 @@ test("Kubernetes plugin runtime status requires the exact ready Pod report", asy
         "openclaw.dev/workload-role": "gateway",
       },
     },
+    status: { phase: "Running", podIP: "10.42.0.20" },
   };
   const readyReport = {
     revisionId: candidate.id,
@@ -2795,6 +2796,8 @@ test("Kubernetes startup failure evidence requires the exact runtime Pod report"
       },
     },
     status: {
+      phase: "Running",
+      podIP: "10.42.0.21",
       containerStatuses: [{ name: "agent", containerID: "containerd://runtime-status-1" }],
     },
   };
@@ -4546,7 +4549,11 @@ test("Kubernetes diagnostics name the startup step a held Gateway failed", async
         "openclaw.dev/workload-role": role,
       },
     },
-    status: { containerStatuses: [{ name: role, containerID: `containerd://${role}-1` }] },
+    status: {
+      phase: "Running",
+      podIP: "10.42.0.22",
+      containerStatuses: [{ name: role, containerID: `containerd://${role}-1` }],
+    },
   });
   // The Pod UIDs match the ones each runtime reports for itself.
   const pods = { agent: pod("agent", "agent-pod-1"), gateway: pod("gateway", "gateway-pod-1") };

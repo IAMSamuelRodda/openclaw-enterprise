@@ -8274,6 +8274,12 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (!isNonEmptyString(podName) || !isNonEmptyString(podUid)) {
       return undefined;
     }
+    // A replacement Pod can still be Pending with no IP while the Deployment
+    // reports the old one ready; the apiserver refuses to proxy to it (400).
+    const podStatus = asRecord(pod.status);
+    if (podStatus?.phase !== "Running" || !isNonEmptyString(podStatus.podIP)) {
+      return undefined;
+    }
     const containerId = this.podContainerId(pod, container);
     const clients = await this.clients(namespace.plane);
     // 404/503 mean the status port is not serving yet: an answer, not an outage to retry.
