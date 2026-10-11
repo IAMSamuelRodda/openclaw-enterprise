@@ -11,6 +11,30 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-11: named Harness authentication and Docker workspace refusals
+
+**What breaks.**
+
+- On Kubernetes Compute, an Agent whose `harnessAuth.method` its topology
+  cannot use (for example `runtime` or `codex_pat` on embedded OpenClaw, or
+  `oauth` on dedicated OpenClaw) gets `400` naming `harnessAuth.method` at
+  Agent create and update, provisioning and deployment, where it got a fixed
+  `409`. Nothing new is refused.
+- On Docker Compute, Agent create and update with initial workspace files, and
+  deployment while that setup is pending, answer `400` for an `agents.entries`
+  roster other than `main` alone, a workspace other than
+  `/home/node/.openclaw/workspace` or `/home/node/workspace`, or a true
+  `skipBootstrap` or `skipOptionalBootstrapFiles`. Before, the first
+  deployment's preparation failed. The messages match Kubernetes Compute's.
+
+**Who is affected.** Clients that branch on the `409`, and Docker Compute
+users who saved such an Agent. Stored Agents still read.
+
+**How to tell.** The `400` names the setting.
+
+**Steps.** Change the named setting, `harnessAuth` or `executionMode`, then save
+again.
+
 ## 2026-10-11: Agent and Configuration saves refuse what deployment refuses
 
 **What breaks.** On Kubernetes Compute, Configuration create and update,
