@@ -463,6 +463,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if not $routing.apiKeySecretName -}}{{- fail "gatewayRouting.apiKeySecretName must reference an operator-created Opaque Secret with key 'occ'" -}}{{- end -}}
 {{- if and (or $routing.caSecretName $routing.caSecretKey) (or (not $routing.caSecretName) (not $routing.caSecretKey)) -}}{{- fail "gatewayRouting.caSecretName and gatewayRouting.caSecretKey must be set together" -}}{{- end -}}
+{{- if $routing.caSecretKey -}}{{- include "openclaw.validateSecretKey" (dict "label" "gatewayRouting.caSecretKey" "value" $routing.caSecretKey) -}}{{- end -}}
 {{- if or (not (regexMatch "^[1-9][0-9]*$" (toString $routing.tenantGatewayPort))) (lt (int $routing.tenantGatewayPort) 1) (gt (int $routing.tenantGatewayPort) 65535) -}}
 {{- fail "gatewayRouting.tenantGatewayPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
