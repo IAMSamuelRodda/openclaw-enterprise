@@ -219,7 +219,13 @@ export class KubernetesSecretDriver implements SecretDriver {
       throw error;
     }
     try {
-      return this.checkedBackendRef(observed, identity, namespace);
+      const reference = this.checkedBackendRef(observed, identity, namespace);
+      // An answer under another name would record a backendRef that does not name what this
+      // create stored, so it is refused like any other nonconforming answer (finding 1121).
+      if (reference.name !== name) {
+        throw new SecretOwnershipError("Secret backend does not match exact OCC ownership.");
+      }
+      return reference;
     } catch (error) {
       await this.discardRefusedCreate(client, namespace, name, observed);
       throw error;
@@ -233,7 +239,9 @@ export class KubernetesSecretDriver implements SecretDriver {
    * ownership, as discardFailedCreate does, would find the same rewrite and keep it. So the
    * driver deletes the object it was answered with, by its own name with the answered uid and
    * resourceVersion as preconditions: a different object under that name, or a later version,
-   * is never deleted. When that delete cannot finish, the outcome is reported as unknown.
+   * is never deleted. When that delete cannot finish, the outcome is reported as unknown, as it
+   * is when nothing is found under that name but the answer named another object, which may
+   * be where it was stored (finding 1121).
    */
   private async discardRefusedCreate(
     client: CoreV1Api,
@@ -258,7 +266,7 @@ export class KubernetesSecretDriver implements SecretDriver {
         { mutating: true },
       );
     } catch (error) {
-      if (error instanceof SecretBackendMissingError) {
+      if (error instanceof SecretBackendMissingError && observed.metadata?.name === name) {
         return;
       }
       throw this.unknownCreateOutcome();
