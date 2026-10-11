@@ -9639,6 +9639,15 @@ test("provider Harness readiness requires exactly one live matching Pod", async 
   const stringTimestamp = structuredClone(terminating);
   stringTimestamp.metadata.deletionTimestamp = "2026-08-25T00:00:00Z";
   cases.push(["serialized deletion timestamp", [ready, stringTimestamp], true]);
+  for (const fraction of [".5", ".123456", ".123456789"]) {
+    const fractional = structuredClone(terminating);
+    fractional.metadata.deletionTimestamp = `2026-08-25T00:00:00${fraction}Z`;
+    cases.push([
+      `serialized deletion timestamp with ${fraction} fraction`,
+      [ready, fractional],
+      true,
+    ]);
+  }
 
   for (const [name, items, expected] of cases) {
     await t.test(name, async () => {
@@ -9685,6 +9694,25 @@ test("provider Harness readiness rejects malformed or incomplete Pod observation
     ["null deletion timestamp", (pod) => (pod.metadata.deletionTimestamp = null)],
     ["invalid deletion date", (pod) => (pod.metadata.deletionTimestamp = new Date(NaN))],
     ["invalid deletion string", (pod) => (pod.metadata.deletionTimestamp = "0")],
+    // Date would roll these over to a plausible wrong day; the frontier rule refuses them.
+    [
+      "impossible deletion date",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-02-30T00:00:00Z"),
+    ],
+    ["non-leap February 29", (pod) => (pod.metadata.deletionTimestamp = "2026-02-29T00:00:00Z")],
+    ["hour 24 deletion time", (pod) => (pod.metadata.deletionTimestamp = "2026-08-24T24:00:00Z")],
+    [
+      "offset deletion time",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-08-25T00:00:00+00:00"),
+    ],
+    [
+      "nonzero offset deletion time",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-08-25T02:00:00.000+02:00"),
+    ],
+    [
+      "ten fraction digits",
+      (pod) => (pod.metadata.deletionTimestamp = "2026-08-25T00:00:00.1234567890Z"),
+    ],
     ["null status", (pod) => (pod.status = null)],
     ["array status", (pod) => (pod.status = [])],
     ["object conditions", (pod) => (pod.status.conditions = {})],
@@ -14943,6 +14971,11 @@ for (const embedded of [true, false]) {
       { finishedAt: null },
       { finishedAt: undefined },
       { finishedAt: "not-a-time" },
+      // Refused strings are unusable times, not a rolled-over or shifted day.
+      { finishedAt: "2026-02-30T00:00:00Z" },
+      { finishedAt: "2026-09-22T00:00:00+00:00" },
+      // A MicroTime-style fraction is a real instant, kept at millisecond precision.
+      { finishedAt: "2026-09-22T00:00:00.123456Z", expected: "2026-09-22T00:00:00.123Z" },
     ]) {
       const fixture = workspaceSetupFixture(embedded);
       fixture.state.failedInitializer = true;
@@ -14971,7 +15004,12 @@ for (const embedded of [true, false]) {
       assert.equal(result.ready, false);
       assert.equal(result.runtimeFailure.code, "WORKSPACE_SETUP_FAILED");
       const checkedAt = Date.parse(result.runtimeFailure.checkedAt);
-      if (scenario.finishedAt instanceof Date && !Number.isNaN(scenario.finishedAt.getTime())) {
+      if (scenario.expected !== undefined) {
+        assert.equal(result.runtimeFailure.checkedAt, scenario.expected);
+      } else if (
+        scenario.finishedAt instanceof Date &&
+        !Number.isNaN(scenario.finishedAt.getTime())
+      ) {
         assert.equal(checkedAt, scenario.finishedAt.getTime());
       } else {
         assert.ok(checkedAt >= before && checkedAt <= after);
@@ -17180,6 +17218,101 @@ for (const scenario of [
     }
   });
 }
+
+test("Kubernetes runtime times keep real UTC instants and refuse rolled-over or offset strings", async (t) => {
+  const describe = (fixture) =>
+    fixture.driver.describeAgentRuntime(fixture.binding, new AbortController().signal);
+  const withContainerState = (state) => {
+    const fixture = runtimeLogDriverFixture();
+    fixture.state.containerStatus = { state };
+    return fixture;
+  };
+  const accepted = [
+    // The typed client hands a Date; a valid one keeps its exact instant.
+    [new Date("2026-09-30T11:00:00.123Z"), "2026-09-30T11:00:00.123Z"],
+    ["2026-09-30T11:00:00Z", "2026-09-30T11:00:00.000Z"],
+    ["2026-09-30T11:00:00.5Z", "2026-09-30T11:00:00.500Z"],
+    ["2026-09-30T11:00:00.123456Z", "2026-09-30T11:00:00.123Z"],
+    ["2026-09-30T11:00:00.123456789Z", "2026-09-30T11:00:00.123Z"],
+    ["2024-02-29T00:00:00Z", "2024-02-29T00:00:00.000Z"],
+  ];
+  const refused = [
+    "2026-02-30T00:00:00Z",
+    "2026-02-29T00:00:00Z",
+    "2026-04-31T12:00:00.000Z",
+    "2026-09-30T24:00:00Z",
+    "2026-09-30T11:60:00Z",
+    "2026-09-30T11:00:00+00:00",
+    "2026-09-30T13:00:00.000+02:00",
+    "2026-09-30T11:00:00",
+    "2026-09-30T11:00:00.1234567890Z",
+    "2026-09-30",
+    "not-a-time",
+    new Date(Number.NaN),
+    Date.UTC(2026, 8, 30, 11),
+  ];
+  const invalidTime = (error) =>
+    error instanceof DependencyUnavailableError && /invalid timestamp/.test(error.message);
+  for (const [value, expected] of accepted) {
+    await t.test(`accepts ${inspect(value)}`, async () => {
+      const running = await describe(withContainerState({ running: { startedAt: value } }));
+      for (const pod of running.pods) {
+        assert.equal(pod.containers[0].startedAt, expected, pod.role);
+      }
+      const exited = await describe(
+        withContainerState({ terminated: { reason: "Error", exitCode: 1, finishedAt: value } }),
+      );
+      for (const pod of exited.pods) {
+        assert.equal(pod.containers[0].lastTermination.finishedAt, expected, pod.role);
+      }
+      const fixture = runtimeLogDriverFixture();
+      fixture.state.extraEvents = [
+        { type: "Warning", reason: "Series", series: { count: 2, lastObservedTime: value } },
+        { type: "Normal", reason: "Micro", eventTime: value, lastTimestamp: null },
+      ];
+      const observed = await describe(fixture);
+      for (const pod of observed.pods) {
+        for (const reason of ["Series", "Micro"]) {
+          assert.equal(
+            pod.events.find((event) => event.reason === reason)?.lastObservedAt,
+            expected,
+            `${pod.role} ${reason}`,
+          );
+        }
+      }
+    });
+  }
+  for (const value of refused) {
+    await t.test(`refuses ${inspect(value)}`, async () => {
+      await assert.rejects(
+        describe(withContainerState({ running: { startedAt: value } })),
+        invalidTime,
+      );
+      await assert.rejects(
+        describe(
+          withContainerState({ terminated: { reason: "Error", exitCode: 1, finishedAt: value } }),
+        ),
+        invalidTime,
+      );
+      // A refused newer field does not fall back to an older valid one.
+      const fixture = runtimeLogDriverFixture();
+      fixture.state.extraEvents = [
+        {
+          type: "Warning",
+          reason: "Series",
+          series: { count: 2, lastObservedTime: value },
+          lastTimestamp: new Date("2026-09-30T11:00:00Z"),
+        },
+      ];
+      await assert.rejects(describe(fixture), invalidTime);
+    });
+  }
+  // Absent times stay absent rather than refused.
+  const absent = await describe(withContainerState({ running: { startedAt: null } }));
+  for (const pod of absent.pods) {
+    assert.equal(pod.containers[0].startedAt, null, pod.role);
+  }
+});
 
 test("Kubernetes runtime description drops only a settled VolumeBinding conflict", async () => {
   const fixture = runtimeLogDriverFixture();

@@ -1,7 +1,7 @@
 ---
 created: 2026-09-30
 updated: 2026-10-11
-last_updated_session: authoring-run/b5dc3ace-2767-4645-9b89-e30d18fa3184
+last_updated_session: fix-1096
 ---
 
 # Agent runtime logs flow
@@ -88,9 +88,10 @@ drop a settled `FailedScheduling` PVC retry, and derive `container` from
 `{ source, events: false }`, so it lists one source without Events. Each
 Kubernetes call has a five-second deadline; a `403` becomes
 `RuntimeLogsForbiddenByClusterError`. `runtime-logs/description.ts:validRuntimeDescription`
-checks names, UIDs, counts and RFC 3339 UTC timestamps. A malformed or impossible
-Driver timestamp makes runtime status unavailable instead of being normalized to
-a different instant. The validator also masks node, image and Secret names in
+checks names, UIDs, counts and RFC 3339 UTC timestamps. A malformed, impossible
+or offset Driver timestamp makes runtime status unavailable instead of being
+normalized to a different instant. The Kubernetes Driver checks Pod and Event
+time strings the same way (`validRuntimeLogFrontierTime`). The validator also masks node, image and Secret names in
 Event messages (`runtime-logs/redact.ts:maskRuntimeEventText`) and redacts reasons
 and Event messages.
 
@@ -99,7 +100,7 @@ and Event messages.
 `runtime-logs/read.ts:readRuntimeLogPage` verifies the HMAC cursor
 (`runtime-logs/cursor.ts`) against the principal, Agent, revision and source,
 and accepts only a Pod the description listed. A request without a cursor, or
-with one older than an hour, or a cursor whose Pod is gone, starts a view: the controller appends
+whose cursor is over an hour old or names a gone Pod, starts a view: the controller appends
 `openclaw.agents.runtime_logs.view`, an `access` audit event naming the admitting
 action, before any log read. The Driver re-checks
 Pod ownership, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
@@ -107,18 +108,17 @@ Pod ownership, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
 zero restarts, no current or previous instance, and kubelet's exact `400`
 waiting-to-start Status matching the Pod, container and `PodInitializing` or
 `ContainerCreating` reason yield an empty page. Logs are requested first,
-so stale waiting status cannot hide available output. Unrelated failures retain
-their error mapping.
+so stale waiting status cannot hide output; unrelated failures keep their error
+mapping.
 `kubernetesRuntimeLogLine` separates kubelet's RFC3339 timestamp from each raw
 line and converts numeric offsets to UTC while retaining every fractional digit.
 Unknown or malformed offset prefixes remain untimed raw text. A cursor
 poll derives `sinceSeconds` from the cursor: from its newest delivered line, or,
 when the view has delivered nothing yet, from the previous read (a full or
-byte-cut tail then emits `window_exceeded`). When a resumed read delivers nothing
-new on every poll because the next line does not fit in the 1 MiB limit (typically
-one oversized line), and that line is more than about 3 seconds older than the read,
-the cursor drops its delivered time and
-continues from this read, as a view that has delivered nothing yet does. The page
+byte-cut tail then emits `window_exceeded`). When a resumed read keeps delivering nothing
+because the next line (typically one oversized line) does not fit in 1 MiB, and that
+line is over about 3 seconds older than the read, the cursor drops its delivered
+time and continues from this read like a view that has delivered nothing. The page
 emits `window_exceeded` dated at that line: it and the lines logged after
 it until this read are lost. A carried PEM block then keeps no delivered frontier,
 so it stays masked for the rest of the view. OCC
@@ -150,19 +150,18 @@ For container follow polls, the signed cursor also carries optional `pemOpen`
 and `pemAfterTime` state. It describes the delivered boundary, not the start of
 the fetched overlap. The reader validates timestamp order in the consumed prefix
 through the last delivered line, without replaying older content through that
-state. Each delivered line is compared with the reliable `pemAfterTime` from the
-prior cursor, not with an earlier line on the same page. Only a line strictly
-newer than that prior frontier can close a carried open block. Thus an ordered
-same-page BEGIN and END at the same newer timestamp can close it. Times at or
+state. Only a delivered line strictly newer than the prior cursor's reliable
+`pemAfterTime` (not an earlier line on the same page) can close a carried open
+block, so an ordered same-page BEGIN and END at the same newer timestamp can. Times at or
 before the prior frontier and evicted line hashes do not establish forward
 progress; replayed overlap cannot erase a carried later BEGIN. Ordinary non-PEM
 text remains visible while ambiguous context stays open.
 
 Missing, invalid or reordered times make the frontier uncertain (`null`); later
-timestamped pages alone cannot repair that uncertainty. Empty polls preserve it,
+timestamped pages alone cannot repair it. Empty polls preserve it,
 and lines beyond the page or byte cut do not advance it. A new view, expiry,
 instance/Pod change or replacement during the read discards the old context.
-The paired fields are validated together under the existing cursor MAC; malformed
+The paired fields share the cursor MAC; malformed
 or inconsistent pairs fail as `cursor_invalid` before a Driver read. Legacy
 cursors and initial tails without observed PEM boundaries remain unknown and
 best-effort. This does not recover missing log history or change JSON withholding,
@@ -211,16 +210,15 @@ log-text grants too. On the Gateway source it points to the Harness source while
 no Harness Pod is ready, or to Deployment activity while none exists. The CLI rejects explicit zero or positive sub-second `--since` before revision
 selection or API client setup; omission keeps the unfiltered default. Its
 `--follow` loop re-sends the cursor every 2 seconds.
-`internal/occcli/agent_runtime.go:runAgentLogs` treats command-context cancellation as a
-clean follow exit during both initial revision selection and page polling.
-Without `--follow`, a canceled request remains an error. Driver errors map to
+`internal/occcli/agent_runtime.go:runAgentLogs` treats command-context cancellation
+during revision selection or polling as a clean `--follow` exit; without
+`--follow` it stays an error. Driver errors map to
 fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 
 ## Debugging and Verification
 
 - `go test ./internal/occcli -run '^TestResourceRequestStopsWhenCommandContextIsCanceled$'`
-  proves loopback CLI cancellation: follow exits cleanly, while one-shot reads
-  retain the error. It is not deployed OCC proof.
+  proves the loopback CLI cancellation above; it is not deployed OCC proof.
 
 - `503 RUNTIME_LOGS_CLUSTER_RBAC` means the API ServiceAccount lacks
   `pods/log`, `events` or, on an execution cluster, `pods` reads in that
@@ -245,6 +243,8 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 [keep this for the user to add notes. do not change between edits]
 
 ## Changelog
+
+- 2026-10-11 09:48: Refuse impossible or offset Kubernetes Pod and Event times. (fix-1096 - 839b0c90cb1c)
 
 - 2026-10-11: Reject impossible timestamps. (#2146)
 
