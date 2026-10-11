@@ -411,6 +411,9 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- range $name := list "backendId" "registryConfigMapName" "registryKey" "serviceConfigSecretName" "serviceConfigKey" "appKeySecretName" "appKeyKey" "tlsSecretName" "publicCaSecretName" "publicCaKey" -}}
 {{- if not (index $credentials $name) -}}{{- fail (printf "repositoryCredentials.%s is required when enabled" $name) -}}{{- end -}}
 {{- end -}}
+{{- range $label, $key := dict "repositoryCredentials.registryKey" $credentials.registryKey "repositoryCredentials.serviceConfigKey" $credentials.serviceConfigKey "repositoryCredentials.appKeyKey" $credentials.appKeyKey "repositoryCredentials.publicCaKey" $credentials.publicCaKey -}}
+{{- include "openclaw.validateSecretKey" (dict "label" $label "value" $key) -}}
+{{- end -}}
 {{- include "openclaw.validateResourceName" (dict "label" "repositoryCredentials.registryConfigMapName" "value" $credentials.registryConfigMapName) -}}
 {{- /* Installation startup checks a GitHub Backend ID with isBackendId, then refuses one longer than 200 UTF-16 code units because repository bindings store it under that bound. */ -}}
 {{- $backendId := toString $credentials.backendId -}}
