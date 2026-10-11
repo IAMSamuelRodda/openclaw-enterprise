@@ -222,10 +222,10 @@ const AGENT_CREATE_BODY_LIMIT = 448 * 1024;
 // A bounded template may use six-byte JSON escapes; reserve space for its name and envelope.
 const PRESET_BODY_LIMIT = 6 * PRESET_JSON_MAX_BYTES + 8 * 1024;
 // The bundled Kubernetes Configuration Driver stores values up to 1 MiB of JSON (its ConfigMap
-// cap), so a Configuration write must admit 1 MiB written with six-byte JSON escapes, plus the
-// envelope: `kind` and up to 64 Secret bindings, each a 253-character name and a reference.
-// Like Preset writes, these routes run their grant check before reading the body.
-const CONFIGURATION_BODY_LIMIT = 6 * 1024 * 1024 + 64 * 1024;
+// cap). A Configuration write must admit that plus the envelope (`kind` and up to 64 Secret
+// bindings, each a 253-character name and a reference: under 32 KiB), all written with
+// six-byte JSON escapes. Like Preset writes, these routes check the grant before the body.
+const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
 const WORKSPACE_FILE_CONTENT_LIMIT = 16 * 1024;
 // 16 KiB of content may need six bytes per UTF-8 byte in JSON (`\u0001`), plus `{"content":""}`.
 const WORKSPACE_FILE_BODY_LIMIT = 6 * WORKSPACE_FILE_CONTENT_LIMIT + 1024;

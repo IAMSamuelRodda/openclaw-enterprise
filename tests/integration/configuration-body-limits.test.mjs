@@ -8,9 +8,9 @@ import { authenticatedHeaders } from "../helpers/auth-session.mjs";
 import { createConsoleAppFixture } from "../helpers/console-app.mjs";
 import { grantRole } from "../helpers/iam-grants.mjs";
 
-// The Configuration write limit: the Kubernetes Driver's 1 MiB of values written with six-byte
-// JSON escapes, plus 64 KiB for the envelope.
-const CONFIGURATION_BODY_LIMIT = 6 * 1024 * 1024 + 64 * 1024;
+// The Configuration write limit: the Kubernetes Driver's 1 MiB of values and a 32 KiB envelope,
+// all written with six-byte JSON escapes.
+const CONFIGURATION_BODY_LIMIT = 6 * (1024 * 1024 + 32 * 1024);
 const collection = (namespaceId) => `/namespaces/${namespaceId}/configurations`;
 const configurationPath = (namespaceId, configurationId) =>
   `${collection(namespaceId)}/${configurationId}`;
