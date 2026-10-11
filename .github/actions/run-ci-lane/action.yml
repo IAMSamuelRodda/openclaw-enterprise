@@ -161,6 +161,11 @@ runs:
         # and navigation log) here only when a test fails. Limited to the
         # fixture-only browser lanes.
         OPENCLAW_CI_BROWSER_FAILURE_DIR: ${{ startsWith(inputs.lane, 'checks-browser') && format('{0}/browser-failures/{1}', runner.temp, inputs.lane) || '' }}
+        # One V8 code cache per job, shared by the lane's host Node processes
+        # (test files and the controllers and helpers they start with the job
+        # env). Entries are keyed by Node version and source hash and written
+        # atomically, so concurrent files share it; containers never see it.
+        NODE_COMPILE_CACHE: ${{ runner.temp }}/node-compile-cache
       run: |
         if [[ "${{ inputs.lane }}" == k3d-fixture-configuration ]]; then
           # Hosted runners have been lost mid-lane (suspected memory pressure); a
