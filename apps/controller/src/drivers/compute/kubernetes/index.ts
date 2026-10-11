@@ -125,6 +125,12 @@ import {
   validateRoutableNativeListener,
 } from "../native-gateway-transport.ts";
 import { validateCodexApprovalPolicySetting } from "../../../gateway/codex-approval-policy.ts";
+import {
+  OPENCLAW_GATEWAY_PASSWORD,
+  requireChannelTopology,
+  requireWorkspaceNodePlugins,
+  usesGatewayPasswordEnvironment,
+} from "./configuration-rules.ts";
 import { nodeProgramArguments } from "../node-program.ts";
 import { discoverHarnessModels } from "../model-discovery.ts";
 import { pollHarnessDeviceAuthorization, startHarnessDeviceAuthorization } from "../device-auth.ts";
@@ -1048,7 +1054,6 @@ const NATIVE_WORKER_COMPILE_CACHE = "/home/node/.openclaw-node/.cache/node-compi
 const AGENT_TRANSPORT_TOKEN_KEY = "app-server-token";
 const APP_TOKEN_SHA = "APP_TOKEN_SHA";
 const GATEWAY_PASSWORD_KEY = "gateway-password";
-const OPENCLAW_GATEWAY_PASSWORD = "OPENCLAW_GATEWAY_PASSWORD";
 const TRUSTED_PROXY_IDENTITY = "occ-workspace-files";
 const TRUSTED_PROXY_HEADER = "x-occ-identity";
 const MODEL_API_KEY = "OPENAI_API_KEY";
@@ -3309,6 +3314,21 @@ export class KubernetesComputeDriver implements ComputeDriver {
     if (codex) {
       requireCodexGatewayConfigurationShape(configuration);
     }
+    // Preparation and the Gateway entrypoint would refuse these only after a dedicated
+    // deployment stopped its predecessors. The caller owns them, so admission names the setting.
+    const settingError = (setting: string, requirement: string) =>
+      new ConfigurationHarnessError(`Configuration setting ${setting} ${requirement}.`);
+    if (this.hostsWorkspaceNode(harness)) {
+      requireWorkspaceNodePlugins(configuration, settingError);
+    }
+    requireChannelTopology(
+      this.enabledChannelProviders(configuration),
+      {
+        embedded: harness.mode === "embedded",
+        channelRuntime: this.options.runtime?.channels !== undefined,
+      },
+      settingError,
+    );
     const conflictingAuth = () =>
       new ConfigurationFailure("Model credentials must use the Harness authentication binding.");
     if (Object.keys(asRecord(configuration.auth) ?? {}).length > 0) {
@@ -8928,6 +8948,18 @@ export class KubernetesComputeDriver implements ComputeDriver {
     }
   }
 
+  // A dedicated Gateway on an Installation with runtime storage, gateway routing and node
+  // enrollment hosts the Agent's workspace node (workspaceNodeDeviceId), so its entrypoint
+  // refuses to start without the file-transfer plugin.
+  private hostsWorkspaceNode(harness: Pick<RevisionHarnessDescriptor, "mode">): boolean {
+    return (
+      harness.mode === "dedicated" &&
+      this.nodeEnrollment !== undefined &&
+      this.options.runtime !== undefined &&
+      this.options.gatewayRouting !== undefined
+    );
+  }
+
   // Activation must read OpenClaw's ack from the Gateway's private status. An
   // install whose controller cannot read it keeps the node in the pod spec,
   // which OpenClaw applies before the Gateway ever becomes ready.
@@ -10243,17 +10275,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     harnessNamespace?: KubernetesNamespaceAddress,
   ): GatewayConfigurationSnapshot {
     const nativeConfiguration = this.kubernetesGatewayConfigurationDocument(revision.configuration);
-    const gateway = asRecord(nativeConfiguration.gateway);
-    const auth = asRecord(gateway?.auth);
-    const password = auth === undefined ? undefined : auth.password;
-    const passwordReference = password === undefined ? undefined : asRecord(password);
-    const usesGatewayPasswordEnv =
-      passwordReference?.source === "env" && passwordReference.id === OPENCLAW_GATEWAY_PASSWORD;
-    if (password !== undefined && !usesGatewayPasswordEnv) {
-      throw new ConfigurationFailure(
-        "Gateway password authentication must use OPENCLAW_GATEWAY_PASSWORD.",
-      );
-    }
+    const usesGatewayPasswordEnv = usesGatewayPasswordEnvironment(
+      asRecord(asRecord(nativeConfiguration.gateway)?.auth) ?? {},
+      (setting, requirement) => new GatewaySettingFailure(setting, requirement),
+    );
     return {
       name: `gateway-${sha256Hex(revision.agentId, 12)}-rev-${sha256Hex(revision.id, 12)}`,
       revision: revision.revision,
@@ -10425,6 +10450,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
         "must be trusted-proxy: Kubernetes Compute supports only native trusted-proxy gateway authentication",
       );
     }
+    usesGatewayPasswordEnvironment(
+      auth,
+      (setting, requirement) => new GatewaySettingFailure(setting, requirement),
+    );
     if (gateway.trustedProxies !== undefined) {
       const installation = trustedProxyCidrSet(
         this.options.network.gatewayTrustedProxyCidrs,
@@ -11556,33 +11585,38 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
   }
 
   private enabledChannels(revision: AgentRevision): readonly ChannelRequirements[] {
-    const configured = asRecord(asRecord(revision.configuration)?.channels);
+    const providers = this.enabledChannelProviders(revision.configuration);
+    requireChannelTopology(
+      providers,
+      {
+        embedded: revision.harness.mode === "embedded",
+        channelRuntime: this.options.runtime?.channels !== undefined,
+      },
+      (setting, requirement) =>
+        new ConfigurationFailure(`Configuration setting ${setting} ${requirement}.`),
+    );
+    return providers.map(
+      (provider) => CHANNEL_REQUIREMENTS[provider as keyof typeof CHANNEL_REQUIREMENTS],
+    );
+  }
+
+  private enabledChannelProviders(configuration: OpenClawConfigurationDocument): string[] {
+    const configured = asRecord(asRecord(configuration)?.channels);
     if (configured === undefined) {
       return [];
     }
-    const enabled: ChannelRequirements[] = [];
-    for (const [provider, configuration] of Object.entries(configured)) {
+    const enabled: string[] = [];
+    for (const [provider, channel] of Object.entries(configured)) {
       if (["defaults", "modelByChannel"].includes(provider)) {
         continue;
       }
-      if (asRecord(configuration)?.enabled === false) {
+      if (asRecord(channel)?.enabled === false) {
         continue;
       }
       if (!Object.hasOwn(CHANNEL_REQUIREMENTS, provider)) {
         throw new ConfigurationFailure(`Unsupported OpenClaw channel provider "${provider}".`);
       }
-      enabled.push(CHANNEL_REQUIREMENTS[provider as keyof typeof CHANNEL_REQUIREMENTS]);
-    }
-    if (enabled.length === 0) {
-      return enabled;
-    }
-    if (revision.harness.mode === "embedded") {
-      throw new ConfigurationFailure("Configured channels require a dedicated Agent workload.");
-    }
-    if (this.options.runtime?.channels === undefined) {
-      throw new ConfigurationFailure(
-        "Enabled channel configuration requires isolated credentials and a reviewed proxy.",
-      );
+      enabled.push(provider);
     }
     return enabled;
   }

@@ -593,6 +593,150 @@ test("Configuration save refuses an agents roster every deployment refuses, with
   }
 });
 
+test("Configuration save and Kubernetes deployment admission refuse settings preparation would refuse", async () => {
+  // Deployment runs the real Kubernetes Compute admission rules, as production admission does.
+  // On a dedicated Agent, a refusal in preparation came after the running revision stopped,
+  // with no rollback (findings 1113-1115); admission now names the setting first.
+  const kubernetes = createTestKubernetesComputeDriver("compute-settings-integration");
+  const computeDriver = createReadyComputeDriver("compute-settings-integration", {
+    implementation: "integration-compute-substrate",
+    validateHarnessAuth: (...args) => kubernetes.validateHarnessAuth(...args),
+    validateGatewaySettings: (...args) => kubernetes.validateGatewaySettings(...args),
+  });
+  const configurationDriver = createConfigurationBackend();
+  const context = await fixture({ configurationDriver, computeDriver });
+  const namespace = await bootstrapAndCreateNamespace(context);
+  const collection = `/namespaces/${namespace.id}/configurations`;
+  const valid = {
+    agents: {
+      defaults: {
+        model: "openai/gpt-4.1",
+        models: { "openai/gpt-4.1": { agentRuntime: { id: "openclaw" } } },
+      },
+    },
+  };
+  const created = await request(context.app, "POST", collection, {
+    body: { kind: "agent", values: valid },
+  });
+  assert.equal(created.status, 201, JSON.stringify(created.body));
+  const configurationId = created.body.data.id;
+  const item = `${collection}/${configurationId}`;
+  const agent = await request(context.app, "POST", `/namespaces/${namespace.id}/agents`, {
+    body: { name: "Settings consumer", configurationId },
+  });
+  assert.equal(agent.status, 201, JSON.stringify(agent.body));
+  await context.controller.transact((state) =>
+    state.namespaces.transitionNamespaceStatus(namespace.id, "provisioning", "ready"),
+  );
+  await configureAgentHarnessSecret(context, namespace, agent, configurationId, "settings-key");
+  const agentPath = `/namespaces/${namespace.id}/agents/${agent.body.data.id}`;
+  // A row an older release saved, written past OCC as that release's create would have.
+  const storeAsOlderRelease = async (values) => {
+    const stored = configurationDriver
+      .storedConfigurations()
+      .find(({ id }) => id === configurationId);
+    await configurationDriver.update({ ...stored, values });
+  };
+  const policy = (approvalPolicy) => ({
+    ...valid,
+    plugins: { entries: { codex: { config: { appServer: { approvalPolicy } } } } },
+  });
+  const password = (value) => ({ ...valid, gateway: { auth: { password: value } } });
+  const setting = (path, requirement) => `Configuration setting ${path} ${requirement}.`;
+  const policyEnum = setting(
+    "plugins.entries.codex.config.appServer.approvalPolicy",
+    'must be "never", "on-request" or "on-failure"',
+  );
+  const kubernetesPassword = setting(
+    "gateway.auth.password",
+    "must be the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value Kubernetes Compute generates",
+  );
+
+  // Topology-independent rules: the save refuses with a 400 naming the setting; an existing row
+  // still reads, and deployment refuses it before any revision is admitted.
+  for (const [values, saveMessage, deployStatus, deployMessage] of [
+    [policy("always"), policyEnum, 409, policyEnum],
+    [
+      policy("untrusted"),
+      setting(
+        "plugins.entries.codex.config.appServer.approvalPolicy",
+        'must not be "untrusted", which the OpenClaw runtime retired: use "on-request"',
+      ),
+      409,
+      setting(
+        "plugins.entries.codex.config.appServer.approvalPolicy",
+        'must not be "untrusted", which the OpenClaw runtime retired: use "on-request"',
+      ),
+    ],
+    [
+      password("literal-gateway-password"),
+      "Configuration field /gateway/auth/password holds a credential value inline, where a reference is required. Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+      409,
+      kubernetesPassword,
+    ],
+  ]) {
+    const label = JSON.stringify(values);
+    const rejected = await request(context.app, "POST", collection, {
+      body: { kind: "agent", values },
+    });
+    assert.equal(rejected.status, 400, label);
+    assert.equal(rejected.body.error.code, "INVALID_REQUEST", label);
+    assert.equal(rejected.body.error.message, saveMessage, label);
+    const replaced = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(replaced.status, 400, label);
+    assert.equal(replaced.body.error.message, saveMessage, label);
+    const unchanged = await request(context.app, "GET", item);
+    assert.deepEqual(unchanged.body.data, created.body.data, label);
+
+    await storeAsOlderRelease(values);
+    const read = await request(context.app, "GET", item);
+    assert.equal(read.status, 200, label);
+    assert.deepEqual(read.body.data.values, values, label);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, deployStatus, label);
+    assert.equal(deployed.body.error.message, deployMessage, label);
+    await storeAsOlderRelease(valid);
+  }
+  assert.equal(configurationDriver.storedConfigurations().length, 1);
+
+  // Rules that depend on the Compute Driver or the topology save, and deployment refuses them.
+  for (const [values, deployStatus, deployMessage] of [
+    [
+      password({ source: "env", provider: "default", id: "MY_GATEWAY_PASSWORD" }),
+      409,
+      kubernetesPassword,
+    ],
+    [
+      { ...valid, channels: { slack: { enabled: true } } },
+      400,
+      setting("channels.slack", "is enabled, but channels require a dedicated Agent workload"),
+    ],
+  ]) {
+    const label = JSON.stringify(values);
+    const saved = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(saved.status, 200, `${label}: ${JSON.stringify(saved.body)}`);
+    const deployed = await request(context.app, "POST", `${agentPath}/deploy`);
+    assert.equal(deployed.status, deployStatus, label);
+    assert.equal(deployed.body.error.message, deployMessage, label);
+  }
+  // No refused deployment admitted a revision, so none stopped a running one.
+  const revisions = await request(context.app, "GET", `${agentPath}/revisions`);
+  assert.equal(revisions.status, 200);
+  assert.deepEqual(revisions.body.data, []);
+
+  // Values every Gateway accepts still save.
+  for (const values of [
+    policy("never"),
+    policy("on-request"),
+    policy("on-failure"),
+    password({ source: "env", provider: "default", id: "OPENCLAW_GATEWAY_PASSWORD" }),
+    password("${OPENCLAW_GATEWAY_PASSWORD}"),
+  ]) {
+    const saved = await request(context.app, "PATCH", item, { body: { values } });
+    assert.equal(saved.status, 200, `${JSON.stringify(values)}: ${JSON.stringify(saved.body)}`);
+  }
+});
+
 test("Namespace deletion names the Configuration IDs that keep it occupied", async () => {
   const context = await fixture();
   const namespace = await bootstrapAndCreateNamespace(context);
