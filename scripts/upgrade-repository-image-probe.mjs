@@ -21,6 +21,8 @@ const controllerCommand =
 const interruption = new AbortController();
 
 class IncompatibleImageError extends Error {}
+// A local setup problem the operator can fix; its message names no secrets.
+class ProbeEnvironmentError extends Error {}
 
 async function run(command, args, timeout = 30000, cleanup = false) {
   const result = await execute(command, args, {
@@ -179,7 +181,7 @@ async function main() {
     // receipt.sock and control.sock have the same length; 103 bytes binds on Linux and macOS.
     const receiptSocket = join(control, "receipt.sock");
     if (Buffer.byteLength(receiptSocket) > 103) {
-      throw new Error(
+      throw new ProbeEnvironmentError(
         `socket path ${receiptSocket} is ${Buffer.byteLength(receiptSocket)} bytes, over the ` +
           "103-byte Unix socket limit; set TMPDIR to a shorter directory",
       );
@@ -460,7 +462,10 @@ async function main() {
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {
   main().catch((error) => {
-    const detail = error instanceof IncompatibleImageError ? `: ${error.message}` : "";
+    const detail =
+      error instanceof IncompatibleImageError || error instanceof ProbeEnvironmentError
+        ? `: ${error.message}`
+        : "";
     process.stderr.write(`repository image-pair probe failed${detail}\n`);
     process.exitCode = 1;
   });
