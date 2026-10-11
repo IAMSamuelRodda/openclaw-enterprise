@@ -947,6 +947,7 @@ test("kubernetes-secret-driver deletes the exact Secret a refused create stored"
     });
     await assert.rejects(create, ownershipRefused);
     assert.equal(client.secrets.size, 0);
+    assert.deepEqual(client.deletes, [{ uid: "uid-1", resourceVersion: "1" }]);
     assert.deepEqual(client.deleted, client.requested);
   }
 
