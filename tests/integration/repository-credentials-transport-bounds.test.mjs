@@ -1,6 +1,6 @@
 import assert from "node:assert/strict";
 import { describe, test } from "node:test";
-import { createHash } from "node:crypto";
+import { createHash, generateKeyPairSync } from "node:crypto";
 import { createServer, request } from "node:https";
 import { connect } from "node:net";
 import { connect as connectTls } from "node:tls";
@@ -31,6 +31,9 @@ const responseLimit = 4096;
 const discoveryOnly = [{ method: "GET", path: discovery }];
 const pushOnly = [{ method: "POST", path: push }];
 const completed = (bytes = 4) => ({ kind: "completed", status: 200, bytes, complete: true });
+// One GitHub App key for every case: generating one blocks the shared event loop
+// for tens of milliseconds, which eats into a sibling's 150 ms header deadline.
+const appKeyPair = generateKeyPairSync("rsa", { modulusLength: 2048 });
 
 // The peer controls only application bytes and when it reads or writes them.
 // The listener, route policy, credential ownership and TLS sender are production code.
@@ -47,7 +50,7 @@ async function startTransport(t, onRequest, limits = {}) {
     firstHeaderMs: 5000,
     ...limits,
   });
-  const github = await startGitHubFixture(resources, { clock, tls });
+  const github = await startGitHubFixture(resources, { clock, tls, keyPair: appKeyPair });
   const received = [];
   const upstream = createServer(tls, (incoming, outgoing) => {
     incoming.on("error", () => {});
@@ -206,8 +209,7 @@ const streamBytes = 64 * 1024 * 1024;
 const streamChunk = Buffer.alloc(64 * 1024, 42);
 const producerPauseTimeoutMs = 1000;
 const producerStableMs = 200;
-// Hashed once up front: a 64 MiB digest inside a case would stall the shared
-// event loop and the short header deadlines of the cases running beside it.
+// Hashed once up front, not inside two cases, to keep it off the shared event loop.
 const payloadDigest = (() => {
   const hash = createHash("sha256");
   for (let offset = 0; offset < streamBytes; offset += streamChunk.length) {
@@ -275,9 +277,10 @@ async function assertProducerBlocked(producer) {
 }
 
 // Every case owns its listeners, upstream and sessions, and most of each case is
-// spent waiting on a deliberate deadline, so two cases overlap their waits. The
-// cases share one event loop: with three or more, CPU starvation (4 copies on one
-// CPU) broke the producer stability windows and the 150 ms header deadline.
+// spent waiting on a deliberate deadline, so two cases overlap their waits (the
+// upstream-timing case runs its three light subtests together). The cases share one
+// event loop: with three or more, CPU starvation (4 copies on one CPU) broke the
+// producer stability windows and the 150 ms header deadline.
 describe("repository credential transport bounds", { concurrency: 2 }, () => {
   const bounded = (name, fn, options) => test(name, { timeout: 15000, ...options }, fn);
 
