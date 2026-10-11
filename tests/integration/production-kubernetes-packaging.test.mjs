@@ -3455,6 +3455,69 @@ test("the chart refuses bootstrap claim names the volume helper refuses", toolin
   assert.equal(longest.length, 253);
 });
 
+// Findings 1065 and 1066: every Secret or ConfigMap name an operator sets must be a Kubernetes
+// resource name, the profile renderer's resourceNameRule, so a malformed one fails at template
+// time instead of at Pod admission.
+const oidcLoginValues = {
+  "auth.oidc.enabled": "true",
+  "auth.recoveryUserId": "recovery-admin_1",
+  "auth.oidc.issuer": "https://tenant.idp.example.test/",
+  "auth.oidc.authorizationUrl": "https://tenant.idp.example.test/authorize",
+  "auth.oidc.tokenUrl": "https://tenant.idp.example.test/oauth/token",
+  "auth.oidc.jwksUrl": "https://tenant.idp.example.test/.well-known/jwks.json",
+};
+const executionClusterValues = {
+  "executionCluster.enabled": "true",
+  "executionCluster.apiKubeconfigSecretName": "execution-api",
+  "executionCluster.workerKubeconfigSecretName": "execution-worker",
+  "executionCluster.apiCidrs[0]": "10.44.0.2/32",
+};
+for (const [field, enable = {}] of [
+  ["installation.secretName"],
+  ["database.secretName"],
+  ["auth.secretName"],
+  ["database.caSecretName", databaseCaValues],
+  ["auth.github.secretName", githubLoginValues],
+  ["auth.google.secretName", { "auth.google.enabled": "true", "auth.recoveryUserId": "r1" }],
+  ["auth.oidc.secretName", oidcLoginValues],
+  ["backend.chatgpt.secretName", chatgptValues],
+  ["gatewayRouting.apiKeySecretName", gatewayRoutingValues],
+  ["gatewayRouting.tlsSecretName", gatewayRoutingValues],
+  [
+    "gatewayRouting.caSecretName",
+    { ...externalGatewayRoutingValues, "gatewayRouting.caSecretKey": "ca.crt" },
+  ],
+  ["gatewayRouting.sandbox.tlsSecretName", sandboxValues],
+  ["executionCluster.apiKubeconfigSecretName", executionClusterValues],
+  ["executionCluster.workerKubeconfigSecretName", executionClusterValues],
+  ...[
+    "registryConfigMapName",
+    "serviceConfigSecretName",
+    "appKeySecretName",
+    "tlsSecretName",
+    "publicCaSecretName",
+  ].map((key) => [`repositoryCredentials.${key}`, repositoryCredentialValues]),
+  ["logging.collector.configSecretName", productionCollectorValues],
+  ["logging.collector.envSecretName", productionCollectorValues],
+]) {
+  test(`the chart refuses a malformed ${field} with the resource name rule`, tooling, async () => {
+    const message = new RegExp(
+      `${field.replaceAll(".", "\\.")} must be a Kubernetes resource name of at most 253 characters`,
+    );
+    for (const name of ["Bad_Name", "-secret", "secret.", "a".repeat(254)]) {
+      await assert.rejects(
+        render(enable, { strings: { [field]: name } }),
+        ({ code, stderr }) => code !== 0 && message.test(stderr),
+        `${field}: ${name.length > 40 ? `${name.length} characters` : name}`,
+      );
+    }
+    for (const name of ["occ.custom-secret-v2", "s".repeat(253)]) {
+      const { stdout } = await render(enable, { strings: { [field]: name } });
+      assert.match(stdout, new RegExp(`\\b${name.replaceAll(".", "\\.")}\\b`), field);
+    }
+  });
+}
+
 test(
   "the chart refuses a gateway API key Secret that holds other credentials",
   tooling,
