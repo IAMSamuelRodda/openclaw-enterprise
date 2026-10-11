@@ -310,7 +310,7 @@ test("credential source boundary rejects new raw capabilities in the real source
     [
       "a reviewed sender consumer cannot re-export the sender",
       'export { createUpstreamSender } from "./upstream.ts";',
-      /raw sender drivers\/repo\/credentials\/transport\/upstream.ts is not reviewed/,
+      /raw sender drivers\/repo\/credentials\/transport\/upstream.ts is not reviewed for drivers\/repo\/credentials\/transport\/agent.ts/,
       "drivers/repo/credentials/transport/agent.ts",
     ],
     [
@@ -357,6 +357,8 @@ test("credential source boundary rejects new raw capabilities in the real source
       /service code cannot load client command owner/,
       "drivers/repo/github/driver.ts",
     ],
+    // The encoder must come first: the exception checks names[0], so this order is what
+    // guards its single-name rule.
     [
       "the encoder exception cannot carry other client bindings",
       'import { encodeRepositoryCredentialSessionFiles as encode, readClientConfiguration as readClient } from "./credentials/client/config.ts";',
