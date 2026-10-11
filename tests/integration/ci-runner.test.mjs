@@ -20,6 +20,11 @@ import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs
 const repositoryRoot = fileURLToPath(new URL("../../", import.meta.url));
 const runnerPath = join(repositoryRoot, "scripts/ci/run-tests.mjs");
 
+// Fixtures live under tmpdir(), which may itself sit inside an unrelated Git
+// checkout. Stop Git's repository search at tmpdir() so the runner never reads
+// that checkout's HEAD as the fixture's source SHA.
+const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
+
 async function fixture(t) {
   const root = await mkdtemp(join(tmpdir(), "ci-runner-"));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -34,19 +39,14 @@ async function writeJson(path, value) {
   await writeFile(path, `${JSON.stringify(value, null, 2)}\n`);
 }
 
-// Fixtures live under tmpdir(), which may itself sit inside an unrelated Git
-// checkout. Stop Git's repository search at tmpdir() so the runner never reads
-// that checkout's HEAD as the fixture's source SHA.
-const fixtureGitEnv = { GIT_CEILING_DIRECTORIES: tmpdir() };
-
 function runnerEnv(env = {}) {
   return {
     ...process.env,
-    ...fixtureGitEnv,
     GITHUB_SHA: currentSha(),
     CI_RUNNER_PARENT_SECRET: "secretauthvalue-parent",
     // Fixture failures quote this value; the reporter must redact env values.
     CI_RUNNER_FIXTURE_CREDENTIAL: "secretauthvalue",
+    ...fixtureGitEnv,
     ...env,
   };
 }
