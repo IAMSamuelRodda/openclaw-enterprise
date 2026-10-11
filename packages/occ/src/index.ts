@@ -10138,7 +10138,17 @@ export class OpenClawController {
       return;
     }
     const configuration = await readConfiguration();
-    const configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
+    let configuredHarnessId: string;
+    try {
+      configuredHarnessId = resolveConfiguredHarnessId(configuration.values);
+    } catch (error) {
+      // A model selection that names no supported Harness is the Configuration's own fault,
+      // not this Agent's; deployment refuses it with this message. Nothing below can run.
+      if (error instanceof ConfigurationHarnessError) {
+        return;
+      }
+      throw error;
+    }
     const approved = resolveAgentHarness(resolveHarness, configuredHarnessId, agent.executionMode);
     if (approved?.id !== configuredHarnessId) {
       return;

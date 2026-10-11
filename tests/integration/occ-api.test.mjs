@@ -3389,9 +3389,10 @@ test("Agent create and update replace policy-only plugin maps and revisions free
   assert.deepEqual(created.data.plugins, initialPlugins);
   assert.deepEqual(created.data.pluginApprovers, []);
   assertPolicyOnlyPlugin(created.data.plugins[diffsPluginId]);
-  // This Plugin Driver has no Configuration check, so the save does not read the values: an
-  // unavailable or slow Configuration Driver must not block saves that have nothing to check.
-  assert.equal(configurationReads, readsBeforeSave);
+  // This Plugin Driver has no Configuration check, but Agent save checks the Agent against its
+  // Configuration as deployment would (the Harness and its execution mode), so it reads the
+  // values once, shared by every check.
+  assert.equal(configurationReads, readsBeforeSave + 1);
 
   const saved = await controller.request(
     "GET",
@@ -7099,8 +7100,10 @@ test("deploy audit preserves its authorization decision and rolls back with appe
     yield "forged-iterator-value";
   };
   const computeDriver = createProvisioningCapableComputeDriver();
+  // Agent saves run this check too; only the deployment below swaps the IAM Driver.
+  let deploying = false;
   computeDriver.validateHarnessAuth = () => {
-    if (fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
+    if (!deploying || fixture.controller.selectedDriver("iam").id === laterIAMDriver.id) {
       return;
     }
     sharedEvidence.push("mutated-after-authorization");
@@ -7136,6 +7139,7 @@ test("deploy audit preserves its authorization decision and rolls back with appe
 
   // Harness validation runs after OCC has checked deploy authorization. Changing
   // Driver selection here proves the audit uses that completed decision.
+  deploying = true;
   const deployed = await controller.request(
     "POST",
     `/namespaces/${namespace.id}/agents/${agent.id}/deploy`,
