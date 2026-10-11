@@ -13,7 +13,7 @@ real Installation.
 
 ## 2026-10-11: settings that took dedicated Agents down are refused earlier
 
-**What breaks.** Configuration create, update and provisioning answer `400` for
+**What breaks.** Configuration create and update answer `400` for
 a `plugins.entries.codex.config.appServer.approvalPolicy` other than `never`,
 `on-request` or `on-failure`, and for a literal `gateway.auth.password` (one
 that is not a `${NAME}` or `{source, id}` reference). Kubernetes deployment and

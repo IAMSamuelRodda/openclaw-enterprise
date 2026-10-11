@@ -6111,7 +6111,7 @@ test("deployment admission refuses Gateway breakers before a dedicated deploymen
     plugins: { entries: { codex: { config: { appServer: { approvalPolicy: policy } } } } },
   });
   const passwordRule =
-    "must be the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value Kubernetes Compute generates";
+    'must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates';
   const withPassword = (password) => ({ ...base, gateway: { auth: { password } } });
   for (const [configuration, setting, requirement] of [
     [withPolicy("always"), approvalPolicy, 'must be "never", "on-request" or "on-failure"'],
@@ -6188,7 +6188,7 @@ test("preparation still refuses a gateway password Compute does not generate", a
     revision.configuration.gateway.auth.password = password;
     await assert.rejects(driver.prepareRevision(revision, context), {
       message:
-        "Configuration setting gateway.auth.password must be the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value Kubernetes Compute generates.",
+        'Configuration setting gateway.auth.password must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates.',
     });
   }
 });

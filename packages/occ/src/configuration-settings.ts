@@ -78,7 +78,8 @@ export function validateConfigurationSettings(values: OpenClawConfigurationDocum
       new ConfigurationHarnessError(`Configuration setting ${setting} ${requirement}.`),
   );
   const auth = asRecord(asRecord(values.gateway)?.auth);
-  if (auth?.password !== undefined && !isCredentialReference(auth.password)) {
+  const password = auth?.password;
+  if (password !== undefined && password !== null && !isCredentialReference(password)) {
     throw new GatewayPasswordValueError("/gateway/auth/password");
   }
 }

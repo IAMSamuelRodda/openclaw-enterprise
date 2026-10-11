@@ -1499,6 +1499,8 @@ test("deployment admission and the Gateway entrypoint agree on the workspace nod
     [{ plugins: { deny: { "file-transfer": true } } }, false],
     [{ plugins: { deny: 1 } }, false],
     [{ plugins: { deny: "file-transfer" } }, false],
+    // Not listed: a deny string without file-transfer starts the entrypoint, but admission
+    // refuses it as not a list, as OpenClaw's own schema (an array of strings) does.
     [{ plugins: { entries: { "file-transfer": { enabled: false } } } }, false],
     [{ plugins: { entries: { "file-transfer": { enabled: true } } } }, true],
     [{ plugins: { entries: { "file-transfer": { enabled: "false" } } } }, true],

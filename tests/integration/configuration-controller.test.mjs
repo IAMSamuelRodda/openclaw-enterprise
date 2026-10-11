@@ -649,7 +649,7 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
   );
   const kubernetesPassword = setting(
     "gateway.auth.password",
-    "must be the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value Kubernetes Compute generates",
+    'must be the environment reference {source: "env", id: "OPENCLAW_GATEWAY_PASSWORD"}, whose value Kubernetes Compute generates',
   );
 
   // Topology-independent rules: the save refuses with a 400 naming the setting; an existing row
@@ -706,6 +706,8 @@ test("Configuration save and Kubernetes deployment admission refuse settings pre
       409,
       kubernetesPassword,
     ],
+    // An explicit null is unset to the save rule, as for model credentials; Kubernetes refuses it.
+    [password(null), 409, kubernetesPassword],
     [
       { ...valid, channels: { slack: { enabled: true } } },
       400,

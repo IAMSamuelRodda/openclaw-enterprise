@@ -29,7 +29,7 @@ export function usesGatewayPasswordEnvironment(
   if (reference?.source !== "env" || reference.id !== OPENCLAW_GATEWAY_PASSWORD) {
     throw createError(
       "gateway.auth.password",
-      `must be the ${OPENCLAW_GATEWAY_PASSWORD} environment reference, whose value Kubernetes Compute generates`,
+      `must be the environment reference {source: "env", id: "${OPENCLAW_GATEWAY_PASSWORD}"}, whose value Kubernetes Compute generates`,
     );
   }
   return true;
