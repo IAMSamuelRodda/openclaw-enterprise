@@ -3,14 +3,15 @@ import { mkdtemp, readFile, rm } from "node:fs/promises";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 
-// Every fixture child, and every Git it starts, inherits this allowlist and nothing
-// from the runner. A commit, merge or receive-pack otherwise starts `git maintenance
-// run --auto --detach`, which outlives the awaited command and can repack
-// .git/objects under a test or its temporary directory's removal (ENOTEMPTY,
-// ENOENT); Git 2.55, for one, repacks once objects/17 holds two loose objects. The
-// entry has command-line scope, so no repository or system config turns it back on.
-// Git drops it for the receiving side of a local push, so receiving repositories
-// also set maintenance.auto=false themselves (git.mjs).
+// Fixture children start from this allowlist rather than the runner's environment,
+// and every Git they start inherits it. A commit, merge or receive-pack otherwise
+// starts `git maintenance run --auto --detach`, which outlives the awaited command
+// and can repack .git/objects under a test or its temporary directory's removal
+// (ENOTEMPTY, ENOENT); Git 2.55, for one, repacks once objects/17 holds two loose
+// objects. The entry has command-line scope, so no repository or system config turns
+// it back on. Callers passing their own GIT_CONFIG_* replace it and must set every
+// index. Git drops it for the receiving side of a local push, so a repository that
+// receives one sets maintenance.auto=false itself (git.mjs, the router test's target).
 export function cleanEnvironment(extra = {}) {
   return {
     PATH: "/usr/local/bin:/usr/bin:/bin",
