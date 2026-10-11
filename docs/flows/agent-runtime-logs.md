@@ -91,16 +91,17 @@ Kubernetes call has a five-second deadline; a `403` becomes
 checks names, UIDs, counts and RFC 3339 UTC timestamps. A malformed, impossible
 or offset Driver timestamp makes runtime status unavailable instead of being
 normalized to a different instant. The Kubernetes Driver checks Pod and Event
-time strings the same way (`validRuntimeLogFrontierTime`). The validator also masks node, image and Secret names in
-Event messages (`runtime-logs/redact.ts:maskRuntimeEventText`) and redacts reasons
-and Event messages.
+time strings the same way (`validRuntimeLogFrontierTime`). The validator also
+masks node, image and Secret names in Event messages
+(`runtime-logs/redact.ts:maskRuntimeEventText`) and redacts reasons and Event
+messages.
 
 ### 3. Read one page
 
 `runtime-logs/read.ts:readRuntimeLogPage` verifies the HMAC cursor
 (`runtime-logs/cursor.ts`) against the principal, Agent, revision and source,
 and accepts only a Pod the description listed. A request without a cursor, or
-whose cursor is over an hour old or names a gone Pod, starts a view: the controller appends
+with one over an hour old or naming a gone Pod, starts a view: the controller appends
 `openclaw.agents.runtime_logs.view`, an `access` audit event naming the admitting
 action, before any log read. The Driver re-checks
 Pod ownership, calls `readNamespacedPodLog` with `tailLines`, `sinceSeconds`,
@@ -161,7 +162,7 @@ Missing, invalid or reordered times make the frontier uncertain (`null`); later
 timestamped pages alone cannot repair it. Empty polls preserve it,
 and lines beyond the page or byte cut do not advance it. A new view, expiry,
 instance/Pod change or replacement during the read discards the old context.
-The paired fields share the cursor MAC; malformed
+The paired fields are validated together under the cursor MAC; malformed
 or inconsistent pairs fail as `cursor_invalid` before a Driver read. Legacy
 cursors and initial tails without observed PEM boundaries remain unknown and
 best-effort. This does not recover missing log history or change JSON withholding,
@@ -244,7 +245,7 @@ fixed `RUNTIME_LOGS_*` codes; the whole request has a ten-second deadline.
 
 ## Changelog
 
-- 2026-10-11 09:48: Refuse impossible or offset Kubernetes Pod and Event times. (fix-1096 - 839b0c90cb1c)
+- 2026-10-11 09:48: Refuse impossible or offset Kubernetes Pod and Event times. (fix-1096 - 839b0c90cb1c54d7ed70eb23229bd117f25278be)
 
 - 2026-10-11: Reject impossible timestamps. (#2146)
 

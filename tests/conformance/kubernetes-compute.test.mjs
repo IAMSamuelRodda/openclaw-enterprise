@@ -14974,7 +14974,7 @@ for (const embedded of [true, false]) {
       // Refused strings are unusable times, not a rolled-over or shifted day.
       { finishedAt: "2026-02-30T00:00:00Z" },
       { finishedAt: "2026-09-22T00:00:00+00:00" },
-      // A MicroTime-style fraction is a real instant, kept at millisecond precision.
+      // A serialized fraction other than milliseconds is a real instant, kept at millisecond precision.
       { finishedAt: "2026-09-22T00:00:00.123456Z", expected: "2026-09-22T00:00:00.123Z" },
     ]) {
       const fixture = workspaceSetupFixture(embedded);
@@ -17305,12 +17305,20 @@ test("Kubernetes runtime times keep real UTC instants and refuse rolled-over or 
         },
       ];
       await assert.rejects(describe(fixture), invalidTime);
+      // A log read re-reads the Pod status and refuses the same time.
+      const reader = withContainerState({ running: { startedAt: value } });
+      await assert.rejects(
+        reader.driver.readAgentRuntimeLogs(reader.binding, reader.request("gateway")),
+        invalidTime,
+      );
     });
   }
   // Absent times stay absent rather than refused.
-  const absent = await describe(withContainerState({ running: { startedAt: null } }));
-  for (const pod of absent.pods) {
-    assert.equal(pod.containers[0].startedAt, null, pod.role);
+  for (const running of [{ startedAt: null }, {}]) {
+    const absent = await describe(withContainerState({ running }));
+    for (const pod of absent.pods) {
+      assert.equal(pod.containers[0].startedAt, null, pod.role);
+    }
   }
 });
 
