@@ -711,6 +711,24 @@ test("malformed, non-JSON, invalid, and oversized inputs fail without mutations"
     assert.equal(fixture.controller.pendingOperations().length, before);
   }
 
+  // So must the Configuration write defaults.
+  for (const method of ["POST", "PATCH"]) {
+    const suffix = method === "PATCH" ? "/cfg_00000000-0000-4000-8000-000000000001" : "";
+    const result = await request(
+      fixture.app,
+      `/namespaces/${tenantANamespaceId}/configurations${suffix}`,
+      {
+        method,
+        body: {
+          ...(method === "POST" ? { kind: "agent" } : {}),
+          values: { notes: "Routine notes. ".repeat(40) },
+        },
+      },
+    );
+    assert.equal(result.response.status, 413, method);
+    assert.equal(fixture.controller.pendingOperations().length, before);
+  }
+
   assert.equal(
     fixture.auditSink.events.filter(
       (event) => event.kind === "mutation" && event.resource.kind === "namespace",
