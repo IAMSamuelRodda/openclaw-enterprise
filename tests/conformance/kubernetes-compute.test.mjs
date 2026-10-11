@@ -55,6 +55,7 @@ import {
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
+  withYieldingGatewayDrain,
 } from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { createHarnessConfiguration } from "../helpers/harness-configuration.mjs";
 import { syntheticCredentialUrl } from "../fixtures/synthetic-credential-url.mjs";
@@ -12187,12 +12188,13 @@ test("stopping a containment-only Kubernetes revision removes its workload befor
   }
 });
 
-test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
-  // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
-  // waits for the Gateway's Pods, so a yield there leaves no Harness running until the retry.
-  // Any other stop drains the Gateway into the running Harness first.
+// A dedicated revision whose Gateway and Agent Pods stay for `gatewayPodsLeft` and
+// `agentPodsLeft` observations. `events` records the Pod observations and the Agent Deployment's
+// deletion, in order; `gatewayReads` counts reads of the Gateway's Deployment, which its removal
+// repeats.
+function stopOrderFixture(id) {
   const driver = new KubernetesComputeDriver(options());
-  const revision = routedRevision(driver, { id: "revision-refused-stop-order" });
+  const revision = routedRevision(driver, { id });
   const namespace = kubernetesNamespaceName(revision.namespaceId);
   const namespaceResource = {
     apiVersion: "v1",
@@ -12241,9 +12243,16 @@ test("a refused candidate's stop deletes its Harness before the Gateway drains",
       },
     },
   };
-  let events = [];
-  let deploymentPresent = true;
-  let gatewayPodsLeft = 0;
+  const agentPod = structuredClone(gatewayPod);
+  agentPod.metadata.name = "refused-stop-order-agent-pod";
+  agentPod.metadata.labels["openclaw.dev/workload-role"] = "agent";
+  const fixture = {
+    events: [],
+    deploymentPresent: true,
+    gatewayPodsLeft: 0,
+    agentPodsLeft: 0,
+    gatewayReads: 0,
+  };
   const notFound = () => Object.assign(new Error("Not found"), { code: 404 });
   driver.apiClients = Promise.resolve({
     core: {
@@ -12275,33 +12284,49 @@ test("a refused candidate's stop deletes its Harness before the Gateway drains",
         const role = Object.fromEntries(
           request.labelSelector.split(",").map((entry) => entry.split("=")),
         )["openclaw.dev/workload-role"];
-        events.push(`list ${role} Pods`);
-        if (role === "gateway" && gatewayPodsLeft > 0) {
-          gatewayPodsLeft -= 1;
+        fixture.events.push(`list ${role} Pods`);
+        if (role === "gateway" && fixture.gatewayPodsLeft > 0) {
+          fixture.gatewayPodsLeft -= 1;
           return { apiVersion: "v1", kind: "PodList", items: [structuredClone(gatewayPod)] };
+        }
+        if (role === "agent" && fixture.agentPodsLeft > 0) {
+          fixture.agentPodsLeft -= 1;
+          return { apiVersion: "v1", kind: "PodList", items: [structuredClone(agentPod)] };
         }
         return { apiVersion: "v1", kind: "PodList", items: [] };
       },
     },
     apps: {
       async readNamespacedDeployment({ name }) {
-        if (name === deploymentName && deploymentPresent) {
+        if (name.startsWith("gateway-")) {
+          fixture.gatewayReads += 1;
+        }
+        if (name === deploymentName && fixture.deploymentPresent) {
           return structuredClone(deployment);
         }
         throw notFound();
       },
       async deleteNamespacedDeployment({ name }) {
         assert.equal(name, deploymentName);
-        events.push("delete Agent Deployment");
-        deploymentPresent = false;
+        fixture.events.push("delete Agent Deployment");
+        fixture.deploymentPresent = false;
       },
     },
     objects: {},
   });
 
+  return Object.assign(fixture, { driver, revision });
+}
+
+test("a refused candidate's stop deletes its Harness before the Gateway drains", async () => {
+  // Finding 1025: a yielding (refused-candidate) stop deletes the Agent Deployment before it
+  // waits for the Gateway's Pods, so a yield there leaves no Harness running until the retry.
+  // Any other stop drains the Gateway into the running Harness first.
+  const fixture = stopOrderFixture("revision-refused-stop-order");
+  const { driver, revision } = fixture;
   // Other Work is waiting, so the refused candidate's stop yields at the Gateway wait, after
   // the Harness's deletion was issued.
-  gatewayPodsLeft = 1;
+  fixture.gatewayPodsLeft = 1;
   await assert.rejects(
     withComputeWorkWaiting(
       async () => true,
@@ -12309,23 +12334,96 @@ test("a refused candidate's stop deletes its Harness before the Gateway drains",
     ),
     (error) => error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message),
   );
-  assert.deepEqual(events, ["delete Agent Deployment", "list agent Pods", "list gateway Pods"]);
-  assert.equal(deploymentPresent, false);
+  assert.deepEqual(fixture.events, [
+    "delete Agent Deployment",
+    "list agent Pods",
+    "list gateway Pods",
+  ]);
+  assert.equal(fixture.deploymentPresent, false);
 
   // Any other stop drains the Gateway before it deletes the Harness, and does not yield.
-  events = [];
-  deploymentPresent = true;
-  gatewayPodsLeft = 1;
+  fixture.events = [];
+  fixture.deploymentPresent = true;
+  fixture.gatewayPodsLeft = 1;
   await withComputeWorkWaiting(
     async () => true,
     () => driver.stopRevision(revision),
   );
-  assert.deepEqual(events, [
+  assert.deepEqual(fixture.events, [
     "list gateway Pods",
     "list gateway Pods",
     "delete Agent Deployment",
     "list agent Pods",
   ]);
+});
+
+test("an Agent stop's Gateway drain yields to due work and keeps the Harness until it ends", async () => {
+  // Finding 1088: an ordinary stop held the serial worker for the Gateway's whole drain (up to
+  // about 340 s). Under withYieldingGatewayDrain only that wait yields; the stop keeps its order,
+  // so the Harness the Gateway drains into runs until a retry sees the Gateway's Pods gone.
+  const fixture = stopOrderFixture("revision-ordinary-stop-yield");
+  const { driver, revision } = fixture;
+  const stop = (waiting) =>
+    withComputeWorkWaiting(
+      async () => waiting,
+      () => withYieldingGatewayDrain(() => driver.stopRevision(revision)),
+    );
+  const yielded = (error) =>
+    error instanceof ComputeStopYieldedError && /still terminating/u.test(error.message);
+
+  // Other Work is waiting: the Gateway is removed, one observation still lists its Pod, and the
+  // stop yields before it touches the Harness.
+  fixture.gatewayPodsLeft = 2;
+  await assert.rejects(stop(true), yielded);
+  assert.deepEqual(fixture.events, ["list gateway Pods"]);
+  assert.equal(fixture.deploymentPresent, true);
+  const firstReads = fixture.gatewayReads;
+  assert.ok(firstReads > 0, "the stop removes the Gateway");
+
+  // A retry repeats the idempotent removal and yields again while the Gateway still drains.
+  fixture.events = [];
+  await assert.rejects(stop(true), yielded);
+  assert.deepEqual(fixture.events, ["list gateway Pods"]);
+  assert.equal(fixture.gatewayReads, 2 * firstReads);
+  assert.equal(fixture.deploymentPresent, true);
+
+  // Once the Gateway's Pods are gone the retry deletes the Harness. Its own wait never yields,
+  // even with Work waiting, so the stop completes.
+  fixture.events = [];
+  fixture.agentPodsLeft = 1;
+  await stop(true);
+  assert.deepEqual(fixture.events, [
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+    "list agent Pods",
+  ]);
+  assert.equal(fixture.deploymentPresent, false);
+
+  // With nothing waiting, the drain is awaited in the same pass, as before.
+  fixture.events = [];
+  fixture.deploymentPresent = true;
+  fixture.gatewayPodsLeft = 1;
+  await stop(false);
+  assert.deepEqual(fixture.events, [
+    "list gateway Pods",
+    "list gateway Pods",
+    "delete Agent Deployment",
+    "list agent Pods",
+  ]);
+
+  // A refused candidate's stop still yields on its Harness's wait too.
+  fixture.events = [];
+  fixture.deploymentPresent = true;
+  fixture.agentPodsLeft = 1;
+  await assert.rejects(
+    withComputeWorkWaiting(
+      async () => true,
+      () => withYieldingComputeStop(() => driver.stopRevision(revision)),
+    ),
+    yielded,
+  );
+  assert.deepEqual(fixture.events, ["delete Agent Deployment", "list agent Pods"]);
 });
 
 test("stopping a provider-owned Kubernetes revision waits for Sandbox workload termination", async () => {

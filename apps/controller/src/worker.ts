@@ -86,6 +86,7 @@ import {
   withComputeAbortSignal,
   withComputeWorkWaiting,
   withYieldingComputeStop,
+  withYieldingGatewayDrain,
 } from "./drivers/compute/operation-context.ts";
 import type { OccMetrics, WorkKind, WorkOutcome } from "./metrics/index.ts";
 import {
@@ -146,6 +147,8 @@ type Outcome = "success" | "pending" | "retry" | "permanent";
 const REVISION_READINESS_RECHECK_MS = 500;
 const REVISION_READINESS_RECHECK_MAX_MS = 5_000;
 const REVISION_READINESS_RECHECK_AGE_DIVISOR = 40;
+// An Agent stop that yielded during its Gateway drain runs again after the Work that was due.
+const AGENT_STOP_YIELD_RECHECK_MS = 1_000;
 
 // Pending reason codes for an unready revision. Compute may say why it waits.
 const REVISION_PENDING_CODES: Readonly<Record<string, string>> = Object.freeze({
@@ -2029,7 +2032,14 @@ export class ControllerWorker {
           });
           return;
         }
-        await this.withClaimHeartbeat(claim, () => this.compute.stopRevision(revision));
+        // While the stop is younger than the convergence deadline its Gateway drain wait ends
+        // once other Work is due, and the work is deferred to repeat the stop. Older stops keep
+        // their full bounded wait, so a drain that never ends cannot defer forever (finding 1088).
+        await this.withClaimHeartbeat(claim, () =>
+          Date.now() - claim.createdAt.getTime() < this.convergenceTimeoutMs
+            ? withYieldingGatewayDrain(() => this.compute.stopRevision(revision))
+            : this.compute.stopRevision(revision),
+        );
       }
       result = {
         outcome: "success",
@@ -2041,7 +2051,10 @@ export class ControllerWorker {
       if (error instanceof WorkClaimLostError) {
         throw error;
       }
-      result = { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
+      result =
+        error instanceof ComputeStopYieldedError
+          ? { outcome: "pending", code: "AGENT_STOP_YIELDED" }
+          : { outcome: "retry", code: "DEPENDENCY_UNAVAILABLE" };
     }
     await this.finalizeAgentStop(claim, result);
   }
@@ -2415,6 +2428,14 @@ export class ControllerWorker {
         await queue.complete(claim);
       } else if (terminalFailure) {
         await queue.fail(claim, { code: result.code });
+      } else if (result.outcome === "pending") {
+        // A stop that yielded to due Work refunds its attempt and runs again after that Work.
+        // Repeated yields are not failures, so they record no evidence; the outcome does.
+        await queue.defer(
+          claim,
+          { code: result.code },
+          { delayMs: AGENT_STOP_YIELD_RECHECK_MS, recordEvidence: false },
+        );
       } else {
         await queue.retry(claim, { code: result.code });
       }

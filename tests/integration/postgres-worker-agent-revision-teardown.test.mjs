@@ -5,6 +5,12 @@ import { setTimeout as delay } from "node:timers/promises";
 import { createOccMetrics } from "../../apps/controller/src/metrics/index.ts";
 import { createOccLogger, createWorkerLogEmitter } from "../../apps/controller/src/logging.ts";
 import { PostgresMetricsSnapshot } from "../../packages/occ/src/index.ts";
+import {
+  ComputeStopYieldedError,
+  computeStopShouldYield,
+  computeWorkWaiting,
+  currentComputeAbortSignal,
+} from "../../apps/controller/src/drivers/compute/operation-context.ts";
 import { requiresPostgres } from "../helpers/postgres-backend-state.mjs";
 import { waitFor } from "../helpers/wait-for.mjs";
 import { createWorkerRevisionFixtures } from "../helpers/postgres-worker-revision-fixture.mjs";
@@ -1780,6 +1786,226 @@ test(
         reason_code: "AGENT_ALREADY_STOPPED",
       },
     ]);
+  },
+);
+
+// Finding 1088: an Agent stop held the serial worker for its Gateway's whole drain (up to about
+// 340 s on Kubernetes), stalling every other Agent's work. The stop's drain wait now yields to due
+// Work and the stop is deferred and repeated. This Compute simulates that wait: the drain ends
+// `drainMs` after the first stop call (a Gateway Pod's grace runs from its deletion, across
+// controller restarts), the wait ends with ComputeStopYieldedError when the worker allows it and
+// other Work is due, and the Harness is stopped only after the drain. Kubernetes' own wait is in
+// the Compute conformance tests. `busy` names a revision that never becomes ready, so its
+// deployment keeps Work due; `onFirstStop` runs once, inside the first stop.
+function gatewayDrainCompute(fixture, owner, { drainMs, onFirstStop }) {
+  const record = {
+    busy: new Set(),
+    calls: 0,
+    yields: 0,
+    harnessStops: [],
+    pointers: new Set(),
+    waitingWithoutYield: false,
+    drainEndsAt: undefined,
+  };
+  const compute = {
+    ...fixture.compute,
+    async prepareRevision(revision) {
+      const observation = await fixture.compute.prepareRevision(revision);
+      return record.busy.has(revision.id) ? { ...observation, ready: false } : observation;
+    },
+    async stopRevision(revision) {
+      if (revision.agentId !== owner.id) {
+        return fixture.compute.stopRevision(revision);
+      }
+      record.calls += 1;
+      if (record.drainEndsAt === undefined) {
+        record.drainEndsAt = Number.POSITIVE_INFINITY;
+        await onFirstStop?.();
+        record.drainEndsAt = Date.now() + drainMs;
+      }
+      while (Date.now() < record.drainEndsAt) {
+        currentComputeAbortSignal()?.throwIfAborted();
+        record.pointers.add((await fixture.currentAgent(owner))?.activeRevisionId ?? null);
+        if (await computeStopShouldYield("gateway")) {
+          record.yields += 1;
+          throw new ComputeStopYieldedError(
+            "The AgentRevision workload Pods are still terminating; other work is waiting.",
+          );
+        }
+        if (await computeWorkWaiting()) {
+          record.waitingWithoutYield = true;
+        }
+        await delay(100);
+      }
+      record.harnessStops.push(revision.id);
+    },
+  };
+  return { compute, record };
+}
+
+function stopPasses(events, stop) {
+  return events.filter(
+    ({ event, workId }) => event === "worker.completed" && workId === stop.idempotencyKey,
+  );
+}
+
+async function stopAudit(fixture, owner) {
+  const audit = await fixture.observerPool.query(
+    `SELECT details->>'reasonCode' AS reason_code FROM occ.audit_events
+     WHERE namespace_id = $1 AND resource_id = $2
+       AND (action = 'openclaw.agents.lifecycle.stop' OR details->>'reasonCode' = 'AGENT_STOP_YIELDED')
+     ORDER BY reason_code`,
+    [fixture.namespace.id, owner.id],
+  );
+  return audit.rows.map(({ reason_code: code }) => code);
+}
+
+test(
+  "an Agent stop yields to due work during its Gateway drain, across a restart and a second stop",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context, { leaseDurationMs: 3_000 });
+    const { owner, candidate } = await fixture.admitInitialRevision("drain-yield");
+    const { compute, record } = gatewayDrainCompute(fixture, owner, { drainMs: 6_000 });
+    const events = [];
+    const emit = (event) => events.push({ ...event, at: Date.now() });
+    await fixture.start(compute, { emit });
+    await fixture.work(candidate, "succeeded");
+    const busy = await fixture.revision(await fixture.agent("drain-yield-busy"), 1);
+    record.busy.add(busy.id);
+
+    const requestedAt = Date.now();
+    const first = await fixture.requestStop(owner);
+    const yielded = await waitFor("the stop to yield", async () =>
+      stopPasses(events, first).find(({ code }) => code === "AGENT_STOP_YIELDED"),
+    );
+    assert.equal(yielded.outcome, "pending");
+    // The other Agent's deployment runs while the stop waits for the drain.
+    await waitFor(
+      "another Agent's pass while the stop is deferred",
+      async () =>
+        events.some(
+          ({ event, workId, at }) =>
+            event === "worker.completed" && workId === busy.idempotencyKey && at > yielded.at,
+        ) || undefined,
+    );
+    // A second stop while the first is deferred, and a controller restart.
+    const second = await fixture.requestStop(owner);
+    await fixture.stop();
+    await fixture.start(compute, { emit });
+    const [firstWork, secondWork] = await Promise.all([
+      fixture.work(first, "succeeded", 30_000),
+      fixture.work(second, "succeeded", 30_000),
+    ]);
+
+    // Bounded: the stops end soon after the drain (a pass cut short by the restart waits out
+    // its lease), not after full waits of their own.
+    assert.ok(Date.now() - requestedAt < 6_000 + 15_000, `${Date.now() - requestedAt} ms`);
+    // Yields refund their attempt; only a pass cut short by the restart may count.
+    assert.ok(firstWork.attempt_count <= 2, `attempts ${firstWork.attempt_count}`);
+    assert.ok(secondWork.attempt_count <= 2, `attempts ${secondWork.attempt_count}`);
+    // The active pointer stays until the Harness is stopped after the drain, then clears.
+    assert.deepEqual([...record.pointers], [candidate.id]);
+    assert.ok(record.harnessStops.length >= 1);
+    const current = await fixture.currentAgent(owner);
+    assert.equal(current.desiredRuntimeState, "stopped");
+    assert.equal(current.activeRevisionId, undefined);
+    // A yield is neither audited nor recorded as evidence; each stop records one outcome.
+    assert.deepEqual(await stopAudit(fixture, owner), ["AGENT_ALREADY_STOPPED", "AGENT_STOPPED"]);
+  },
+);
+
+for (const change of ["redeploy", "deletion"]) {
+  revisionTest(
+    `a ${change} while an Agent stop is yielded supersedes the stop`,
+    async (fixture) => {
+      const { owner, candidate } = await fixture.admitInitialRevision(`drain-${change}`);
+      // The drain outlasts the test: only the change ends the stop.
+      const { compute, record } = gatewayDrainCompute(fixture, owner, { drainMs: 120_000 });
+      const events = [];
+      await fixture.start(compute, { emit: (event) => events.push(event) });
+      await fixture.work(candidate, "succeeded");
+      const busy = await fixture.revision(await fixture.agent(`drain-${change}-busy`), 1);
+      record.busy.add(busy.id);
+      const stop = await fixture.requestStop(owner);
+      await waitFor(
+        "the stop to yield",
+        async () =>
+          stopPasses(events, stop).some(({ code }) => code === "AGENT_STOP_YIELDED") || undefined,
+      );
+
+      if (change === "redeploy") {
+        const redeployed = await fixture.revision(owner, 2);
+        await fixture.work(redeployed, "succeeded", 30_000);
+        await fixture.work(stop, "succeeded", 30_000);
+        const current = await fixture.currentAgent(owner);
+        assert.equal(current.desiredRuntimeState, "running");
+        assert.equal(current.activeRevisionId, redeployed.id);
+        assert.equal(record.calls, 1, "the superseded stop is not repeated");
+        assert.deepEqual(await stopAudit(fixture, owner), ["STOP_SUPERSEDED"]);
+      } else {
+        await fixture.requestDeletion(owner);
+        await waitFor(
+          "the Agent and its stop work to be removed",
+          async () => {
+            const remaining = await fixture.observerPool.query(
+              "SELECT 1 FROM occ.controller_work WHERE idempotency_key = $1",
+              [stop.idempotencyKey],
+            );
+            return (await fixture.currentAgent(owner)) === undefined && remaining.rowCount === 0
+              ? true
+              : undefined;
+          },
+          30_000,
+        );
+        assert.deepEqual(await stopAudit(fixture, owner), []);
+      }
+      // While yielded the Harness kept running and the pointer named it.
+      assert.deepEqual(record.harnessStops, []);
+      assert.deepEqual([...record.pointers], [candidate.id]);
+      assert.ok(stopPasses(events, stop).every(({ code }) => code !== "DEPENDENCY_UNAVAILABLE"));
+    },
+  );
+}
+
+test(
+  "an Agent stop older than the convergence deadline keeps its full Gateway wait",
+  requiresPostgres,
+  async (context) => {
+    const fixture = await setup(context);
+    const { owner, candidate } = await fixture.admitInitialRevision("drain-old");
+    const { compute, record } = gatewayDrainCompute(fixture, owner, {
+      drainMs: 2_000,
+      async onFirstStop() {
+        // Another Agent's Work is due during the whole drain.
+        const other = await fixture.revision(await fixture.agent("drain-old-other"), 1);
+        record.busy.add(other.id);
+        await waitFor("the other Agent's Work to be due", async () =>
+          (await computeWorkWaiting()) ? true : undefined,
+        );
+      },
+    });
+    await fixture.start(compute);
+    await fixture.work(candidate, "succeeded");
+    await fixture.stop();
+    const stop = await fixture.requestStop(owner);
+    await delay(1_500);
+    const events = [];
+    await fixture.start(compute, {
+      convergenceTimeoutMs: 1_000,
+      emit: (event) => events.push(event),
+    });
+    await fixture.work(stop, "succeeded", 30_000);
+    // Past the deadline the stop no longer yields, so its deferrals cannot outlast a drain that
+    // never ends: it waits as before, in one pass.
+    assert.equal(record.yields, 0);
+    assert.equal(record.waitingWithoutYield, true);
+    assert.equal(record.calls, 1);
+    assert.deepEqual(
+      stopPasses(events, stop).map(({ code }) => code),
+      ["AGENT_STOPPED"],
+    );
+    assert.equal((await fixture.currentAgent(owner)).activeRevisionId, undefined);
   },
 );
 

@@ -164,8 +164,7 @@ active maintenance before Compute effects, even after candidate failure.
 Recovery uses a new revision.
 
 Agent-stop work rechecks current exact-Agent `operate`. Superseded desired state
-completes without shutdown. An absent active pointer does not prove candidates
-have no runtime resources, so stop still checks the captured revision history.
+completes without shutdown.
 
 Agent-deletion work requires the Agent to remain `deleting` and stopped, then
 rechecks the original actor's exact-Agent `delete`. It loads every owned revision
@@ -197,14 +196,14 @@ against the immutable revision; the
 defines when warnings permit deployment.
 
 Agent-stop dispatch captures and validates the Agent's revisions owned by the
-current Compute. It stops the active revision first, then the rest, including
-terminal candidates and predecessors whose retirement failed. Historical
-revisions pinned to another Compute are excluded; an active revision pinned
-elsewhere fails closed. Before each shutdown, the worker rechecks the Agent
-owner and stopped desired state; later admissions are not added to this cleanup
-set. Partial failure retries
-the idempotent shutdowns without clearing the active pointer or deleting retained
-workspace data.
+current Compute. It stops the active revision first, then the rest, even without
+an active pointer, including terminal candidates and predecessors whose retirement
+failed. Revisions pinned to another Compute are excluded, but an active one fails
+closed. Before each shutdown, the worker rechecks the Agent
+owner and stopped desired state; later admissions are not added. Partial failure retries
+idempotent shutdowns without clearing the active pointer or deleting retained
+workspace data. Before the convergence deadline, its Gateway drain yields to due work
+(`withYieldingGatewayDrain`), deferring as `AGENT_STOP_YIELDED` without spending an attempt.
 
 Before shutdown or retirement, including stopped-revision recovery, the worker
 binds the server-owned Namespace and Agent after IAM and exact-resource checks.
@@ -417,6 +416,6 @@ failed retry keeps the active runtime.
 
 ## Changelog
 
-- 2026-10-10 16:40: Retry a stored refusal's stop first. (fix-1033-1034)
+- 2026-10-11 09:30: Yield an Agent stop's Gateway drain to due work. (fix-1088)
 
 [Controller worker documentation history](controller-worker/history.md) preserves the older dated entries.
