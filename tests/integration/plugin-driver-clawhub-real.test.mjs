@@ -24,6 +24,37 @@ function selectedRelease() {
   return raw === undefined || raw.trim() === "" ? defaultRelease : JSON.parse(raw);
 }
 
+// A revision whose release fails verification: its gateway container exits before the
+// wrapper spawns the native gateway, no Pod of it is ever Ready, and it never activates.
+async function assertStartupRefused(fixture, agent, revisionId, modelSecret) {
+  const refusal = await fixture.observeGatewayStartupRefusal(agent, revisionId);
+  const lines = proofLines(refusal.previousLog);
+  assertNoSecretMaterial(lines, [modelSecret], "refusal traces must not expose model credentials.");
+  assert.equal(refusal.everReady, false, "a refused release never makes the gateway Ready.");
+  assert.notEqual(refusal.lastTermination.exitCode, 0);
+  assert.ok(
+    lines.some((line) =>
+      line.includes("OpenClaw plugin installed integrity does not match the admitted release."),
+    ),
+    `the gateway log must name the integrity refusal: ${JSON.stringify(lines)}`,
+  );
+  assert.ok(
+    lines.some((line) => /"phase":"model-probe","outcome":"ok"/.test(line)),
+    "startup reached plugin installation.",
+  );
+  assert.ok(
+    !lines.some((line) => /"phase":"(plugin-install|native-spawn)"/.test(line)),
+    "plugin installation never completed and the native gateway never spawned.",
+  );
+  assert.ok(
+    !lines.some((line) => line.includes("http server listening")),
+    "the native gateway never served.",
+  );
+  assert.notEqual((await fixture.getAgent(agent.id)).activeRevisionId, revisionId);
+  const status = await fixture.getDeploymentStatus(agent.id, revisionId);
+  assert.notEqual(status.status, "succeeded");
+}
+
 const realLane = {
   skip:
     process.env.OCC_TEST_PLUGIN_DRIVER_OPENCLAW_CLAWHUB_REAL === "1"
@@ -323,36 +354,41 @@ test(
     // The Pod fetches the real archive, then compares OpenClaw's install record with
     // the admitted digest. A mismatch stops the startup wrapper before it spawns the
     // native gateway, so plugin code never loads in a gateway and the Pod is never Ready.
-    const refusal = await fixture.observeGatewayStartupRefusal(agent, deployed.data.id);
-    const lines = proofLines(refusal.previousLog);
-    assertNoSecretMaterial(
-      lines,
-      [modelSecret],
-      "refusal traces must not expose model credentials.",
-    );
-    assert.equal(refusal.everReady, false, "a refused release never makes the gateway Ready.");
-    assert.notEqual(refusal.lastTermination.exitCode, 0);
-    assert.ok(
-      lines.some((line) =>
-        line.includes("OpenClaw plugin installed integrity does not match the admitted release."),
-      ),
-      `the gateway log must name the integrity refusal: ${JSON.stringify(lines)}`,
-    );
-    assert.ok(
-      lines.some((line) => /"phase":"model-probe","outcome":"ok"/.test(line)),
-      "startup reached plugin installation.",
-    );
-    assert.ok(
-      !lines.some((line) => /"phase":"(plugin-install|native-spawn)"/.test(line)),
-      "plugin installation never completed and the native gateway never spawned.",
-    );
-    assert.ok(
-      !lines.some((line) => line.includes("http server listening")),
-      "the native gateway never served.",
-    );
-    // The controller never activates the refused revision.
-    assert.notEqual((await fixture.getAgent(agent.id)).activeRevisionId, deployed.data.id);
-    const status = await fixture.getDeploymentStatus(agent.id, deployed.data.id);
-    assert.notEqual(status.status, "succeeded");
+    await assertStartupRefused(fixture, agent, deployed.data.id, modelSecret);
+  },
+);
+
+test(
+  "a mismatched digest is refused before the gateway starts when the Pod reinstalls over a persisted record",
+  realLane,
+  async (context) => {
+    const release = selectedRelease();
+    const pluginId = `occ-plugin:${release.nativeId}`;
+    const fixture = await createClawHubFixture(context, [release]);
+    const { agent, modelSecret } = await createAgentSelecting(fixture, release);
+    const admitted = await fixture.deployAndWait(agent);
+    assert.deepEqual(admitted.revision.plugins?.releases, { [pluginId]: release });
+    // The Agent's state volume now holds OpenClaw's install record for the release.
+    assert.deepEqual(await fixture.readOpenClawPersistedInstallRecord(agent, release.nativeId), {
+      source: "clawhub",
+      clawhubPackage: release.packageName,
+      version: release.version,
+      integrity: release.integrity,
+    });
+
+    // The administrator changes the approved digest; a new revision of the same Agent
+    // binds it. Its Pod mounts the same state volume, so startup meets the persisted
+    // record, removes it, installs the real archive fresh, and must still refuse it.
+    const mismatched = {
+      ...release,
+      integrity: otherDigest(`mismatched ${release.packageName}@${release.version}`),
+    };
+    await fixture.restartControllers({
+      pluginDriverConfiguration: { approvedPlugins: [mismatched] },
+    });
+    const { deployed } = await fixture.requestDeployment(agent);
+    assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
+    assert.deepEqual(deployed.data.plugins?.releases, { [pluginId]: mismatched });
+    await assertStartupRefused(fixture, agent, deployed.data.id, modelSecret);
   },
 );
