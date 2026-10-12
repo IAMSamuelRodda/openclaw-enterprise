@@ -1293,7 +1293,10 @@ function verifyOpenClawPluginInstall(plugin) {
   if ((record.resolvedVersion ?? record.version) !== version) {
     throw new Error("OpenClaw plugin installed version does not match the admitted release.");
   }
-  if (plugin.integrity !== undefined && installRecordIntegrity(record) !== plugin.integrity) {
+  // A ClawHub record also carries npmIntegrity and clawpackSha256; only its integrity is the
+  // archive digest an approved release pins.
+  const recordIntegrity = source === "clawhub" ? record.integrity : installRecordIntegrity(record);
+  if (plugin.integrity !== undefined && recordIntegrity !== plugin.integrity) {
     throw new Error("OpenClaw plugin installed integrity does not match the admitted release.");
   }
   const installPath = requireNonEmptyString(record.installPath, "OpenClaw plugin install path");

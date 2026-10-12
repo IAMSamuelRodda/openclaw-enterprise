@@ -162,6 +162,8 @@ test("OpenClaw runtime helper keeps a ClawHub release unready when its install r
   for (const [install, message] of [
     // A different archive under the same version must not become ready.
     [{ integrity: `sha256-${Buffer.alloc(32, 8).toString("base64")}` }, /installed integrity/],
+    // The admitted digest in another record field is not the archive digest.
+    [{ integrity: undefined, npmIntegrity: ACME_RELEASE.integrity }, /installed integrity/],
     [{ version: "1.4.3" }, /installed version/],
     [{ clawhubPackage: "@other/openclaw-search" }, /installed package/],
     // An npm install of the same name is a different source than the one admitted.
