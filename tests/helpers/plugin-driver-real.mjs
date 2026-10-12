@@ -1698,42 +1698,35 @@ export async function createPluginDriverRealFixture(
     pluginDriverId === "codex-plugin"
       ? await codexServiceAccountImportConfiguration(directory, codexCredential)
       : undefined;
-  await Promise.all([
-    writeFile(
-      apiConfigurationPath,
-      JSON.stringify(
-        installationConfiguration({
-          authentication: api.authentication,
-          platformNamespace,
-          gatewayImage,
-          codexImage,
-          pluginDriverId,
-          pluginDriverConfiguration,
-          codexServiceAccountImport,
-          gatewayMemoryLimit,
-          gatewayCpuLimit,
-        }),
+  // The administrator's Installation files. A restart rewrites them, as an operator
+  // edits the Installation and restarts the controller.
+  async function writeInstallationFiles(selectedPluginDriverConfiguration) {
+    await Promise.all(
+      [
+        [apiConfigurationPath, api.authentication],
+        [workerConfigurationPath, workerIdentity.authentication],
+      ].map(([path, authentication]) =>
+        writeFile(
+          path,
+          JSON.stringify(
+            installationConfiguration({
+              authentication,
+              platformNamespace,
+              gatewayImage,
+              codexImage,
+              pluginDriverId,
+              pluginDriverConfiguration: selectedPluginDriverConfiguration,
+              codexServiceAccountImport,
+              gatewayMemoryLimit,
+              gatewayCpuLimit,
+            }),
+          ),
+          { mode: 0o600 },
+        ),
       ),
-      { mode: 0o600 },
-    ),
-    writeFile(
-      workerConfigurationPath,
-      JSON.stringify(
-        installationConfiguration({
-          authentication: workerIdentity.authentication,
-          platformNamespace,
-          gatewayImage,
-          codexImage,
-          pluginDriverId,
-          pluginDriverConfiguration,
-          codexServiceAccountImport,
-          gatewayMemoryLimit,
-          gatewayCpuLimit,
-        }),
-      ),
-      { mode: 0o600 },
-    ),
-  ]);
+    );
+  }
+  await writeInstallationFiles(pluginDriverConfiguration);
 
   const [
     { PostgresPlatformState },
@@ -1751,26 +1744,29 @@ export async function createPluginDriverRealFixture(
     import("../../apps/controller/src/drivers/compute/kubernetes/index.ts"),
   ]);
 
-  const [apiDrivers, workerDrivers] = await Promise.all([
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: apiConfigurationPath },
-    }),
-    loadInstallationConfiguration({
-      mode: "production",
-      environment: { OCC_CONFIG_PATH: workerConfigurationPath },
-    }),
-  ]);
-  assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);
-  assert.equal(workerDrivers.pluginDriver?.id, pluginDriverId);
-
-  const serviceAccountDriverFactory =
-    codexServiceAccountImport === undefined
-      ? undefined
-      : createImportedCodexServiceAccountDriverFactory(
-          codexServiceAccountImport,
-          apiDrivers.computeDriver,
-        );
+  async function loadControllerDrivers() {
+    const [apiDrivers, workerDrivers] = await Promise.all([
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: apiConfigurationPath },
+      }),
+      loadInstallationConfiguration({
+        mode: "production",
+        environment: { OCC_CONFIG_PATH: workerConfigurationPath },
+      }),
+    ]);
+    assert.equal(apiDrivers.pluginDriver?.id, pluginDriverId);
+    assert.equal(workerDrivers.pluginDriver?.id, pluginDriverId);
+    const serviceAccountDriverFactory =
+      codexServiceAccountImport === undefined
+        ? undefined
+        : createImportedCodexServiceAccountDriverFactory(
+            codexServiceAccountImport,
+            apiDrivers.computeDriver,
+          );
+    return { apiDrivers, workerDrivers, serviceAccountDriverFactory };
+  }
+  let controllerDrivers = await loadControllerDrivers();
 
   pool = new pg.Pool({ connectionString: selectedDatabaseUrl, max: 4 });
   const state = new PostgresPlatformState(pool);
@@ -1812,27 +1808,47 @@ export async function createPluginDriverRealFixture(
     );
   }
 
-  app = await composeProduction({
-    mode: "production",
-    host: "127.0.0.1",
-    databaseUrl: selectedDatabaseUrl,
-    authSecret,
-    authBaseURL,
-    drivers: apiDrivers,
-    ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
-  });
-  const request = createServiceKeyControllerRequest(app, serviceKey);
   const events = [];
-  worker = createControllerWorker({
-    mode: "production",
-    pool: new pg.Pool({ connectionString: selectedDatabaseUrl, max: 6 }),
-    drivers: workerDrivers,
-    pollIntervalMs: 50,
-    leaseDurationMs: 60_000,
-    maxAttempts: 30,
-    emit: (event) => events.push(event),
-  });
-  await worker.start();
+  let controllerRequest;
+  const request = (method, url, payload) => controllerRequest(method, url, payload);
+
+  async function startControllers() {
+    const { apiDrivers, workerDrivers, serviceAccountDriverFactory } = controllerDrivers;
+    app = await composeProduction({
+      mode: "production",
+      host: "127.0.0.1",
+      databaseUrl: selectedDatabaseUrl,
+      authSecret,
+      authBaseURL,
+      drivers: apiDrivers,
+      ...(serviceAccountDriverFactory === undefined ? {} : { serviceAccountDriverFactory }),
+    });
+    controllerRequest = createServiceKeyControllerRequest(app, serviceKey);
+    worker = createControllerWorker({
+      mode: "production",
+      pool: new pg.Pool({ connectionString: selectedDatabaseUrl, max: 6 }),
+      drivers: workerDrivers,
+      pollIntervalMs: 50,
+      leaseDurationMs: 60_000,
+      maxAttempts: 30,
+      emit: (event) => events.push(event),
+    });
+    await worker.start();
+  }
+  await startControllers();
+
+  // A controller restart after an Installation change: stop the API and worker,
+  // rewrite the Installation files, then compose both again from those files
+  // against the same PostgreSQL state and cluster. Running workloads are untouched.
+  async function restartControllers({ pluginDriverConfiguration: nextConfiguration }) {
+    await worker.stop();
+    worker = undefined;
+    await app.close();
+    app = undefined;
+    await writeInstallationFiles(nextConfiguration);
+    controllerDrivers = await loadControllerDrivers();
+    await startControllers();
+  }
 
   const createdNamespace = await request("POST", "/namespaces", {
     name: `${proofPrefix}-${suffix}`,
@@ -1909,7 +1925,7 @@ export async function createPluginDriverRealFixture(
 
   async function createCodexServiceAccountFromToken({ accessToken, name }) {
     assert.ok(
-      serviceAccountDriverFactory,
+      controllerDrivers.serviceAccountDriverFactory,
       "Codex ServiceAccounts require the configured test import ServiceAccount Driver.",
     );
     assert.ok(
@@ -1949,7 +1965,8 @@ export async function createPluginDriverRealFixture(
     return issued.data;
   }
 
-  async function deployAndWait(agent) {
+  // Deploy through the API and return its answer without waiting for activation.
+  async function requestDeployment(agent) {
     let gatewayPassword = gatewayPasswords.get(agent.id);
     if (gatewayPassword === undefined) {
       gatewayPassword = await provisionAgentTransportSecret(directory, tenantNamespace, agent.id, {
@@ -1961,6 +1978,11 @@ export async function createPluginDriverRealFixture(
       "POST",
       `/namespaces/${createdNamespace.data.id}/agents/${agent.id}/deploy`,
     );
+    return { deployed, gatewayPassword };
+  }
+
+  async function deployAndWait(agent) {
+    const { deployed, gatewayPassword } = await requestDeployment(agent);
     assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
     try {
       await waitFor(`revision ${deployed.data.id} activation`, async () => {
@@ -2123,6 +2145,71 @@ export async function createPluginDriverRealFixture(
     return podIdentity(pod);
   }
 
+  async function revisionGatewayPods(agent, revisionId) {
+    return (await gatewayPods(agent)).filter(
+      (pod) => pod.metadata.labels?.["openclaw.dev/revision"] === revisionId,
+    );
+  }
+
+  function gatewayContainerStatus(pod) {
+    return pod.status?.containerStatuses?.find(({ name }) => name === "gateway");
+  }
+
+  // A runtime restart: delete the Ready gateway Pod and let Kubernetes replace it
+  // from the revision's own Deployment. The replacement starts again from what the
+  // revision admitted, whatever the Installation now approves.
+  async function replaceGatewayPod(agent) {
+    const before = podIdentity(await gatewayPod(agent));
+    await kubectl("delete", "pod", before.podName, "--namespace", gatewayPlacement, "--wait=false");
+    const after = await waitFor(
+      `a Ready replacement gateway Pod for revision ${before.revisionId}`,
+      async () => {
+        const replacements = (await revisionGatewayPods(agent, before.revisionId)).filter(
+          (pod) => pod.metadata.uid !== before.podUid && isPodReady(pod),
+        );
+        return replacements.length === 1 ? podIdentity(replacements[0]) : undefined;
+      },
+      420_000,
+    );
+    return { before, after };
+  }
+
+  // Watch the gateway Pod of a revision whose startup should refuse, until its
+  // gateway container has exited at least once. Every observation records whether
+  // any Pod of that revision was Ready, so the caller can prove it never was.
+  async function observeGatewayStartupRefusal(agent, revisionId) {
+    let everReady = false;
+    const pod = await waitFor(
+      `the revision ${revisionId} gateway container to exit`,
+      async () => {
+        const pods = await revisionGatewayPods(agent, revisionId);
+        everReady ||= pods.some(isPodReady);
+        return pods.find((candidate) => gatewayContainerStatus(candidate)?.restartCount >= 1);
+      },
+      420_000,
+    );
+    const container = gatewayContainerStatus(pod);
+    const previousLog = await kubectl(
+      "logs",
+      pod.metadata.name,
+      "--namespace",
+      pod.metadata.namespace,
+      "--container",
+      "gateway",
+      "--previous",
+    );
+    return {
+      podName: pod.metadata.name,
+      everReady,
+      restartCount: container.restartCount,
+      lastTermination: {
+        exitCode: container.lastState?.terminated?.exitCode,
+        reason: container.lastState?.terminated?.reason,
+      },
+      previousLog,
+    };
+  }
+
   async function activeReadyCodexAgentPods(agent, activeRevisionId) {
     return (await resources("pods", tenantNamespace)).filter(
       (pod) =>
@@ -2276,8 +2363,12 @@ export async function createPluginDriverRealFixture(
     removePluginSelection: agentApi.removePluginSelection,
     getAgent: agentApi.getAgent,
     deployAndWait,
+    requestDeployment,
+    restartControllers,
     getDeploymentStatus,
     gatewayPodIdentity,
+    replaceGatewayPod,
+    observeGatewayStartupRefusal,
     restartActiveCodexAgentPod,
     normalGatewayTurn: nativeAssertions.normalGatewayTurn,
     assertSessionToolCallEvidence: nativeAssertions.assertSessionToolCallEvidence,

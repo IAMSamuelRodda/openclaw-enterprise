@@ -195,11 +195,25 @@ The `plugin-clawhub-real` lane runs `tests/integration/plugin-driver-clawhub-rea
 the `occ-plugin` Installation configuration, deploys an embedded OpenClaw Agent that
 selects it, and checks the revision's bound release, the Pod's native install record
 (source, package, version, integrity), and a normal turn whose tool output carries a
-marker. It needs `OPENAI_API_KEY` and an immutable `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`.
+marker. Two more cases use the same path without a model turn:
+
+- **Replay.** The test changes the approved entry's digest, then removes the entry.
+  After each change it restarts the API and worker from the edited Installation
+  file and replaces the gateway Pod. The restarted controller must read the
+  admitted binding back unchanged, and the new Pod must install exactly that
+  release. With the entry removed, an Agent save and a deploy that select the
+  plugin must answer `400` and create no revision.
+- **Refusal.** The test admits the release with a digest the published archive
+  does not have. The Pod must stop before the native gateway spawns: the gateway
+  log names the integrity refusal, the Pod is never Ready, and the revision never
+  activates.
+
+The lane needs `OPENAI_API_KEY` and an immutable `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`.
 The default release is `@openclaw/lobster` 2026.9.7, compatible with the pinned
 OpenClaw 2026.9.8; set `OCC_TEST_OPENCLAW_CLAWHUB_RELEASE` to an approved-entry JSON
-object, with `OCC_TEST_OPENCLAW_CLAWHUB_PROMPT` and `OCC_TEST_OPENCLAW_CLAWHUB_RESULT_EXPECT`,
-to prove another. The lane has no workflow entrypoint and is in no group.
+object, with `OCC_TEST_OPENCLAW_CLAWHUB_PROMPT` and `OCC_TEST_OPENCLAW_CLAWHUB_RESULT_EXPECT`
+for the model turn, to prove another. The lane has no workflow entrypoint and is in
+no group.
 
 ## Per-call approval acceptance
 
