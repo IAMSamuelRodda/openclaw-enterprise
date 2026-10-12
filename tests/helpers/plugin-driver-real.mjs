@@ -2176,7 +2176,11 @@ export async function createPluginDriverRealFixture(
   // from the revision's own Deployment. The replacement starts again from what the
   // revision admitted, whatever the Installation now approves.
   async function replaceGatewayPod(agent) {
-    const before = podIdentity(await gatewayPod(agent));
+    // Wait out OpenClaw's post-ready warm-up, when readiness can briefly drop.
+    const before = await waitFor("a Ready gateway Pod to replace", async () => {
+      const pod = (await gatewayPods(agent)).find(isPodReady);
+      return pod === undefined ? undefined : podIdentity(pod);
+    });
     await kubectl("delete", "pod", before.podName, "--namespace", gatewayPlacement, "--wait=false");
     const after = await waitFor(
       `a Ready replacement gateway Pod for revision ${before.revisionId}`,
