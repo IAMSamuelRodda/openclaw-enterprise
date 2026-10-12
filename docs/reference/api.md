@@ -28,6 +28,9 @@ Non-success JSON responses use the following envelope.
 Each operation lists its supported status codes.
 A NUL character or an unpaired UTF-16 surrogate in any request body string,
 object key or path parameter is refused with `400 INVALID_REQUEST`.
+A JSON body with a value more than 24 levels below its root is refused
+with `400 INVALID_REQUEST` and a `TOO_DEEP` detail before it is parsed,
+so that answer comes before any other body error.
 Operations that take a request body list `413` and `415`. Any request whose
 declared body size exceeds the route's limit is refused with
 `413 PAYLOAD_TOO_LARGE`, and any POST, PUT, PATCH or DELETE request with a
@@ -68,7 +71,7 @@ the paths.
 | [Agent deployments](#agent-deployments) | 4 operations |
 | [Agent revisions](#agent-revisions) | 2 operations |
 | [Configurations](#configurations) | 4 operations |
-| [Credential sources](#credential-sources) | 5 operations |
+| [Credential sources](#credential-sources) | 6 operations |
 | [IAM](#iam) | 11 operations |
 | [Presets](#presets) | 5 operations |
 | [Secrets](#secrets) | 5 operations |
@@ -189,6 +192,7 @@ Inspect current human account state
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
+| `400` | Bad Request |
 | `401` | Unauthorized |
 | `403` | Forbidden |
 | `404` | Not Found |
@@ -342,6 +346,7 @@ Enrol an existing account that activation skipped
 | Status | Meaning |
 | --- | --- |
 | `200` | OK |
+| `400` | Bad Request |
 | `401` | Unauthorized |
 | `403` | Forbidden |
 | `404` | Not Found |
@@ -1139,7 +1144,7 @@ Sign in with email and password
 
 **Operation ID:** `signInEmail`
 
-**Permissions:** Authenticates a local account and issues a user session cookie. In the password-only profile, repeated failed attempts for one email, or from one client address behind a trusted proxy, are limited and return 429; with GitHub, Google or OIDC sign-in, every attempt counts, successful ones included. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates.
+**Permissions:** Authenticates a local account and issues a user session cookie. In both profiles, repeated failed attempts for one email, or from one client address behind a trusted proxy, spend the password budget and may return 429 once it is spent. A successful sign-in also sets an HttpOnly known-device cookie; later attempts for that email from the same browser spend the browser's own budget instead of the email's. The cookie never authenticates. An email with a NUL character or an unpaired UTF-16 surrogate is refused with 400 INVALID_REQUEST and spends budget like a rejected password; the password is not checked for either.
 
 ##### Request body
 
@@ -3912,6 +3917,11 @@ Read Pod status, restarts, Events and log sources for one exact Agent revision
 | Field | Type | Required | Constraints |
 | --- | --- | --- | --- |
 | `data` | `object` | Yes | — |
+| `data.harness` | `object` | No | A provider-owned Harness Sandbox (OpenShell) as its Sandbox Driver records it. lost means the Sandbox is not serving this revision and OCC will not restart it; deploy the Agent again to replace it. starting with HARNESS_RESTARTING means the provider is restarting a Harness process that exited. |
+| `data.harness.code` | `"SANDBOX_MISSING" or "SANDBOX_DELETING" or "SANDBOX_STOPPED" or "SANDBOX_FAILED" or "HARNESS_EXITED" or "HARNESS_RESTARTING" or "UNAVAILABLE"` | No | — |
+| `data.harness.exitCode` | `integer` | No | minimum: -2147483648; maximum: 2147483647; Present only with HARNESS_RESTARTING: the Harness process's last exit code. |
+| `data.harness.restarts` | `integer` | No | minimum: 1; maximum: 4294967295; Present only with HARNESS_RESTARTING: the restart number in the current crash loop (1 for a first restart). |
+| `data.harness.state` | `"running" or "starting" or "lost" or "unknown"` | Yes | — |
 | `data.observedAt` | `string (date-time)` | Yes | pattern: `^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}:[0-9]{2}[.][0-9]{3}Z$` |
 | `data.pods` | `array<object>` | Yes | max items: 16 |
 | `data.pods[].cluster` | `"control" or "execution"` | Yes | — |
@@ -4341,6 +4351,7 @@ Replace values and increment an exact Namespace-owned Configuration generation
 | [`DELETE /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#delete-namespacesnamespaceidcredentialsourcescredentialsourceid) | Remove an unreferenced credential source from the Credential Gateway |
 | [`GET /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#get-namespacesnamespaceidcredentialsourcescredentialsourceid) | Get one credential source and its live Credential Gateway status |
 | [`PATCH /namespaces/{namespaceId}/credential-sources/{credentialSourceId}`](#patch-namespacesnamespaceidcredentialsourcescredentialsourceid) | Push current or replacement Secret values to the Credential Gateway copy |
+| [`POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`](#post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate) | Force the Credential Refresh Driver to mint a new token for a refresh-type source |
 
 #### `GET /namespaces/{namespaceId}/credential-sources`
 
@@ -4392,6 +4403,13 @@ List readable credential sources without revealing credential values
 | `data[].state` | `"registering" or "ready" or "deleting"` | Yes | — |
 | `data[].status` | `object` | No | Live status reported by the selected Credential Gateway. It never contains credential values. |
 | `data[].status.reason` | `string` | No | max length: 512 |
+| `data[].status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
+| `data[].status.refresh.expiresAt` | `string (date-time)` | No | — |
+| `data[].status.refresh.failureCode` | `string` | No | max length: 128 |
+| `data[].status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
+| `data[].status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
+| `data[].status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
+| `data[].status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
 | `data[].status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
 | `data[].type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `meta` | `object` | Yes | — |
@@ -4463,6 +4481,13 @@ Register a credential source with the selected Credential Gateway
 | `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
 | `data.status` | `object` | No | Live status reported by the selected Credential Gateway. It never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
+| `data.status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
+| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
+| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
+| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
+| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
+| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
+| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
 | `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
 | `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `meta` | `object` | Yes | — |
@@ -4552,6 +4577,13 @@ Get one credential source and its live Credential Gateway status
 | `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
 | `data.status` | `object` | No | Live status reported by the selected Credential Gateway. It never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
+| `data.status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
+| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
+| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
+| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
+| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
+| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
+| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
 | `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
 | `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `meta` | `object` | Yes | — |
@@ -4621,6 +4653,76 @@ Push current or replacement Secret values to the Credential Gateway copy
 | `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
 | `data.status` | `object` | No | Live status reported by the selected Credential Gateway. It never contains credential values. |
 | `data.status.reason` | `string` | No | max length: 512 |
+| `data.status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
+| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
+| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
+| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
+| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
+| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
+| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
+| `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
+| `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+#### `POST /namespaces/{namespaceId}/credential-sources/{credentialSourceId}/rotate`
+
+<span id="post-namespacesnamespaceidcredentialsourcescredentialsourceidrotate"></span>
+
+Force the Credential Refresh Driver to mint a new token for a refresh-type source
+
+**Operation ID:** `rotateCredentialSource`
+
+**Permissions:** Requires update permission on the requested CredentialSource.
+
+| Action | Resource | Scope |
+| --- | --- | --- |
+| `update` | `credential_source` | `requested` |
+
+##### Parameters
+
+| Name | In | Type | Required | Constraints |
+| --- | --- | --- | --- | --- |
+| `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `credentialSourceId` | path | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+
+##### Responses
+
+| Status | Meaning |
+| --- | --- |
+| `200` | OK |
+| `400` | Bad Request |
+| `401` | Unauthorized |
+| `403` | Forbidden |
+| `404` | Not Found |
+| `409` | Conflict |
+| `500` | Internal Server Error |
+| `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.config` | `object<string, string>` | Yes | Non-secret source configuration keyed by catalog field name. |
+| `data.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.name` | `string` | Yes | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.ref` | `object` | Yes | Exact OCC credential source reference. Shape: `{ "kind": "credential_source", "namespaceId": "ns_...", "id": "cs_..." }`. |
+| `data.ref.id` | `string` | Yes | pattern: `^cs_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.ref.kind` | `"credential_source"` | Yes | — |
+| `data.ref.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.secrets` | `object<string, object>` | Yes | Secret inputs keyed by catalog field name. Each value references an OCC Secret in the same Namespace; OCC never returns its value. |
+| `data.state` | `"registering" or "ready" or "deleting"` | Yes | — |
+| `data.status` | `object` | No | Live status reported by the selected Credential Gateway. It never contains credential values. |
+| `data.status.reason` | `string` | No | max length: 512 |
+| `data.status.refresh` | `object` | No | Token refresh status reported by the selected Credential Refresh Driver for a refresh-type source. It never contains tokens or refresh material. |
+| `data.status.refresh.expiresAt` | `string (date-time)` | No | — |
+| `data.status.refresh.failureCode` | `string` | No | max length: 128 |
+| `data.status.refresh.lastRefreshAt` | `string (date-time)` | No | — |
+| `data.status.refresh.nextRefreshAt` | `string (date-time)` | No | — |
+| `data.status.refresh.recoveryAction` | `"retry" or "reauthorize" or "fix_configuration" or "investigate"` | No | — |
+| `data.status.refresh.state` | `"pending" or "ready" or "failed"` | Yes | — |
 | `data.status.state` | `"ready" or "pending" or "failed" or "absent"` | Yes | — |
 | `data.type` | `string` | Yes | min length: 1; max length: 64; pattern: `^[a-z][a-z0-9-]{0,63}$`; Source type from the selected Credential Gateway catalog, for example `openai`. |
 | `meta` | `object` | Yes | — |
@@ -5933,6 +6035,7 @@ Delete an exact unreferenced Namespace-owned ServiceAccount
 
 | Name | In | Type | Required | Constraints |
 | --- | --- | --- | --- | --- |
+| `force` | query | `"true" or "false"` | No | — |
 | `namespaceId` | path | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 | `serviceAccountId` | path | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
@@ -5940,6 +6043,7 @@ Delete an exact unreferenced Namespace-owned ServiceAccount
 
 | Status | Meaning |
 | --- | --- |
+| `200` | A forced deletion removed the account and its credential Secret but could not revoke its issued access token. |
 | `204` | No Content |
 | `400` | Bad Request |
 | `401` | Unauthorized |
@@ -5948,6 +6052,18 @@ Delete an exact unreferenced Namespace-owned ServiceAccount
 | `409` | Conflict |
 | `500` | Internal Server Error |
 | `503` | Service Unavailable |
+
+**`200` response body:** `application/json`
+
+| Field | Type | Required | Constraints |
+| --- | --- | --- | --- |
+| `data` | `object` | Yes | — |
+| `data.backendId` | `string` | No | min length: 1; max length: 200; pattern: `^(?!\s)(?!.*\s$)[^\u0000-\u001f\u007f-\u009f\u2028\u2029]+$` |
+| `data.id` | `string` | Yes | pattern: `^sa_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.namespaceId` | `string` | Yes | pattern: `^ns_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
+| `data.revocation` | `"skipped"` | Yes | The account's issued access token was not revoked: no ChatGPT Backend can revoke it. Revoke it at the provider; the audit event names its Backend and credential ID. |
+| `meta` | `object` | Yes | — |
+| `meta.requestId` | `string` | Yes | pattern: `^req_[0-9a-f]{8}-[0-9a-f]{4}-4[0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$` |
 
 #### `GET /namespaces/{namespaceId}/service-accounts/{serviceAccountId}`
 

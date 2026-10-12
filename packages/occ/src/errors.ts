@@ -340,11 +340,29 @@ function keyedSettingMessage(
   key: string,
   message: (path: string) => string,
 ): string {
+  return configurationFieldMessage(keyedSettingPath(parent, key), message);
+}
+
+/**
+ * The Configuration setting path `<parent>.<key>` for a submitted key: control, format, line
+ * and paragraph separator characters show as ?, and a key that is not a plain ID is quoted.
+ */
+export function keyedSettingPath(parent: string, key: string): string {
   const shown = key.replace(/[\p{Cc}\p{Cf}\p{Zl}\p{Zp}]|\p{Cs}/gu, "?");
-  const path = /^[A-Za-z0-9_-]+$/.test(shown)
+  return /^[A-Za-z0-9_-]+$/.test(shown)
     ? `${parent}.${shown}`
     : `${parent}[${JSON.stringify(shown)}]`;
-  return configurationFieldMessage(path, message);
+}
+
+/**
+ * "Configuration setting <setting> <requirement>.", with a long setting path shortened to fit
+ * the 256-character cap. Build a path that holds a submitted key with keyedSettingPath.
+ */
+export function configurationSettingMessage(setting: string, requirement: string): string {
+  return configurationFieldMessage(
+    setting,
+    (path) => `Configuration setting ${path} ${requirement}.`,
+  );
 }
 
 /** Builds a message that names the Configuration setting `agents.entries.<key>`. */
@@ -357,8 +375,16 @@ export function modelProviderMessage(key: string, message: (path: string) => str
   return keyedSettingMessage("models.providers", key, message);
 }
 
-const modelCredentialMessage = (path: string): string =>
-  `Configuration field ${path} holds a credential value inline, where a reference is required. Store the key as a Secret and select it as the Agent's model credential instead.`;
+const inlineCredentialMessage =
+  (instead: string) =>
+  (path: string): string =>
+    `Configuration field ${path} holds a credential value inline, where a reference is required. ${instead}`;
+const modelCredentialMessage = inlineCredentialMessage(
+  "Store the key as a Secret and select it as the Agent's model credential instead.",
+);
+const gatewayPasswordMessage = inlineCredentialMessage(
+  "Use the OPENCLAW_GATEWAY_PASSWORD environment reference, whose value the Compute Driver generates, instead.",
+);
 
 /**
  * A literal credential in a known model credential field of Configuration values. The
@@ -367,10 +393,18 @@ const modelCredentialMessage = (path: string): string =>
 export class ModelCredentialValueError extends Error {
   readonly path: string;
 
-  constructor(path: string) {
-    super(configurationFieldMessage(path, modelCredentialMessage));
+  constructor(path: string, message: (path: string) => string = modelCredentialMessage) {
+    super(configurationFieldMessage(path, message));
     this.name = "ModelCredentialValueError";
     this.path = path;
+  }
+}
+
+/** A literal gateway.auth.password in Configuration values, reported like a model credential. */
+export class GatewayPasswordValueError extends ModelCredentialValueError {
+  constructor(path: string) {
+    super(path, gatewayPasswordMessage);
+    this.name = "GatewayPasswordValueError";
   }
 }
 
@@ -835,13 +869,13 @@ const SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES = Object.freeze({
   deploy:
     "ChatGPT Harness authentication requires an issued account access-token credential, and this Installation has no ChatGPT Backend to issue one. An administrator must configure it; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
   delete:
-    "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. An administrator must configure it again before deleting the account; see https://docs-enterprise.openclaw.org/guides/integrations/chatgpt/",
+    "This service account holds an issued access token, and this Installation has no ChatGPT Backend to revoke it. Re-add it, or force the delete and revoke the token at the provider; see https://docs-enterprise.openclaw.org/reference/service-accounts/",
 });
 
 /**
  * The Installation has no ChatGPT Backend, so it selects no ServiceAccount Driver: no account
  * credential can be issued, a ChatGPT Harness binding cannot deploy, and an account holding an
- * issued access token cannot be deleted, since nothing can revoke the token. An Installation
+ * issued access token cannot be deleted unless forced, since nothing can revoke the token. An Installation
  * property, raised only after the caller's grant and the account lookup, so it reveals nothing
  * a 403 or 404 hides. The fixed message names the fix.
  */
@@ -849,6 +883,32 @@ export class ServiceAccountDriverNotConfiguredError extends ResourceConflictErro
   constructor(operation: "issue" | "deploy" | "delete") {
     super(SERVICE_ACCOUNT_DRIVER_NOT_CONFIGURED_MESSAGES[operation]);
     this.name = "ServiceAccountDriverNotConfiguredError";
+  }
+}
+
+const SERVICE_ACCOUNT_REFERENCE_URL =
+  "https://docs-enterprise.openclaw.org/reference/service-accounts/";
+
+/**
+ * An account-owned credential Secret left by an earlier issuance whose outcome OCC could not
+ * settle (a lost create reply whose cleanup failed) blocks every retry until an operator deletes
+ * it (finding 935). Raised only after the caller's update grant, the account lookup and the
+ * "no credential yet" check, so it reaches only callers who may issue for this account. It
+ * names the Kubernetes namespace and Secret (never its contents) and the doc's removal step.
+ */
+export class ServiceAccountCredentialSecretExistsError extends ResourceStateConflictError {
+  readonly secretNamespace: string;
+  readonly secretName: string;
+
+  constructor(secretNamespace: string, secretName: string) {
+    const message = (secret: string) =>
+      `Kubernetes Secret ${secret} from an earlier issuance blocks this one. An operator must delete it, then retry; see ${SERVICE_ACCOUNT_REFERENCE_URL}`;
+    const full = message(`${secretNamespace}/${secretName}`);
+    // The HTTP error contract caps messages at 256 characters; only a long namespace exceeds it.
+    super(full.length <= 256 ? full : message(secretName));
+    this.name = "ServiceAccountCredentialSecretExistsError";
+    this.secretNamespace = secretNamespace;
+    this.secretName = secretName;
   }
 }
 

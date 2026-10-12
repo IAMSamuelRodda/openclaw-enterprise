@@ -4,219 +4,281 @@ OpenClaw Enterprise (OCE) is pre-alpha and has no stable release, so a newer
 main can refuse or break an Installation that an older build created. Each
 change like that gets an entry here: what breaks, who is affected, how to tell,
 and the steps. Before an upgrade, read every entry dated after the source commit
-you run now, then follow the [upgrade checklist](upgrade-checklist.md) and
+you run now, here and in the [earlier notices](breaking-changes-archive.md),
+then follow the [upgrade checklist](upgrade-checklist.md) and
 [production image upgrades](production-upgrade.md).
 
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
-## 2026-10-09: sandbox domains longer than 214 characters are refused
+## 2026-10-11: named Harness authentication and Docker workspace refusals
 
-**What breaks.** Since #1823, Helm refuses a `gatewayRouting.sandbox.domain`
-over 214 characters (`must not exceed 214 characters, leaving room for the
-agent-<32 hex>. prefix`), and the controller refuses to start with
-`Sandbox domain must not exceed 214 characters`. Each dedicated Agent hostname,
-`agent-<32 hex>.<domain>`, must fit the 253-character Gateway API limit.
+**What breaks.**
 
-**Who is affected.** Installations with sandbox routing and a 215-253 character
-domain. Their dedicated Agent preview routes were already refused at deploy.
+- On Kubernetes Compute, an Agent whose `harnessAuth.method` its topology
+  cannot use (for example `runtime` or `codex_pat` on embedded OpenClaw, or
+  `oauth` on dedicated OpenClaw) gets `400` naming `harnessAuth.method`, where
+  it got a fixed `409`: at provisioning and deployment, and at Agent create and
+  update for `runtime` and Secret bindings. Nothing new is refused.
+- On Docker Compute, Agent create, and update while initial workspace files
+  are pending, answer `400` for an `agents.entries` roster other than `main`
+  alone, a workspace other than `/home/node/.openclaw/workspace` or
+  `/home/node/workspace`, or a true `skipBootstrap` or
+  `skipOptionalBootstrapFiles`. Before, the first deployment's preparation
+  failed. The messages match Kubernetes Compute's.
 
-**How to tell.**
-`helm get values <release> -o json | jq '.gatewayRouting.sandbox.domain // "" | length'`
-prints more than 214.
+**Who is affected.** Clients that branch on the `409`, and Docker Compute
+users who saved such an Agent. Stored Agents still read.
 
-**Steps.** Pick a shorter preview domain, issue its wildcard certificate and
-DNS, set the new domain, then upgrade.
+**How to tell.** The `400` names the setting.
 
-## 2026-10-07: migration 0049 refuses managed ChatGPT service-account Agents
+**Steps.** Change the named setting, `harnessAuth` or `executionMode`, then save
+again.
 
-**What breaks.** Since #1648 (`94957cedc`), migration
-`0049_codex_pat_sources` stops the upgrade with SQLSTATE `23514`
-(`Unsupported legacy managed PAT authentication`) when any Agent, Agent
-revision or queued provisioning request still uses the retired
-`chatgpt_service_account` Harness auth. The method is now `codex_pat` with a
-service-account source. The old release keeps running; nothing is changed.
+## 2026-10-11: Agent and Configuration saves refuse what deployment refuses
 
-**Who is affected.** Installations that ever deployed an Agent with
-`harnessAuth.method` `chatgpt_service_account`, including Agents since changed
-to another method, because their old revisions keep it.
+**What breaks.** On Kubernetes Compute, Configuration create and update,
+provisioning and Preset saves answer `400` for an enabled unsupported
+`channels.<provider>`, a non-empty `auth`, an `env` or `env.vars` name starting
+`OPENAI_` or `ANTHROPIC_` (or a Codex login variable), and an authorization
+header on a selected model provider. Agent create and update refuse what
+deployment refused for the same Agent and Configuration: an Agent that is not
+`dedicated` (including an omitted `executionMode`) when a Sandbox Driver is
+selected (`400`; deployment answered `404`), a Harness the Configuration
+selects for the other execution mode (`400`), a Harness authentication,
+repository or initial workspace file setup the Compute Driver cannot deliver
+(`400` naming the setting, or `409`). Deployment names those Kubernetes
+settings too, instead of answering with fixed Harness authentication text:
 
-**How to tell.** Before upgrading, on the old release:
+- Deployment answers `400` naming the setting, where it answered `409`, for
+  the dedicated OpenClaw model catalog, a provider `apiKey`, channel Secret
+  bindings and `cloudWorkers.requiredProfile`.
+- Deployment refuses a pending initial workspace setup the Configuration
+  cannot deliver with `400`, where the first deployment's preparation failed.
+- Switching an embedded OpenClaw Agent to `dedicated` needs the Configuration
+  to carry the dedicated model catalog first: save the Configuration, then
+  the Agent.
 
-```bash
-occ agent list -o json | jq -r '.[] | select(.harnessAuth.method == "chatgpt_service_account") | .id'
-```
+**Who is affected.** Clients that saved such values and fixed them before
+deploying. Stored Configurations and Agents still read.
 
-Run it in every Namespace (`--namespace`). An Agent changed away from the method
-still has old revisions; check them with
-`GET /namespaces/<id>/agents/<agent>/revisions`.
+**How to tell.** The `400` names the setting or the execution mode.
 
-**Steps.** Deleting an Agent removes its revisions and provisioning requests,
-which clears the refusal.
+**Steps.** Fix the named setting or the Agent's `executionMode`, then save
+again.
 
-1. Record each affected Agent's settings (`occ agent get <id> -o json`) and
-   workspace files.
-2. Delete it on the old release (`occ agent delete <id>`) and wait until
-   `occ agent list` no longer shows it.
-3. Upgrade.
-4. Re-create the Agent with
-   `"harnessAuth": {"method": "codex_pat", "source": {"kind": "service_account", "namespaceId": "<ns>", "id": "<sa>"}}`,
-   then deploy it.
+## 2026-10-11: the chart refuses malformed Secret, ConfigMap and GatewayClass names
 
-_Untested_ on a real Installation. The split-layout script below does steps 1, 2
-and 4 for every Agent it moves.
+**What breaks.** `helm template`, `install` and `upgrade` fail when a Secret
+name the chart reads, `repositoryCredentials.registryConfigMapName`,
+`gatewayRouting.gatewayClassName` or `gatewayRouting.issuerRef.name` is not a
+Kubernetes resource name: lowercase
+letters, digits, `-` and `.`, starting and ending with a letter or digit, at
+most 253 characters. Examples are `database.caSecretName`,
+`gatewayRouting.apiKeySecretName`, `auth.*.secretName` and
+`executionCluster.*KubeconfigSecretName`. Kubernetes either refused such a Pod
+or left it waiting for a Secret that cannot exist. Profile preflight already
+refused the names it writes.
 
-## 2026-10-05: split-layout tenants block the controller upgrade
+**Who is affected.** Hand-written values files with such a name. No working
+Installation is affected, since Kubernetes cannot create a Secret, ConfigMap or
+GatewayClass with that name. Settings of disabled features are not checked.
 
-**What breaks.** Since #925 (`dd344a97c`), a single-cluster Installation keeps
-each Namespace's Gateways and Harnesses in one tenant namespace. Releases before
-it kept Gateways in a separate `oce-gateways-<hash>` namespace. The current API
-and worker refuse to start while such a namespace exists, and the
-[image upgrade helper](production-upgrade.md) stops at its startup preflight
-(`Existing split-layout Gateway storage prevents this single-cluster upgrade`)
-before it changes anything. See
-[split-layout installations](../../reference/drivers/kubernetes-compute.md#existing-split-layout-installations).
+**How to tell.** Rendering fails with
+`<setting> must be a Kubernetes resource name of at most 253 characters`.
 
-**Who is affected.** Single-cluster Installations created by the 2026-09-28
-release, or by any main before `dd344a97c`, with at least one Namespace.
-Bootstrap creates `default`, so that is nearly all of them. The experimental
-two-cluster profile is not affected.
+**Steps.** Create the Secret or ConfigMap under a valid name, set it in your
+values, and run the upgrade again. _untested_
 
-**How to tell.**
+## 2026-10-11: status proxy sources that cover every address are refused
 
-```bash
-kubectl get namespaces -l openclaw.dev/gateway-namespace -L openclaw.dev/namespace
-```
+**What breaks.** Controller startup refuses a
+`network.pluginStatusProxySourceCidrs` entry that covers every address:
+`0.0.0.0/0`, `::/0`, or an IPv6 range containing all of `::ffff:0:0/96`.
+Such a source let every Pod reach each Agent's status port.
+`gatewayTrustedProxyCidrs` already refused these. The two-cluster
+`executionCluster.network` lists refused `/0` and now also such IPv6 ranges.
 
-A row with an empty `NAMESPACE` column is a split-layout tenant.
+**Who is affected.** Hand-written `installation.yaml` files with such an
+entry. Profiles already refused a `/0`.
 
-**What you lose.** No migration moves the old namespaces, so their tenants are
-exported, deleted and re-created under new IDs. A deleted Namespace's name stays
-reserved, so each Namespace comes back under a new name. These come back:
-Secrets (you supply the values again), Configurations that an Agent uses,
-Presets, credential sources, Roles, access bindings, service accounts (without
-issued credentials) and Agents. Agents that were running are deployed again,
-and a copy of each running Agent's Harness workspace can be put back. These do
-not come back:
+**How to tell.** Startup fails with `... CIDRs cannot cover every address.`
+A narrower status source wider than one address, such as the Pod CIDR, still
+starts; the worker logs `KUBERNETES_STATUS_PROXY_SOURCE_BROAD`, and the profile
+renderer warns.
 
-- chat history and other Gateway state (the copy keeps the transcripts for
-  reference; loading them into the new Gateway is untested);
-- Agent revision history and bindings to old revisions;
-- group, Installation-wide and resource-less bindings (re-create them by hand);
-- issued service-account credentials and Agent runtime credentials;
-- the old IDs and Namespace names, so update anything outside OCE that uses them.
+**Steps.** List the API server's `/32` or `/128` Pod proxy source addresses
+instead, then restart the controller. _untested_
 
-Accounts, Installation service keys and the audit history stay in the database.
+## 2026-10-11: settings that took dedicated Agents down are refused earlier
 
-**Steps.** Tested on a 2026-09-28 release Installation with three Namespaces
-and three Agents: the commands took about two minutes, plus the two image
-releases (about 35 seconds each). Run them from a checkout of the target
-release, with `occ` set up for the old release as an administrator (`OCC_URL`,
-`OCC_SERVICE_KEY_FILE`, `OCC_CA_BUNDLE`) and `kubectl` for the cluster. The
-script talks to OCC only. Keep every file below private: they hold
-Configurations, workspace files, transcripts and Secret values.
+**What breaks.** Configuration create and update answer `400` for
+a `plugins.entries.codex.config.appServer.approvalPolicy` other than `never`,
+`on-request` or `on-failure`, and for a literal `gateway.auth.password` (one
+that is not a `${NAME}` or `{source, id}` reference). Kubernetes deployment and
+provisioning refuse, before the running revision stops, what preparation or the
+Gateway refused only after it: those policies and a `gateway.auth.password`
+other than the `OPENCLAW_GATEWAY_PASSWORD` reference (`409`); an enabled channel
+on an embedded Agent or on an Installation without `runtime.channels`, and,
+when the Gateway hosts a workspace node, `file-transfer` in `plugins.deny` or
+`plugins.entries.file-transfer.enabled: false` (`400`). Docker and SSH Compute
+refuse the same policies.
 
-1. Export every Namespace from the old release:
+**Who is affected.** Configurations with such values. A dedicated redeploy of
+one stopped the working Agent and then failed. Docker Agents that ran a literal
+gateway password can no longer save it. Stored Configurations still read.
 
-   ```bash
-   node scripts/split-layout-tenants.mjs export --out /secure/occ/tenants.json
-   ```
+**How to tell.** The `400` or `409` names the setting.
 
-   It reads `AGENTS.md`, `SOUL.md`, `IDENTITY.md` and `USER.md` only where
-   [workspace routing](workspace-routing.md) is configured and the Agent runs.
-   Step 2 copies the whole workspace instead.
+**Steps.** Fix the named setting (for the password, use **Enable gateway
+password access**), then deploy again.
 
-2. Copy each running Agent's Harness workspace and Gateway state:
+## 2026-10-11: Gateway StorageClass names are checked before startup
 
-   ```bash
-   ARCHIVE=/secure/occ/tenant-archive
-   mkdir -m 700 -p "$ARCHIVE"
-   kubectl get pods -A -l openclaw.dev/agent --field-selector status.phase=Running -o jsonpath='{range .items[*]}{.metadata.namespace} {.metadata.name} {.metadata.labels.openclaw\.dev/workload-role} {.metadata.labels.openclaw\.dev/agent}{"\n"}{end}' |
-   while read -r ns pod role agent; do
-     case $role in
-       gateway) paths='.openclaw/state .openclaw/agents/main/agent .openclaw/media .openclaw/agents/main/sessions' ;;
-       agent) paths='workspace .codex/generated_images' ;;
-       *) continue ;;
-     esac
-     kubectl -n "$ns" exec "$pod" -c "$role" -- tar -C /home/node --ignore-failed-read \
-       --exclude=codex-home --exclude='.oce-workspace-setup.*' -cf - $paths \
-       >"$ARCHIVE/$agent-$role.tar" </dev/null || echo "failed: $agent $role"
-   done
-   ```
+**What breaks.** Profile preflight and controller startup refuse a
+`runtime.gatewayStorageClassName` that is not a Kubernetes DNS-subdomain resource
+name. Such a value could never create a Gateway PVC.
 
-3. Write the Secret values to a `0600` file such as
-   `/secure/occ/tenant-secrets.json`, keyed by the old Namespace name, then
-   Secret name: `{"team-a": {"model-key": "..."}}`. List the names with
-   `jq '.namespaces[] | {name, secrets: [.secrets[].name]}' /secure/occ/tenants.json`.
-4. Delete the tenants on the old release. The command refuses if a Namespace
-   gained an Agent or Secret after the export, or if the export could not read an
-   Agent's workspace files; once step 2 has the copy, add
-   `--allow-unread-workspace-files`:
+**Who is affected.** Hand-written `installation.yaml` files with an invalid value;
+profiles now refuse the same value before writing deployable files.
 
-   ```bash
-   node scripts/split-layout-tenants.mjs discard --bundle /secure/occ/tenants.json \
-     --yes --allow-unread-workspace-files
-   kubectl get namespaces -l openclaw.dev/gateway-namespace
-   ```
+**How to tell.** Preflight names `runtime.gatewayStorageClassName`; controller
+startup logs `GATEWAY_STORAGE_CLASS_INVALID`.
 
-   Continue when no `oce-gateways-*` namespace is left. A Configuration that no
-   Agent uses is not exported and blocks its Namespace's delete; the error says
-   how to find and delete it. Then run `discard` again.
+**Steps.** Run `kubectl get storageclass`, copy the intended StorageClass name into
+the Installation input, rerender when using a profile, and restart the controller.
 
-5. [Upgrade the control plane](production-upgrade.md#upgrade-the-control-plane)
-   and the runtime as usual. The preflight now passes.
-6. Re-create the tenants under new Namespace names. `--skip` leaves out a
-   Namespace you no longer need, such as an unused `default`:
+## 2026-10-11: `occ` refuses explicitly empty flag values
 
-   ```bash
-   node scripts/split-layout-tenants.mjs import --bundle /secure/occ/tenants.json \
-     --secret-values /secure/occ/tenant-secrets.json --map /secure/occ/tenant-ids.json \
-     --rename team-a=team-a-2 --skip default
-   ```
+**What breaks.** `occ` refuses an empty `--revision=`, `--pod=`, `--level=`,
+`--source=`, `--file=`, `--out=`, `--service-principal=`, `--url=`,
+`--service-key-file=` or `dev up --key-output=` before it does any work.
+Earlier builds treated most of these as omitted and used the default revision,
+Pod, level or key path.
 
-   It creates the Namespaces and exits `3` until they are `ready`.
-   [Grant tenant RoleBindings](production-agents.md#grant-tenant-rolebindings)
-   for each one, then run the same command again. The ID map records every old
-   and new ID, so a rerun after any failure resumes. Exit `4` lists what needs a
-   hand: Agents whose deploy failed, such as a service-account Agent without an
-   issued credential, and access bindings it could not re-create.
+**Who is affected.** Scripts that pass one of these flags a variable that can be
+empty, such as `--revision="$REV"`.
 
-7. Put each Harness workspace back once the new Agent's Harness Pod runs:
+**How to tell.** `occ` reports `--<flag> must name ...`.
 
-   ```bash
-   for tarball in "$ARCHIVE"/*-agent.tar; do
-     old=$(basename "$tarball" -agent.tar)
-     new=$(jq -r --arg old "$old" '.ids[$old] // empty' /secure/occ/tenant-ids.json)
-     [ -n "$new" ] || { echo "skipped: $old was not imported"; continue; }
-     read -r ns pod < <(kubectl get pods -A --field-selector status.phase=Running \
-       -l "openclaw.dev/agent=$new,openclaw.dev/workload-role=agent" \
-       -o jsonpath='{.items[0].metadata.namespace} {.items[0].metadata.name}')
-     [ -n "${pod:-}" ] || { echo "skipped: $new has no running Harness"; continue; }
-     kubectl -n "$ns" exec -i "$pod" -c agent -- tar -C /home/node --no-overwrite-dir -xf - <"$tarball" \
-       && echo "restored $old -> $new" || echo "failed: $old -> $new"
-   done
-   ```
+**Steps.** Omit the flag when its value is empty. `--ca-bundle=` still clears
+`OCC_CA_BUNDLE`.
 
-8. Check the Agents (`occ agent list`) and re-issue any service-account
-   credentials.
+## 2026-10-10: Credential Secrets must be dedicated; profile Collectors need an exporter
 
-## 2026-10-01: released dedicated Agents fail to redeploy
+**What breaks.** Helm refuses a Secret name shared by two Secret settings
+(installation, auth, database, database CA, sign-in, ChatGPT, kubeconfig,
+repository, sandbox, Gateway or Collector) or a generated Gateway Secret. The
+public CA settings (database, external Gateway and repository) may share one
+with each other.
+Envoy Gateway accepts every entry of the gateway API key Secret as a client
+key, so sharing it made the ChatGPT admin key, a CA certificate or a TLS key a
+valid `x-api-key` on the Agent Gateway listener: such an Installation was never
+safe to run. Profiles with `controlPlane.loggingCollector.enabled` need an
+`exporter`.
 
-**What breaks.** Since `7e831ba37`, the dedicated Harness init container makes
-its `workspace` and `generated-images` directories private (`0700`). Agents
-deployed by the 2026-09-28 release have those directories owned by root, so on
-the first redeploy the init container fails with `EPERM` and the Harness stays
-in `Init:Error`. The upgrade helper's runtime step redeploys every running Agent.
+**Who is affected.** Installations sharing those names; the defaults differ.
 
-**Who is affected.** Installations whose dedicated Agents were deployed by the
-2026-09-28 release and are redeployed by a controller from `7e831ba37` up to,
-but not including, #1652 (`42c43fcd0`, 2026-10-09).
+**How to tell.** `helm upgrade` or the profile renderer reports
+`<setting> must name a dedicated Secret` or the missing `exporter`.
 
-**How to tell.** The Harness Pod's `prepare-private-state` container exits with
-`EPERM: operation not permitted, chmod '/harness-workspace-state/workspace'`.
+**Steps.** Move the credential to a new Secret, point the setting at it, and
+upgrade. For `gatewayRouting.apiKeySecretName` (profile:
+`controlPlane.gatewayApiKeySecretName`), the new Secret holds only the `occ`
+entry; then delete `occ` from the old Secret. Rotate a key that shared the
+gateway API key Secret or a generated Gateway Secret, such as the ChatGPT admin
+key or a TLS key. Copy your
+`exporter` values into the profile input. _untested_
 
-**Steps.** Upgrade the controller to `42c43fcd0` or later, then deploy the
-Agent again (`occ agent deploy <id>`). The init container moves each old
-directory aside, recreates it as uid 1000 with mode `0700` and moves the files
-back. Entries it cannot move back are left in `.workspace.kubelet-created` or
-`.generated-images.kubelet-created` beside it and named in the init log.
+## 2026-10-10: OpenShell Codex Agents need a new deployment
+
+**What breaks.** A controller-only upgrade does not repair OpenShell dedicated
+Codex Agents whose shell commands fail with
+`bwrap: No permissions to create a new namespace`.
+Since #2079, the OpenShell Sandbox Driver adds `"approvalsReviewer": "user"` to
+the Codex app server settings it freezes when it admits a revision, which keeps
+each turn at `danger-full-access`. A revision admitted earlier keeps its frozen
+settings, so the Gateway still turns Codex's own sandbox on, and that sandbox
+cannot start inside OpenShell.
+
+**Who is affected.** Dedicated Codex Agents on the
+[OpenShell Sandbox Driver](../../reference/drivers/openshell-sandbox.md) whose
+active revision was admitted before #2079 (`66ea9bed5`, 2026-10-10). Other
+Harnesses are not affected by the `bwrap` failure.
+
+**How to tell.** Every shell command in the Agent's chats fails with that
+`bwrap` message.
+
+**Steps.** Upgrade the controller to `66ea9bed5` or later, then deploy the Agent
+again (`occ agent deploy <id>`). A
+[runtime upgrade](production-upgrade.md#upgrade-agent-runtimes) does this for
+every running Agent. The new revision uses the Agent's current Configuration
+draft. If commands still fail, check `tools.exec`
+([OpenShell credential sources](openshell-credential-sources.md)). _untested_
+
+**Restart policy.** A controller at `db3c97bae` (#2084) or later also has
+OpenShell restart any Harness whose process exits. A Sandbox created before
+#2084 keeps restart policy `NEVER`, which OpenShell cannot change in place, so
+deploy every OpenShell Agent whose Sandbox predates #2084 again too
+([An OpenShell Agent stops answering](../topics/agent-troubleshoot.md#an-openshell-agent-stops-answering)).
+
+## 2026-10-10: Gateway listener settings are checked before deployment
+
+**What breaks.** Provisioning and deployment answer `409` for a `gateway.bind`
+other than `auto`, `lan` or `custom`, `custom` unless `customBindHost` is
+`0.0.0.0`, or Tailscale exposure. These never served routed traffic.
+
+**Who is affected.** Such Configurations on Kubernetes or Docker Compute.
+Kubernetes renders an omitted or `auto` bind as `lan` from the next deployment.
+
+**How to tell.** The `409` names the setting.
+
+**Steps.** Fix the named setting and deploy again. On containerd with cgroup v2,
+also redeploy Agents whose bind is omitted or `auto`.
+
+## 2026-10-10: controller-only releases can restart Agent Pods once
+
+**What breaks.** After a controller-only release, the first time the new worker
+prepares an existing Kubernetes revision again, it applies the Gateway and
+Harness Pod templates the new controller renders. When they changed (since #1758,
+for example, readiness uses an HTTP probe), both Deployments roll once on the
+same runtime image, and chat is unavailable until the new Pods are ready (about
+17 seconds in one test).
+
+**Who is affected.** Running Agents with repository credentials, within about a
+minute of the controller rollout, while their repository session lasts. Other
+Agents only if their deployment was still finishing when the new worker took
+over.
+
+**How to tell.** The Agent's Gateway and Harness Pods restart after the
+controller rollout under a new ReplicaSet of the same revision.
+
+**Steps.** Before a controller-only release, confirm the new controller supports
+the deployed runtime ([checklist](upgrade-checklist.md)): affected Pods restart
+with its rendering on the existing image. Plan for one short chat interruption
+per affected Agent.
+
+## 2026-10-10: Codex approval policy is checked at save and before deployment
+
+**What breaks.** Provisioning and deployment answer `409` when
+`plugins.entries.codex.config.appServer.approvalPolicy` is `untrusted` (Compute
+Drivers also refuse to prepare it). Creating or updating an Agent, provisioning
+and deployment answer `400` when an enabled plugin selection sets
+`toolDefaults.reviewer` to `auto` and that policy is omitted or `never`.
+Native startup checks the automatic reviewer against the policy Compute renders,
+but with the policy omitted the Gateway picks its own, which can be `never`.
+
+**Who is affected.** Custom Codex Configurations with `untrusted` (the Gateway
+already refused them at load, with a `doctor --fix` hint that cannot work), and
+Agents with an automatic plugin reviewer whose Configuration omits the policy
+or sets `never` (readiness already refused `never`). Before, saves succeeded;
+now any other update of an Agent with such a reviewer, even of credentials only,
+is refused. Every bundled Preset sets the policy.
+
+**How to tell.** The `409` or `400` names the setting.
+
+**Steps.** Set the policy to `on-request` before saving the Agent, or choose the
+human reviewer, then deploy the Agent again. `on-failure` still works; native
+startup now gets `on-request`, which the Gateway runs for it. An Agent already
+deployed with the policy omitted keeps its current session policy until it is
+deployed again.
