@@ -62,6 +62,7 @@ test("OpenClaw runtime helper installs exact admitted package pins and verifies 
   });
 
   assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => call.args))), [
+    ["/app/openclaw.mjs", "plugins", "registry", "--json"],
     [
       "/app/openclaw.mjs",
       "plugins",
@@ -143,6 +144,7 @@ test("OpenClaw runtime helper installs an admitted ClawHub release and verifies 
   );
 
   assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => call.args))), [
+    ["/app/openclaw.mjs", "plugins", "registry", "--json"],
     [
       "/app/openclaw.mjs",
       "plugins",
@@ -157,6 +159,72 @@ test("OpenClaw runtime helper installs an admitted ClawHub release and verifies 
   const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
   assert.deepEqual(effective.plugins.entries, { "acme-search": { enabled: true } });
   assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "acme-search"]);
+});
+
+// The gateway's state volume keeps OpenClaw's install records across restarts. An
+// install over a record is an update, whose migration loads the staged package's
+// Doctor contract module before the helper can verify it, so the helper drops the
+// record first. OpenClaw 2026.9.8 uninstall (src/plugins/uninstall-package-config.ts)
+// also strips the plugin from plugins.allow and writes entries.<id>.enabled false;
+// the helper must restore the admitted configuration.
+test("OpenClaw runtime helper drops a persisted install record before reinstalling a release", () => {
+  const configPath = "/home/node/.openclaw/openclaw.json";
+  const { calls, files } = runOpenClawRuntimeHelper(
+    approvedClawHubRuntime(),
+    [{ status: 0, stdout: "", stderr: "" }, ...clawHubInstallResponses()],
+    {
+      baseConfig: { plugins: { allow: ["openai", "acme-search"] } },
+      pluginRegistryResponse: {
+        status: 0,
+        stdout: JSON.stringify({
+          state: "fresh",
+          persisted: {
+            installRecords: {
+              "acme-search": { source: "clawhub", clawhubPackage: "@acme/openclaw-search" },
+            },
+          },
+        }),
+        stderr: "",
+      },
+      beforeSpawn(command, args, sandbox) {
+        if (args[1] === "plugins" && args[2] === "uninstall") {
+          const config = JSON.parse(sandbox.files.get(configPath));
+          config.plugins.allow = config.plugins.allow.filter((id) => id !== args[3]);
+          config.plugins.entries = { ...config.plugins.entries, [args[3]]: { enabled: false } };
+          sandbox.files.set(configPath, JSON.stringify(config));
+        }
+      },
+    },
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => call.args.slice(1, 4)))), [
+    ["plugins", "registry", "--json"],
+    ["plugins", "uninstall", "acme-search"],
+    ["plugins", "install", "clawhub:@acme/openclaw-search@1.4.2"],
+    ["plugins", "registry", "--refresh"],
+    ["plugins", "inspect", "acme-search"],
+  ]);
+  assert.ok(calls[1].args.includes("--force"));
+  const effective = JSON.parse(files.get(configPath));
+  assert.deepEqual(effective.plugins.allow, ["openai", "acme-search"]);
+  assert.deepEqual(effective.plugins.entries, { "acme-search": { enabled: true } });
+});
+
+test("OpenClaw runtime helper refuses to install when persisted install records are unreadable", () => {
+  const result = runOpenClawRuntimeHelper(approvedClawHubRuntime(), clawHubInstallResponses(), {
+    // A record store exists but its records cannot be read: install could become an update.
+    pluginRegistryResponse: {
+      status: 0,
+      stdout: JSON.stringify({ state: "fresh", persisted: null }),
+      stderr: "",
+    },
+    captureError: true,
+  });
+
+  assert.match(result.error?.message ?? "", /install records are unreadable/);
+  assert.deepEqual(JSON.parse(JSON.stringify(result.calls.map((call) => call.args.slice(1, 3)))), [
+    ["plugins", "registry"],
+  ]);
 });
 
 test("An approved npm release bound at admission installs and verifies in the Pod", () => {
@@ -198,7 +266,7 @@ test("An approved npm release bound at admission installs and verifies in the Po
     ],
   );
 
-  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)), [
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[1].args)), [
     "/app/openclaw.mjs",
     "plugins",
     "install",
@@ -625,7 +693,8 @@ for (const [name, tools] of [
       successfulPluginIds: [],
       failures: [{ pluginId: "occ-plugin:diffs", code: "PLUGIN_INSTALL_FAILED" }],
     });
-    assert.equal(result.calls.length, 1);
+    // A persisted-record read, then the failed install.
+    assert.equal(result.calls.length, 2);
     const effective = JSON.parse(result.files.get("/home/node/.openclaw/openclaw.json"));
     assert.deepEqual(effective.plugins.entries, { diffs: { enabled: false } });
     // Remove only startup's generated grant; emptying an operator allowlist would widen access.
@@ -786,7 +855,7 @@ test("OpenClaw startup preserves restrictions for a disabled selection", () => {
   );
   const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
   assert.deepEqual(effective.plugins, { ...plugins, entries: { diffs: { enabled: false } } });
-  assert.ok(calls[0].args.includes("--no-enable"));
+  assert.ok(calls[1].args.includes("--no-enable"));
 });
 
 test("OpenClaw startup rejects a blocked Codex bridge before readiness", () => {

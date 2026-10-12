@@ -951,6 +951,22 @@ export function createNativePluginAssertions({
     );
   }
 
+  // The install record OpenClaw persists on the gateway's state volume, read without
+  // loading plugin code (`plugins registry --json`, no refresh). A replacement Pod
+  // starts with this record unless startup removes it.
+  async function readOpenClawPersistedInstallRecord(agent, pluginId) {
+    return afterGatewayWarmUp("gateway Pod ready to read persisted install records", async () => {
+      const execution = await execGateway(agent, [
+        "sh",
+        "-c",
+        'node /app/openclaw.mjs plugins registry --json | node -e \'let s = ""; process.stdin.on("data", (c) => (s += c)); process.stdin.on("end", () => { const r = JSON.parse(s).persisted?.installRecords?.[process.argv[1]]; process.stdout.write(JSON.stringify(r === undefined ? null : { source: r.source, clawhubPackage: r.clawhubPackage, version: r.version, integrity: r.integrity })); });\' "$1"',
+        "registry",
+        pluginId,
+      ]);
+      return JSON.parse(execution.stdout);
+    });
+  }
+
   // A just-activated gateway can briefly fail readiness while its post-ready
   // warm-up runs at the CPU limit; wait for it rather than fail on the first read.
   async function afterGatewayWarmUp(label, read) {
@@ -1483,6 +1499,7 @@ export function createNativePluginAssertions({
     assertNoSessionToolCallEvidence,
     readOpenClawPluginPolicy,
     readOpenClawPluginInstall,
+    readOpenClawPersistedInstallRecord,
     readSessionToolEvidence: sessionEvidence,
     listCodexNativeCatalog,
     codexNativePluginDetail,
@@ -2376,6 +2393,7 @@ export async function createPluginDriverRealFixture(
     assertNoSessionToolCallEvidence: nativeAssertions.assertNoSessionToolCallEvidence,
     readOpenClawPluginPolicy: nativeAssertions.readOpenClawPluginPolicy,
     readOpenClawPluginInstall: nativeAssertions.readOpenClawPluginInstall,
+    readOpenClawPersistedInstallRecord: nativeAssertions.readOpenClawPersistedInstallRecord,
     readSessionToolEvidence: nativeAssertions.readSessionToolEvidence,
     listCodexNativeCatalog: nativeAssertions.listCodexNativeCatalog,
     codexNativePluginDetail: nativeAssertions.codexNativePluginDetail,

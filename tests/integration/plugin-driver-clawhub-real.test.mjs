@@ -217,7 +217,7 @@ test(
     const release = selectedRelease();
     const pluginId = `occ-plugin:${release.nativeId}`;
     const fixture = await createClawHubFixture(context, [release]);
-    const { agent } = await createAgentSelecting(fixture, release);
+    const { agent, allowedPlugins } = await createAgentSelecting(fixture, release);
     const deployed = await fixture.deployAndWait(agent);
     assert.deepEqual(deployed.revision.plugins?.releases, { [pluginId]: release });
     assert.deepEqual(
@@ -244,6 +244,14 @@ test(
         { [pluginId]: release },
         `after the approval is ${label}, the restarted controller reads the admitted binding unchanged.`,
       );
+      // The state volume keeps OpenClaw's install record, so the replacement Pod
+      // starts over a persisted record: startup must drop it and install fresh.
+      assert.deepEqual(await fixture.readOpenClawPersistedInstallRecord(agent, release.nativeId), {
+        source: "clawhub",
+        clawhubPackage: release.packageName,
+        version: release.version,
+        integrity: release.integrity,
+      });
       const restarted = await fixture.replaceGatewayPod(agent);
       assert.equal(restarted.after.revisionId, deployed.revision.id);
       assert.deepEqual(
@@ -251,6 +259,9 @@ test(
         installRecordFor(release),
         `after the approval is ${label}, the replacement Pod installs the admitted release.`,
       );
+      // Uninstall strips the plugin from plugins.allow; startup restores the admitted policy.
+      const policy = await fixture.readOpenClawPluginPolicy(agent, release.nativeId);
+      assert.deepEqual(policy.plugins, { allow: allowedPlugins, enabled: true });
     }
 
     // With the approval removed, nothing new can select or admit the plugin: an

@@ -171,7 +171,10 @@ Grants enter nonempty `tools.allow`, otherwise `tools.alsoAllow`, preserving den
 override precedes `toolDefaults.enabled`; disabled tools emit native denies.
 Master disable and operator denies prevail; `provider_default` and `none` add no
 Diffs review step. Revision-private configuration uses `--pin --force --no-enable`,
-preserving enablement and allow/deny lists. Preparation refreshes the registry
+preserving enablement and allow/deny lists. Startup first uninstalls any persisted record of an admitted plugin
+(`removePersistedOpenClawInstallRecords`) and restores the configuration: OpenClaw's
+update path would load the staged package's Doctor contract before verification.
+Preparation refreshes the registry
 and verifies admitted configuration; the pinned runtime release lacks this flag.
 Native inspection verifies plugin ID, package name, runtime/install version,
 recorded integrity, and the runtime source's containment in the install path.

@@ -579,7 +579,8 @@ test("Compute hands an admitted plugin release to the OpenClaw runtime that inst
       stderr: "",
     },
   ]);
-  assert.equal(calls[0].args[3], "clawhub:@acme/openclaw-search@1.4.2");
+  // The first call reads persisted install records; the second installs.
+  assert.equal(calls[1].args[3], "clawhub:@acme/openclaw-search@1.4.2");
 
   // A release must belong to an admitted selection, and only the OpenClaw Driver binds them.
   assert.throws(

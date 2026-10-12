@@ -56,6 +56,9 @@ Preparation installs a ClawHub entry as `clawhub:<packageName>@<version>` with
 `--pin --force --no-enable` like Diffs; OpenClaw accepts `--pin` only for npm. It then inspects the install and requires the recorded source,
 package (`clawhubPackage` for ClawHub, `resolvedName` for npm), version, and
 integrity to match the admitted release. A mismatch keeps the gateway unready.
+Each start installs fresh: the gateway's state volume keeps OpenClaw's install
+records, so startup first removes the record of each plugin it will install and
+restores the configuration that removal edits.
 Package downloads use the Agent's existing public HTTPS egress.
 
 ## Limits
@@ -75,6 +78,12 @@ Package downloads use the Agent's existing public HTTPS egress.
   2 GiB limit was not. Size `resources.gateway.limits.memory` for the plugins
   you approve.
 - There is no API or Console control for the list.
+- Verification follows installation. The pinned OpenClaw CLI cannot take an
+  expected digest, so the Pod downloads and unpacks the archive and installs its
+  npm dependencies (lifecycle scripts disabled, versions resolved at install time)
+  before comparing digests. It loads no plugin code before the comparison, and a
+  mismatch stops before the native gateway starts. The pin does not cover those
+  dependencies or the registry origin.
 
 ## Source and verification
 
@@ -84,6 +93,7 @@ Package downloads use the Agent's existing public HTTPS egress.
   [Pod installation](../../../apps/controller/src/drivers/compute/kubernetes/runtime-entrypoints.ts).
 - [Agent plugin runtime flow](../../flows/agent-plugins.md).
 
-Source and conformance tests use recorded ClawHub install-record shapes. They do
-not prove installation from the live ClawHub registry with a released runtime
-image; that needs the real-runtime lane in the [testing guide](../../testing/plugins.md).
+Conformance tests use recorded ClawHub install-record shapes. The real-runtime lane
+in the [testing guide](../../testing/plugins.md#approved-clawhub-release) installs
+from the live ClawHub registry with a released runtime image, including replay after
+an approval change and refusal of a mismatched digest.
