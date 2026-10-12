@@ -919,6 +919,12 @@ export function createNativePluginAssertions({
   }
 
   async function readOpenClawPluginPolicy(agent, pluginId) {
+    return afterGatewayWarmUp("gateway Pod ready to read the plugin policy", () =>
+      readOpenClawPluginPolicyOnce(agent, pluginId),
+    );
+  }
+
+  async function readOpenClawPluginPolicyOnce(agent, pluginId) {
     const execution = await execGateway(agent, [
       "node",
       "-e",
@@ -940,11 +946,17 @@ export function createNativePluginAssertions({
   // The native install record the gateway Pod's runtime wrote, read through its
   // own CLI. Only identity fields are returned; the record holds no credentials.
   async function readOpenClawPluginInstall(agent, pluginId) {
-    // A just-activated gateway can briefly fail readiness while its post-ready
-    // warm-up runs at the CPU limit; wait for it rather than fail on the first read.
-    return waitFor("gateway Pod ready to read the plugin install record", async () => {
+    return afterGatewayWarmUp("gateway Pod ready to read the plugin install record", () =>
+      readOpenClawPluginInstallOnce(agent, pluginId),
+    );
+  }
+
+  // A just-activated gateway can briefly fail readiness while its post-ready
+  // warm-up runs at the CPU limit; wait for it rather than fail on the first read.
+  async function afterGatewayWarmUp(label, read) {
+    return waitFor(label, async () => {
       try {
-        return await readOpenClawPluginInstallOnce(agent, pluginId);
+        return await read();
       } catch (error) {
         if (isTransientGatewayReadinessAssertion(error)) {
           return undefined;
@@ -1471,6 +1483,7 @@ export function createNativePluginAssertions({
     assertNoSessionToolCallEvidence,
     readOpenClawPluginPolicy,
     readOpenClawPluginInstall,
+    readSessionToolEvidence: sessionEvidence,
     listCodexNativeCatalog,
     codexNativePluginDetail,
     codexPluginToolInventory,
@@ -2272,6 +2285,7 @@ export async function createPluginDriverRealFixture(
     assertNoSessionToolCallEvidence: nativeAssertions.assertNoSessionToolCallEvidence,
     readOpenClawPluginPolicy: nativeAssertions.readOpenClawPluginPolicy,
     readOpenClawPluginInstall: nativeAssertions.readOpenClawPluginInstall,
+    readSessionToolEvidence: nativeAssertions.readSessionToolEvidence,
     listCodexNativeCatalog: nativeAssertions.listCodexNativeCatalog,
     codexNativePluginDetail: nativeAssertions.codexNativePluginDetail,
     codexPluginToolInventory: nativeAssertions.codexPluginToolInventory,

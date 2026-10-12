@@ -42,9 +42,10 @@ test(
     const prompt =
       process.env.OCC_TEST_OPENCLAW_CLAWHUB_PROMPT ??
       [
-        `Call the ${toolName} tool exactly once with action "run" and this pipeline:`,
-        `exec --json --shell 'echo ["${outputMarker}"]' | json`,
-        `After the tool returns, include ${turnMarker} in the final answer.`,
+        // Lobster built-ins only: one item from commands.list, rendered as literal
+        // text. No shell step, so nothing in it reads as OpenClaw's core exec tool.
+        `Call the tool named "${toolName}" once with action "run" and pipeline: commands.list | head --n 1 | template --text '${outputMarker}'`,
+        `Do not use any other tool. After it returns, include ${turnMarker} in your final answer.`,
       ].join("\n");
     const resultPattern = process.env.OCC_TEST_OPENCLAW_CLAWHUB_RESULT_EXPECT ?? outputMarker;
 
@@ -77,7 +78,16 @@ test(
       values: {
         ...configuration.data.values,
         plugins: { ...configuration.data.values.plugins, allow: allowedPlugins },
-        tools: { ...configuration.data.values.tools, allow: ["read"] },
+        tools: {
+          ...configuration.data.values.tools,
+          allow: ["read"],
+          // OpenClaw 2026.9.8 puts plugin tools behind core exec (code mode, for
+          // models that prefer it) or tool_call (Tool Search, on by default).
+          // Turning both off gives the model lobster's own schema, so the
+          // transcript records the plugin's own tool call.
+          codeMode: { enabled: false },
+          toolSearch: false,
+        },
       },
     });
     assert.equal(configured.status, 200, JSON.stringify(configured.error));
@@ -130,13 +140,40 @@ test(
       [modelSecret],
       "ClawHub plugin proof response must not expose model credentials.",
     );
-    // The marker appears only in the tool's own output, so a model reply alone
-    // cannot satisfy this check.
-    await fixture.assertSessionToolCallEvidence(agent, {
+    // Read the turn from the native transcript. assertSessionToolCallEvidence also
+    // requires a systemPromptReport, which OpenClaw 2026.9.8 no longer writes to
+    // session entries, so this test checks the transcript directly.
+    const evidence = await fixture.readSessionToolEvidence(agent, {
       sessionKey,
       turnMarker,
       toolName,
       resultPattern,
     });
+    assert.equal(evidence.exists, true, `${sessionKey} must have a persisted transcript.`);
+    assert.equal(evidence.userMarkerSeen, true, "the transcript must include the request.");
+    assert.equal(evidence.assistantMarkerSeen, true, "the transcript must include the reply.");
+    assert.equal(evidence.assistantError, false, "the Agent turn must succeed.");
+    // The output marker appears only in the tool's own result, so a model reply
+    // alone cannot satisfy this check.
+    const matched = evidence.calls.find((call) =>
+      evidence.results.some(
+        (result) =>
+          result.toolCallId === call.id && result.isError === false && result.matchesResult,
+      ),
+    );
+    const transcript = {
+      calls: evidence.calls,
+      results: evidence.results,
+      observedToolNames: evidence.diagnostics.observedToolNames,
+    };
+    assert.ok(
+      matched,
+      `the turn must call ${toolName} with a successful result containing the output marker: ${JSON.stringify(transcript)}`,
+    );
+    assert.deepEqual(
+      evidence.diagnostics.observedToolNames,
+      [toolName],
+      `the turn must call only ${toolName}, not core exec or tool_call: ${JSON.stringify(transcript)}`,
+    );
   },
 );
