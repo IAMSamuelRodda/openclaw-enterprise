@@ -207,7 +207,7 @@ marker. The other cases use the same path without a model turn:
   does not have, once on a fresh state volume and once for a new revision of an
   Agent whose state volume already holds the release's install record. The Pod
   must stop before the native gateway spawns: the gateway log names the integrity
-  refusal, the Pod is never Ready, and the revision never activates.
+  refusal, the Pod is never Ready, and the deployment never succeeds.
 
 The lane needs `OPENAI_API_KEY` and an immutable `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`.
 The default release is `@openclaw/lobster` 2026.9.7, compatible with the pinned

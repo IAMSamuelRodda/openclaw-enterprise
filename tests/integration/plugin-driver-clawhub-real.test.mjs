@@ -25,7 +25,8 @@ function selectedRelease() {
 }
 
 // A revision whose release fails verification: its gateway container exits before the
-// wrapper spawns the native gateway, no Pod of it is ever Ready, and it never activates.
+// wrapper spawns the native gateway, no Pod of it is ever Ready, and its deployment
+// never succeeds.
 async function assertStartupRefused(fixture, agent, revisionId, modelSecret) {
   const refusal = await fixture.observeGatewayStartupRefusal(agent, revisionId);
   const lines = proofLines(refusal.previousLog);
@@ -50,7 +51,8 @@ async function assertStartupRefused(fixture, agent, revisionId, modelSecret) {
     !lines.some((line) => line.includes("http server listening")),
     "the native gateway never served.",
   );
-  assert.notEqual((await fixture.getAgent(agent.id)).activeRevisionId, revisionId);
+  // activeRevisionId is recorded before runtime activation completes, so the
+  // deployment status, not the active revision, shows the refusal.
   const status = await fixture.getDeploymentStatus(agent.id, revisionId);
   assert.notEqual(status.status, "succeeded");
 }
