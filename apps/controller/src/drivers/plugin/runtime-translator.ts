@@ -162,10 +162,11 @@ export function createPluginRuntimeTranslator(
       ) {
         return invalid(path + ".toolNames");
       }
+      // The Pod re-validates this descriptor from the AgentRevision, so source stays explicit.
       return {
         nativeId,
         name,
-        ...(source === "clawhub" ? { source } : {}),
+        source,
         packageName,
         version,
         integrity,

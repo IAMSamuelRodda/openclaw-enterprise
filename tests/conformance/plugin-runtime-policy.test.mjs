@@ -3,6 +3,7 @@ import test from "node:test";
 import vm from "node:vm";
 import { WORKSPACE_FILE_NAMES } from "../../packages/contracts/src/index.ts";
 import { requireWorkspaceNodePlugins } from "../../apps/controller/src/drivers/compute/kubernetes/configuration-rules.ts";
+import { OCCPluginDriver } from "../../apps/controller/src/drivers/plugin/index.ts";
 import {
   WORKSPACE_NODE_BINDING_PATH,
   runOpenClawRuntimeHelper,
@@ -156,6 +157,56 @@ test("OpenClaw runtime helper installs an admitted ClawHub release and verifies 
   const effective = JSON.parse(files.get("/home/node/.openclaw/openclaw.json"));
   assert.deepEqual(effective.plugins.entries, { "acme-search": { enabled: true } });
   assert.deepEqual(effective.tools.alsoAllow, ["existing-tool", "acme-search"]);
+});
+
+test("An approved npm release bound at admission installs and verifies in the Pod", () => {
+  const approved = {
+    nativeId: "acme-notes",
+    name: "Acme Notes",
+    source: "npm",
+    packageName: "@acme/openclaw-notes",
+    version: "2.0.1",
+    integrity: OCC_DIFFS_DIGEST,
+    toolNames: ["acme_notes"],
+  };
+  const selections = { "occ-plugin:acme-notes": { enabled: true } };
+  // The Driver's binding is what OCC stores in the AgentRevision and Compute delivers.
+  const releases = new OCCPluginDriver({ approvedPlugins: [approved] }).bindReleases(selections);
+  const { calls } = runOpenClawRuntimeHelper(
+    { manifest: { kind: "openclaw", selections, releases } },
+    [
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: JSON.stringify({ refreshed: true }), stderr: "" },
+      {
+        status: 0,
+        stdout: JSON.stringify({
+          plugin: {
+            id: "acme-notes",
+            version: "2.0.1",
+            rootDir: "/home/node/.openclaw/plugins/acme-notes",
+          },
+          install: {
+            source: "npm",
+            resolvedName: "@acme/openclaw-notes",
+            resolvedVersion: "2.0.1",
+            integrity: OCC_DIFFS_DIGEST,
+            installPath: "/home/node/.openclaw/plugins/acme-notes",
+          },
+        }),
+        stderr: "",
+      },
+    ],
+  );
+
+  assert.deepEqual(JSON.parse(JSON.stringify(calls[0].args)), [
+    "/app/openclaw.mjs",
+    "plugins",
+    "install",
+    "@acme/openclaw-notes@2.0.1",
+    "--pin",
+    "--force",
+    "--no-enable",
+  ]);
 });
 
 test("OpenClaw runtime helper keeps a ClawHub release unready when its install record drifts", () => {
