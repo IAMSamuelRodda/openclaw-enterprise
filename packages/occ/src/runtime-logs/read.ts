@@ -1,4 +1,5 @@
 import type {
+  AgentRuntimeLogSource,
   AgentRuntimeDescription,
   AgentRuntimeLogChunk,
   AgentRuntimeLogRequest,
@@ -24,6 +25,8 @@ import {
 
 import { boundedRuntimeLogPage } from "./page-budget.ts";
 
+type AgentRuntimeLogSourcePod = AgentRuntimeLogSource["pods"][number];
+
 export const RUNTIME_LOG_LIMIT_BYTES = 1024 * 1024;
 export const RUNTIME_LOG_DEFAULT_TAIL_LINES = 200;
 export const RUNTIME_LOG_MAX_TAIL_LINES = 1000;
@@ -33,6 +36,7 @@ const RESUME_OVERLAP_SECONDS = 2;
 export interface RuntimeLogQuery {
   readonly source: RuntimeLogSourceId;
   readonly pod?: string;
+  readonly container?: string;
   readonly previous: boolean;
   readonly tailLines: number;
   readonly sinceSeconds?: number;
@@ -179,19 +183,32 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   if (query.pod !== undefined && !source.pods.some(({ name }) => name === query.pod)) {
     throw new RuntimeLogReadError("pod_invalid");
   }
+  if (
+    query.container !== undefined &&
+    !source.pods.some(
+      (pod) =>
+        pod.container === query.container && (query.pod === undefined || pod.name === query.pod),
+    )
+  ) {
+    throw new RuntimeLogReadError("pod_invalid");
+  }
   const cursorPosition = decoded?.status === "valid" ? decoded.position : undefined;
   // A cursor continues only its own view: the same instance selection and Pod choice.
   // Anything else is a new view and is audited like a request without a cursor.
   const prior =
     cursorPosition !== undefined &&
     cursorPosition.previous === query.previous &&
-    (query.pod === undefined || query.pod === cursorPosition.pod)
+    (query.pod === undefined || query.pod === cursorPosition.pod) &&
+    (query.container === undefined || query.container === cursorPosition.container)
       ? cursorPosition
       : undefined;
   const podName = query.pod ?? prior?.pod ?? source.pods[0]?.name;
+  const container = query.container ?? prior?.container;
+  const matchesContainer = (pod: AgentRuntimeLogSourcePod) =>
+    container === undefined || pod.container === container;
   const pod =
-    source.pods.find(({ name }) => name === podName) ??
-    (query.pod === undefined ? source.pods[0] : undefined);
+    source.pods.find((pod) => pod.name === podName && matchesContainer(pod)) ??
+    (query.pod === undefined ? source.pods.find(matchesContainer) : undefined);
   const observedAt = new Date(now()).toISOString();
   if (pod === undefined) {
     return Object.freeze({
@@ -219,6 +236,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   const sameStream =
     prior !== undefined &&
     prior.pod === pod.name &&
+    prior.container === pod.container &&
     prior.podUid === pod.uid &&
     prior.restartCount === pod.restartCount;
   if (prior !== undefined && !sameStream) {
@@ -235,7 +253,8 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
   // A view is audited once, before its first Driver read. Cursor polls inside a
   // view are not re-audited; an expired cursor starts a new view, and so does a
   // cursor whose Pod is gone (the audit row names the Pod that is read).
-  const continuesView = prior !== undefined && prior.pod === pod.name;
+  const continuesView =
+    prior !== undefined && prior.pod === pod.name && prior.container === pod.container;
   const viewId = continuesView ? prior.viewId : newRuntimeLogViewId();
   if (!continuesView) {
     await input.admitView({
@@ -669,6 +688,7 @@ export async function readRuntimeLogPage(input: ReadRuntimeLogPageInput): Promis
     }
     const position: RuntimeLogCursorPosition = {
       viewId,
+      container: pod.container,
       pod: pod.name,
       podUid: observedStream.podUid!,
       restartCount: observedStream.restartCount!,

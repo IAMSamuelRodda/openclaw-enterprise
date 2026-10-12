@@ -5,13 +5,13 @@ workspace files, and credentials. Authorized operators can also open an Agent's
 [native admin UI](#open-the-native-admin-ui). The console has no rollback, live
 runtime health, or browser chat through OCE.
 
-Start with [Create and deploy Agents](console/create-and-deploy.md) or
+See [Create and deploy Agents](console/create-and-deploy.md) or
 [Understand Agent detail](../guides/console/agent-details.md). Operator setup and
 runtime checks belong to the [deployment guide](../guides/deploy.md).
 
 ## Start and sign in
 
-At your administrator-provided address, enter your provisioned account email as
+Enter your provisioned account email as
 **Username**, then its password, and select **Login**. Public
 signup, single sign-on, and self-service password recovery are unavailable; ask
 your administrator for an account or a password reset. To set up your own
@@ -33,8 +33,8 @@ release revision into the console HTML.
 ## Browse and select a Namespace
 
 The sidebar opens **Agents** or **Namespaces**; **Refresh** repeats the read.
-Set up models during Agent creation; the [experimental Backends](backends.md)
-tab is hidden. Namespace rows are read-only.
+Configure models during creation. [Experimental Backends](backends.md) stay
+hidden; Namespace rows are read-only.
 
 | Page          | Scope and permission                                                                                                 |
 | ------------- | -------------------------------------------------------------------------------------------------------------------- |
@@ -42,9 +42,9 @@ tab is hidden. Namespace rows are read-only.
 | Namespaces    | Installation-wide collection filtered by exact Namespace `read`.                                                     |
 | Observability | External [`observability.url`](configuration.md#installation-startup-configuration) link; Installation `administer`. |
 
-The console uses a light appearance and OCC-served fonts. Full-page client
-navigation focuses the destination heading when the previous control disappears.
-On mobile, **Open navigation** opens a drawer; widening to desktop closes it
+The console uses light appearance and OCC-served fonts. Navigation focuses
+the destination heading when the previous control disappears.
+**Open navigation** opens a mobile drawer; desktop closes it
 and releases page controls.
 
 When available, a retained view stays mounted and inert while a full-page return
@@ -83,7 +83,8 @@ Kubernetes differences, inspection scope, and unavailable states.
 
 ## Agent creation and deployment
 
-Supported Dedicated provisioning deploys the first revision during creation. Otherwise, creation
+Dedicated provisioning waits for first activation; failure links the original
+request’s existing Agent and revision. Otherwise, creation
 saves a draft: provide model and channel credentials when prompted, then select
 **Deploy new version**. If the Compute Driver requires them, OCC generates
 missing connection credentials during that first deployment.
@@ -119,11 +120,12 @@ while the catalog list and plugin details scroll within the picker.
 **Save plugin selections** updates the Agent; deployment snapshots them.
 **Operator-managed credentials** saves `{ "method": "runtime" }` for SSH embedded
 OpenClaw; OCC neither validates host credentials nor generates metadata for that
-binding, but API permissions and topology checks still apply. **Current version**
-displays `activeRevisionId`, which can differ from the viewed snapshot and does
-not prove live serving.
-**Deployment activity** shows the latest visible version's persisted result;
-the viewed version shows its own recorded outcome.
+binding, but API permissions and topology checks still apply. **Current version** shows `activeRevisionId`, a selected pointer, not serving health.
+**Deployment activity** shows the newest authorized outcome and the viewed version’s
+own result. The Agent list’s **Latest deployment** links failure details beside
+Current version. Unreadable results remain unavailable. Bootstrap failures retain
+safe evidence and refresh separate cleanup progress.
+
 For a failed deployment, **Open vN Logs** opens that exact version and brings
 its Logs panel into view, including when starting from the draft or another
 version. The panel shows runtime output or the applicable access or availability

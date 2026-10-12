@@ -38,6 +38,7 @@ export interface ContainerLogWindowCheckpoint {
 
 export interface RuntimeLogCursorPosition {
   readonly viewId: string;
+  readonly container?: string;
   readonly pod: string;
   readonly podUid: string;
   readonly restartCount: number;
@@ -237,6 +238,8 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
   if (
     (record.w !== undefined && window === undefined) ||
     (record.cw !== undefined && container === undefined) ||
+    (record.c !== undefined &&
+      (typeof record.c !== "string" || !/^[a-z0-9]([-a-z0-9.]{0,251}[a-z0-9])?$/.test(record.c))) ||
     typeof record.v !== "string" ||
     typeof record.p !== "string" ||
     typeof record.u !== "string" ||
@@ -264,6 +267,7 @@ function position(value: unknown): RuntimeLogCursorPosition | undefined {
   }
   return {
     viewId: record.v,
+    ...(record.c === undefined ? {} : { container: record.c as string }),
     pod: record.p,
     podUid: record.u,
     restartCount: record.r as number,
@@ -290,6 +294,7 @@ export function createRuntimeLogCursorCodec(secret: string): RuntimeLogCursorCod
         JSON.stringify({
           b: bindingHash(binding),
           v: value.viewId,
+          ...(value.container === undefined ? {} : { c: value.container }),
           p: value.pod,
           u: value.podUid,
           r: value.restartCount,

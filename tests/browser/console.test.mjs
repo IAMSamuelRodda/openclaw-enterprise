@@ -267,8 +267,8 @@ test("console browser flow keeps Namespace URL state across global pages and log
   await fixture.bootstrap();
   const alpha = await fixture.createNamespace("Alpha", { ready: true });
   const beta = await fixture.createNamespace("Beta", { ready: true });
-  await fixture.createAgent(alpha.id, "Alpha <script>alert(1)</script>");
-  await fixture.createAgent(beta.id, "Beta agent");
+  const alphaAgent = await fixture.createAgent(alpha.id, "Alpha <script>alert(1)</script>");
+  const betaAgent = await fixture.createAgent(beta.id, "Beta agent");
   const { page } = await newPage(t, fixture);
   const requests = apiRequests(page, fixture.origin);
   page.on("dialog", (dialog) => assert.fail(`Unexpected browser dialog: ${dialog.message()}`));
@@ -342,9 +342,15 @@ test("console browser flow keeps Namespace URL state across global pages and log
     (request) => request.method !== "GET" && !request.path.startsWith("/api/auth/sign-"),
   );
   assert.deepEqual(writeRequests, []);
-  assert.equal(
-    requests.some((request) => /\/deploy|\/agents\/agt_/.test(request.path)),
-    false,
+  // List rows read revision history for Latest deployment. Browsing these draft
+  // Agents must not read their detail or invoke any deployment operation.
+  const agentRequests = requests.filter(({ path }) => /\/deploy|\/agents\/agt_/.test(path));
+  assert.deepEqual(
+    [...new Set(agentRequests.map(({ method, path }) => `${method} ${path}`))].sort(),
+    [
+      `GET /namespaces/${alpha.id}/agents/${alphaAgent.id}/revisions`,
+      `GET /namespaces/${beta.id}/agents/${betaAgent.id}/revisions`,
+    ].sort(),
   );
 });
 

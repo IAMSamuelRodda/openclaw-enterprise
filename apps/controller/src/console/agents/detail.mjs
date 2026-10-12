@@ -175,6 +175,7 @@ function deploymentFailure(error, hrefs = {}, logsLink = null) {
     return element("p", { className: "muted" }, "No persisted startup failure.");
   }
   const runtimeFailure = error.data?.runtimeFailure;
+  const preparation = error.data?.preparation;
   const guidance = Object.hasOwn(DEPLOYMENT_FAILURE_GUIDANCE, error.code)
     ? DEPLOYMENT_FAILURE_GUIDANCE[error.code]
     : null;
@@ -192,6 +193,49 @@ function deploymentFailure(error, hrefs = {}, logsLink = null) {
           guidanceHref
             ? element("a", { href: guidanceHref }, DEPLOYMENT_FAILURE_LINK_LABELS[guidance.link])
             : null,
+        )
+      : null,
+    preparation
+      ? element(
+          "div",
+          { className: "bootstrap-failure-evidence" },
+          element("h4", {}, "Credential preparation evidence"),
+          element(
+            "p",
+            {},
+            `${preparation.workload.kind} ${preparation.workload.name} · ${preparation.workload.namespace} · ${preparation.reason}`,
+          ),
+          element(
+            "p",
+            { className: "muted" },
+            `Observed ${displayDate(preparation.observedAt)}. This local file handoff does not verify provider login acceptance.`,
+          ),
+          element("p", { className: "resource-id" }, `Workload UID: ${preparation.workload.uid}`),
+          element(
+            "p",
+            {},
+            `Started: ${preparation.startedAt ? displayDate(preparation.startedAt) : "Unknown"} · Finished: ${preparation.finishedAt ? displayDate(preparation.finishedAt) : "Unknown"}`,
+          ),
+          ...preparation.pods.map((pod) =>
+            element(
+              "div",
+              {},
+              element("strong", {}, `${pod.name} · ${pod.phase} · scheduling ${pod.scheduling}`),
+              element("p", { className: "resource-id" }, `Pod UID: ${pod.uid}`),
+              ...pod.containers.map((container) =>
+                element(
+                  "p",
+                  {},
+                  `${container.kind} container ${container.name}: ${container.state}${container.reason ? ` · ${container.reason}` : ""}${container.exitCode === null ? "" : ` · exit ${container.exitCode}`}${container.startedAt ? ` · started ${displayDate(container.startedAt)}` : ""}${container.finishedAt ? ` · finished ${displayDate(container.finishedAt)}` : ""}`,
+                ),
+              ),
+            ),
+          ),
+          element(
+            "p",
+            { className: "hint" },
+            "For unschedulable Pods, check capacity and placement. For image or volume setup failures, check image access, mounts and private-volume permissions. Correct the cause and deploy a new version of this Agent.",
+          ),
         )
       : null,
     // A failed version may never become current, so link its output directly.
@@ -293,7 +337,11 @@ function createDeploymentStatusPanel(
   function schedulePoll() {
     clearTimeout(pollTimer);
     pollTimer = null;
-    if (state.error || !PENDING_DEPLOYMENT_STATUSES.has(state.status?.status)) {
+    if (
+      state.error ||
+      (!PENDING_DEPLOYMENT_STATUSES.has(state.status?.status) &&
+        !PENDING_DEPLOYMENT_STATUSES.has(state.status?.cleanup?.status))
+    ) {
       return;
     }
     pollTimer = setTimeout(() => {
@@ -392,6 +440,19 @@ function createDeploymentStatusPanel(
       "div",
       {},
       deploymentProgress(state.status.status, state.status.progress),
+      state.status.cleanup
+        ? element(
+            "p",
+            { role: "status", className: "deployment-cleanup" },
+            {
+              queued:
+                "Cleanup pending. Bootstrap resources have not been confirmed removed; the controller will retry.",
+              running: "Cleanup is running. Bootstrap resources have not been confirmed removed.",
+              succeeded: "Cleanup completed for this version.",
+              failed: "Cleanup failed. Ask an operator to inspect the retained cleanup obligation.",
+            }[state.status.cleanup.status],
+          )
+        : null,
       state.status.progress
         ? element(
             "div",
