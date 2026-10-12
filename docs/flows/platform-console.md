@@ -216,7 +216,7 @@ Credential, provider, and Harness changes clear results and invalidate pending r
 JSON changes, retaining only listed models; otherwise both inputs clear.
 Provider/authentication changes retain no model. Submission matches the primary
 Configuration model to `model.value`. `updateControls` sets the button label,
-visibility, required input, and focus. Returning preserves credentials and unrelated
+visibility, and required input; the toggle moves focus. Returning preserves credentials and unrelated
 Configuration; saved-Configuration and pending-request locks govern both directions.
 
 `configurationTemplate` enables Control UI with loopback origins on port 18789.
