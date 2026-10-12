@@ -50,6 +50,8 @@ function developmentCli() {
   return cliBuild;
 }
 
+// Node stand-ins use process.getBuiltinModule, not require: they load as ESM when TMPDIR is
+// inside this repo, whose package.json sets type=module.
 async function writeExecutable(path, body) {
   await writeFile(path, body, { mode: 0o755 });
   await chmod(path, 0o755);
@@ -105,8 +107,8 @@ async function createFixture(t, options = {}) {
   await writeExecutable(
     join(bin, engine),
     `#!${nodeExecutable}
-const fs = require("node:fs");
-const { spawnSync } = require("node:child_process");
+const fs = process.getBuiltinModule("node:fs");
+const { spawnSync } = process.getBuiltinModule("node:child_process");
 const args = process.argv.slice(2);
 const engine = ${JSON.stringify(engine)};
 const podmanJsonConfig = ${JSON.stringify(options.podmanJsonConfig ?? false)};
@@ -339,10 +341,10 @@ exit(99, "unhandled " + engine + " compose command: " + command);
   await writeExecutable(
     join(fixtureRepository, "bin", "occ"),
     `#!${nodeExecutable}
-const fs = require("node:fs");
+const fs = process.getBuiltinModule("node:fs");
 const args = process.argv.slice(2);
 if (args[0] === "dev") {
-  const { spawnSync } = require("node:child_process");
+  const { spawnSync } = process.getBuiltinModule("node:child_process");
   const result = spawnSync(${JSON.stringify(cli)}, args, { env: process.env, stdio: "inherit" });
   process.exit(result.status ?? 1);
 }
@@ -471,8 +473,8 @@ async function prepareLifecycleCommands(fixture, scenario = "success", options =
     await writeExecutable(
       join(bin, command),
       `#!${nodeExecutable}
-const fs = require("node:fs");
-const { spawnSync } = require("node:child_process");
+const fs = process.getBuiltinModule("node:fs");
+const { spawnSync } = process.getBuiltinModule("node:child_process");
 const args = process.argv.slice(2);
 const command = ${JSON.stringify(command)};
 const engine = ${JSON.stringify(engine)};

@@ -28,10 +28,11 @@ test("image lanes use separate cache scopes without exposing credentials or comp
   const commandsPath = join(directory, "commands.json");
   // Stop at the real preparer's external build boundary. Hosted CI separately
   // proves BuildKit cache transport; this verifies invocation and failure ownership.
+  // getBuiltinModule, not require: the stand-in loads as ESM when TMPDIR is inside this repo.
   await writeFile(
     docker,
     `#!${process.execPath}\n` +
-      'const fs = require("node:fs");\n' +
+      'const fs = process.getBuiltinModule("node:fs");\n' +
       "const args = process.argv.slice(2);\n" +
       'if (args[0] === "version") { console.log("29.4.0"); process.exit(0); }\n' +
       "fs.appendFileSync(process.env.COMMANDS_PATH, `${JSON.stringify(args)}\\n`);\n" +

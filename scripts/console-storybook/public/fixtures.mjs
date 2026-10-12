@@ -234,7 +234,7 @@ export function installFixture(scenario, evidence) {
       : {}),
     servicePrincipalId: "identity_demo_agent",
     createdAt,
-    activeRevisionId: selectedRevisionId,
+    activeRevisionId: scenario.stopNoSelection ? null : selectedRevisionId,
     ...(scenario.repositoryAccess
       ? { repositoryAccess: structuredClone(scenario.repositoryAccess) }
       : {}),
@@ -463,6 +463,9 @@ export function installFixture(scenario, evidence) {
   if (scenario.presetWorkspaceFiles) {
     preset.template.agent.initialWorkspaceFiles = structuredClone(scenario.presetWorkspaceFiles);
   }
+  if (scenario.presetVariables) {
+    Object.assign(preset.template.variables, structuredClone(scenario.presetVariables));
+  }
   const presets = [
     preset,
     {
@@ -544,6 +547,19 @@ export function installFixture(scenario, evidence) {
             options.signal?.addEventListener("abort", abort, { once: true });
           }
         });
+      }
+      if (rule.bodyError) {
+        // A simulated after-headers failure exercises the production body reader.
+        // Real socket interruption is proved separately by the transport tests.
+        return new Response(
+          new ReadableStream({
+            start(controller) {
+              controller.enqueue(new TextEncoder().encode('{"data":'));
+              queueMicrotask(() => controller.error(new TypeError("Response body interrupted")));
+            },
+          }),
+          { headers: { "content-type": "application/json" } },
+        );
       }
       if (rule.status) {
         return error(rule.status, rule.code);

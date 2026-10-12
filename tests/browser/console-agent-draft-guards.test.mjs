@@ -36,7 +36,6 @@ test("Agent deployment requires a reload after repository access changes", async
     namespace.id,
     "Repository deploy review",
     nativeValues("repository-deploy-review"),
-    { harnessAuth: { method: "runtime" } },
   );
   const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
   const initial = await fixture.request("PATCH", path, {
@@ -183,7 +182,19 @@ for (const [field, change] of [
   ],
 ]) {
   test(`Agent deployment requires a reload after ${field} changes`, async (t) => {
-    const { fixture, namespace } = await createRuntimeAuthFixture(t, `Deployment ${field}`);
+    // SSH Compute runs only embedded Agents, and Agent save refuses a change to dedicated, so
+    // the execution mode case runs on Kubernetes Compute with a Secret-backed key.
+    const kubernetes = field === "execution mode";
+    const { fixture, namespace } = kubernetes
+      ? await (async () => {
+          const created = await createConsoleAppFixture(t);
+          await created.bootstrap();
+          return {
+            fixture: created,
+            namespace: await created.createNamespace(`Deployment ${field}`, { ready: true }),
+          };
+        })()
+      : await createRuntimeAuthFixture(t, `Deployment ${field}`);
     const pluginDriver = new CodexPluginDriver();
     fixture.controller.registerDriver(pluginDriver);
     fixture.controller.selectDriver("plugin", pluginDriver.id);
@@ -191,8 +202,12 @@ for (const [field, change] of [
       namespace.id,
       `Deployment ${field}`,
       nativeValues("deployment-settings"),
-      { harnessAuth: { method: "runtime" } },
+      kubernetes ? {} : { harnessAuth: { method: "runtime" } },
     );
+    const ready = () =>
+      kubernetes
+        ? page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor()
+        : page.getByText("Configured on the runtime host", { exact: false }).waitFor();
     const path = `/namespaces/${namespace.id}/agents/${agent.id}`;
     const { page } = await newPage(t, fixture);
     await login(
@@ -201,7 +216,7 @@ for (const [field, change] of [
       `/console/agents/${agent.id}?namespace=${namespace.id}&revision=draft`,
     );
     const deploy = page.getByRole("button", { name: "Deploy new version" });
-    await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+    await ready();
     assert.equal(await deploy.isEnabled(), true);
 
     // A second operator changes the desired Agent state without editing its Configuration.
@@ -226,7 +241,7 @@ for (const [field, change] of [
     assert.equal(await result, "blocked", `stale ${field} must not be submitted`);
     assert.equal(await deploy.isDisabled(), true);
     await page.reload();
-    await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+    await ready();
     assert.equal(await deploy.isEnabled(), true);
   });
 }
@@ -684,19 +699,46 @@ for (const changed of ["generation", "identity"]) {
   });
 }
 
+// A dedicated Codex Agent whose Slack tokens are bound, so its draft is ready to deploy.
+async function createSlackBoundAgent(fixture, namespace, name, marker) {
+  const app = await fixture.createSecret(namespace.id, `${name} app token`, "xapp-draft-guard");
+  const bot = await fixture.createSecret(namespace.id, `${name} bot token`, "xoxb-draft-guard");
+  const agent = await fixture.createAgent(
+    namespace.id,
+    name,
+    nativeValues(marker, {
+      harnessId: "codex",
+      channels: {
+        slack: {
+          enabled: true,
+          mode: "socket",
+          appToken: { source: "env", provider: "default", id: "SLACK_APP_TOKEN" },
+          botToken: { source: "env", provider: "default", id: "SLACK_BOT_TOKEN" },
+          channels: {},
+        },
+      },
+    }),
+    {
+      executionMode: "dedicated",
+      secretBindings: {
+        SLACK_APP_TOKEN: { source: app.ref, delivery: { type: "env" } },
+        SLACK_BOT_TOKEN: { source: bot.ref, delivery: { type: "env" } },
+      },
+    },
+  );
+  return agent;
+}
+
 for (const action of ["disable", "drawer"]) {
   test(`Channel ${action} blocks deployment and navigation while its Configuration write is pending`, async (t) => {
     const fixture = await createConsoleAppFixture(t);
     await fixture.bootstrap();
     const namespace = await fixture.createNamespace(`Pending channel ${action}`, { ready: true });
-    const agent = await fixture.createAgent(
-      namespace.id,
+    const agent = await createSlackBoundAgent(
+      fixture,
+      namespace,
       `Pending channel ${action} Agent`,
-      nativeValues("pending-channel", {
-        harnessId: "codex",
-        channels: { slack: { enabled: true, mode: "socket", channels: {} } },
-      }),
-      { executionMode: "dedicated", harnessAuth: { method: "runtime" } },
+      "pending-channel",
     );
     const { page } = await newPage(t, fixture);
     const requests = apiRequests(page, fixture.origin);
@@ -715,7 +757,7 @@ for (const action of ["disable", "drawer"]) {
     });
     const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
     await login(page, fixture, url);
-    await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+    await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
     assert.equal(
       await page
         .locator(".channels-section")
@@ -775,14 +817,11 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   const fixture = await createConsoleAppFixture(t);
   await fixture.bootstrap();
   const namespace = await fixture.createNamespace("Uncertain channel save", { ready: true });
-  const agent = await fixture.createAgent(
-    namespace.id,
+  const agent = await createSlackBoundAgent(
+    fixture,
+    namespace,
     "Uncertain channel Agent",
-    nativeValues("uncertain-channel", {
-      harnessId: "codex",
-      channels: { slack: { enabled: true, mode: "socket", channels: {} } },
-    }),
-    { executionMode: "dedicated", harnessAuth: { method: "runtime" } },
+    "uncertain-channel",
   );
   const { page } = await newPage(t, fixture);
   const configurationPath = `/namespaces/${namespace.id}/configurations/${agent.configurationId}`;
@@ -797,7 +836,7 @@ test("Channel save with a lost response blocks deployment until the draft is rel
   });
   const url = detailUrl(fixture, namespace.id, agent.id, "draft", "channels");
   await login(page, fixture, url);
-  await page.getByText("Configured on the runtime host", { exact: false }).waitFor();
+  await page.locator("button:not([disabled])", { hasText: "Deploy new version" }).waitFor();
   assert.equal(await page.getByRole("button", { name: "Deploy new version" }).isEnabled(), true);
   await page.getByRole("button", { name: "Disable Slack" }).click();
   await page
