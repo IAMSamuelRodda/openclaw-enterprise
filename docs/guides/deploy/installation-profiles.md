@@ -246,6 +246,9 @@ and `egressCidrs`; `github` also accepts `allowedOrgs` and `allowedTeams`
 ([allowlist](../../reference/authentication/external-sign-in.md#organization-and-team-allowlist));
 `oidc` also accepts `tokenAuth` and `displayName`;
 `trustedProxy` accepts `clientAddressHeader`, required for the `generic` preset.
+Preflight refuses `x-occ-client-ip`, `cookie`, `forwarded`, `authorization`, `host`,
+`origin`, and `x-api-key`; use a header that carries plain client addresses, such as
+`x-forwarded-for` or `x-real-ip`.
 Each `google.allowedDomains` entry must be a lowercase DNS name of at most 253
 characters, such as `example.com`, and its last label must start with a letter.
 Preflight refuses `example.123` and any longer name, which the chart and the API

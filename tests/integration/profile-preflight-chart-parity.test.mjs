@@ -305,6 +305,65 @@ fieldParity("trusted proxy CIDRs get the same verdict from the preflight and the
   values: (cidr) => ({ api: { trustedProxy: { preset: "ingress-nginx", cidrs: [cidr] } } }),
 });
 
+// The chart's clientAddressHeader refusal, in its order. generic still accepts a plain
+// address header; named presets keep reading x-forwarded-for.
+const refusedClientAddressHeaders = [
+  "x-occ-client-ip",
+  "cookie",
+  "forwarded",
+  "authorization",
+  "host",
+  "origin",
+  "x-api-key",
+];
+
+test(
+  "trusted proxy client address headers get the same verdict from the preflight and the chart",
+  { skip: helmSkip },
+  () =>
+    each(
+      [
+        ["x-real-ip", true],
+        ["x-forwarded-for", true],
+        ...refusedClientAddressHeaders.map((header) => [header, false]),
+      ],
+      async ([header, accepted]) => {
+        const manifests = await assertParity({
+          label: header,
+          controlPlane: {
+            trustedProxy: {
+              preset: "generic",
+              cidrs: ["10.42.0.0/16"],
+              clientAddressHeader: header,
+            },
+          },
+          values: {
+            api: {
+              trustedProxy: {
+                preset: "generic",
+                cidrs: ["10.42.0.0/16"],
+                clientAddressHeader: header,
+              },
+            },
+          },
+          accepted,
+          chartError: new RegExp(
+            `api\\.trustedProxy\\.clientAddressHeader cannot be ${escape(header)}; use a header that carries plain client addresses, such as x-forwarded-for or x-real-ip`,
+          ),
+          rendererError: new RegExp(
+            `controlPlane\\.trustedProxy\\.clientAddressHeader cannot be ${escape(header)}; use a header that carries plain client addresses, such as x-forwarded-for or x-real-ip\\.`,
+          ),
+        });
+        if (accepted) {
+          assert.match(
+            manifests,
+            new RegExp(`name: OCC_AUTH_CLIENT_IP_HEADER\\n\\s+value: "${escape(header)}"`),
+          );
+        }
+      },
+    ),
+);
+
 // A Kubernetes Namespace name is a DNS label of at most 63 characters, with no dots.
 const namespaceCases = [
   ["envoy-gateway-system", true],

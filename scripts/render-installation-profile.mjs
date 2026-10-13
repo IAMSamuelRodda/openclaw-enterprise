@@ -913,6 +913,21 @@ function renderTrustedProxy(source, diagnostics) {
       description: "a single lowercase HTTP header name of at most 64 characters",
     },
   );
+  // Same list and order as the chart's api.trustedProxy.clientAddressHeader refusal.
+  const refusedClientAddressHeaders = [
+    "x-occ-client-ip",
+    "cookie",
+    "forwarded",
+    "authorization",
+    "host",
+    "origin",
+    "x-api-key",
+  ];
+  if (refusedClientAddressHeaders.includes(clientAddressHeader)) {
+    diagnostics.errors.push(
+      `controlPlane.trustedProxy.clientAddressHeader cannot be ${clientAddressHeader}; use a header that carries plain client addresses, such as x-forwarded-for or x-real-ip.`,
+    );
+  }
   if (preset === "generic" && clientAddressHeader === undefined) {
     diagnostics.errors.push(
       "controlPlane.trustedProxy.clientAddressHeader is required for the generic preset.",
