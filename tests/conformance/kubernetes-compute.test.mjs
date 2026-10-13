@@ -18764,3 +18764,67 @@ test("embedded redeploy repairs a never-served unready Gateway while workspace s
     successor.id,
   );
 });
+
+// Finding 1144: a Sandbox Harness carries no workspace initializer, so admission and
+// preparation refuse initial workspace files for it before the workspace-path rule, which
+// would otherwise name the Sandbox-forced path the caller never wrote.
+test("Kubernetes refuses initial workspace files for a Sandbox Harness before the path rule", () => {
+  const { driver, revision, context } = workspaceSetupFixture(false);
+  const forced = {
+    ...revision.configuration,
+    agents: { ...revision.configuration.agents, defaults: { workspace: "/sandbox/data" } },
+  };
+  const sandboxed = /cannot be delivered to a Harness in a Sandbox/;
+  for (const configuration of [revision.configuration, forced]) {
+    assert.throws(
+      () => driver.validateWorkspaceSetup(revision.harness, configuration, "sandbox-provider"),
+      // Not a Configuration setting: OCC answers it as an Installation refusal (409).
+      (error) => !(error instanceof ConfigurationHarnessError) && sandboxed.test(error.message),
+    );
+  }
+  driver.validateWorkspaceSetup(revision.harness, revision.configuration);
+  assert.throws(
+    () => driver.validateWorkspaceSetup(revision.harness, forced),
+    /agents\.defaults\.workspace must be/,
+  );
+  assert.throws(
+    () =>
+      driver.workspaceSetupForRevision(
+        { ...revision, configuration: forced, sandboxDriverId: "sandbox-provider" },
+        context,
+      ),
+    sandboxed,
+  );
+  assert.equal(driver.workspaceSetupForRevision(revision, context), context.workspaceSetup);
+});
+
+// Finding 1144: a `Main` roster entry is OpenClaw's main Agent, so embedded setup writes to
+// its workspace, not to agents.defaults.workspace.
+test("Kubernetes embedded setup uses a Main roster entry's workspace", async () => {
+  const { driver, revision, objects, context } = workspaceSetupFixture(true);
+  const configured = {
+    ...revision,
+    configuration: {
+      ...revision.configuration,
+      agents: {
+        defaults: { ...revision.configuration.agents.defaults, workspace: "/srv/elsewhere" },
+        entries: { Main: { workspace: "/home/node/.openclaw/workspace" } },
+      },
+    },
+  };
+  assert.equal((await driver.prepareRevision(configured, context)).ready, false);
+  const gateway = [...objects.values()].find(
+    ({ kind, metadata }) => kind === "Deployment" && metadata.name.startsWith("gateway-"),
+  );
+  const initializer = gateway.spec.template.spec.initContainers.find(
+    ({ name }) => name === "initialize-workspace",
+  );
+  assert.equal(
+    initializer.env.find(({ name }) => name === "OPENCLAW_WORKSPACE_DIR").value,
+    "/home/node/.openclaw/workspace",
+  );
+  assert.equal(
+    containerProgram(gateway.spec.template.spec.containers[0]).includes("/srv/elsewhere"),
+    false,
+  );
+});

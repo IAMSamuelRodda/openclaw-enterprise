@@ -125,6 +125,7 @@ import {
   MANAGED_WORKSPACE,
   requireWorkspaceSetupConfiguration,
   WORKSPACE_SETUP_RUNTIME,
+  workspaceSetupMainEntry,
   workspaceSetupVerifier,
 } from "../workspace-setup-runtime.ts";
 import { ComputeLifecycleDispatcher } from "../lifecycle-hooks.ts";
@@ -300,6 +301,18 @@ const agentSettingError = (setting: string, requirement: string) =>
 // storage at its working directory.
 const kubernetesSetupWorkspaces = (mode: "embedded" | "dedicated"): readonly string[] =>
   mode === "dedicated" ? [MANAGED_WORKSPACE, HARNESS_WORKSPACE] : [MANAGED_WORKSPACE];
+
+// A Sandbox Harness's requirements carry no workspace initializer
+// (harnessRequirementsFromDeployment), so a Harness in a Sandbox, dedicated OpenClaw always
+// among them, cannot receive initial workspace files. Every Sandbox Driver that ships
+// provisions its Harness, so any Sandbox is refused.
+function requireNoSandboxWorkspaceSetup(sandboxDriverId: string | undefined): void {
+  if (sandboxDriverId !== undefined) {
+    throw new ConfigurationFailure(
+      "Initial workspace files cannot be delivered to a Harness in a Sandbox.",
+    );
+  }
+}
 
 export interface KubernetesWorkloadPeer {
   readonly namespace: string;
@@ -3495,11 +3508,15 @@ export class KubernetesComputeDriver implements ComputeDriver {
   }
 
   // The Installation's runtime storage, which preparation also needs, is not the caller's to
-  // fix, so it stays with preparation.
+  // fix, so it stays with preparation. A Sandbox Harness has no setup initializer, so the
+  // Sandbox refusal comes first: OpenShell forces the workspace to its mount, and the setting
+  // rule would otherwise name a path the caller never wrote (finding 1144).
   validateWorkspaceSetup(
     harness: RevisionHarnessDescriptor,
     configuration: Readonly<OpenClawConfigurationDocument>,
+    sandboxDriverId?: string,
   ): void {
+    requireNoSandboxWorkspaceSetup(sandboxDriverId);
     requireWorkspaceSetupConfiguration(
       configuration,
       kubernetesSetupWorkspaces(harness.mode),
@@ -10358,6 +10375,7 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
     if (this.options.runtime === undefined) {
       throw new ConfigurationFailure("Workspace setup requires durable native runtime storage.");
     }
+    requireNoSandboxWorkspaceSetup(revision.sandboxDriverId);
     requireWorkspaceSetupConfiguration(
       revision.configuration,
       kubernetesSetupWorkspaces(revision.harness.mode),
@@ -10479,8 +10497,10 @@ chmodSync(${JSON.stringify(nodeStatePath)}, 0o700);`;
       workspaceNodeId !== undefined
         ? { nativeWorkerNodeId: workspaceNodeId }
         : {}),
+      // Initial workspace setup's directory: the main entry in any letter case, as OpenClaw
+      // and the setup rule read it (finding 1144).
       workspace:
-        asRecord(asRecord(asRecord(nativeConfiguration.agents)?.entries)?.main)?.workspace ??
+        workspaceSetupMainEntry(nativeConfiguration)?.agent?.workspace ??
         asRecord(asRecord(nativeConfiguration.agents)?.defaults)?.workspace ??
         "/home/node/.openclaw/workspace",
     };
