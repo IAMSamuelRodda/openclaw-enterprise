@@ -1772,9 +1772,14 @@ const imageCommandTimeoutMs =
     ? Number(process.env.OPENCLAW_CI_K3D_IMAGE_CHECK_TIMEOUT_MS)
     : 30_000;
 
-async function boundedImageCommand(args, what = "The container engine", shown = args) {
+async function boundedImageCommand(
+  args,
+  what = "The container engine",
+  shown = args,
+  docker = process.env.OCC_DOCKER_BIN ?? "docker",
+) {
   try {
-    return await execFile(process.env.OCC_DOCKER_BIN ?? "docker", args, {
+    return await execFile(docker, args, {
       timeoutMs: imageCommandTimeoutMs,
     });
   } catch (error) {
@@ -1788,18 +1793,13 @@ async function boundedImageCommand(args, what = "The container engine", shown = 
   }
 }
 
-async function dockerImageHasRepoDigest(image) {
+async function dockerImageHasRepoDigest(image, docker) {
   const expected = immutableDigest(image);
   if (!expected) {
     return false;
   }
-  const inspected = await boundedImageCommand([
-    "image",
-    "inspect",
-    "--format",
-    "{{json .RepoDigests}}",
-    image,
-  ]);
+  const args = ["image", "inspect", "--format", "{{json .RepoDigests}}", image];
+  const inspected = await boundedImageCommand(args, "The container engine", args, docker);
   const repoDigests = JSON.parse(inspected.stdout.trim() || "[]");
   if (!Array.isArray(repoDigests)) {
     return false;
@@ -1807,8 +1807,9 @@ async function dockerImageHasRepoDigest(image) {
   return repoDigests.some((reference) => reference.toLowerCase().endsWith(`@sha256:${expected}`));
 }
 
-async function dockerImageId(image) {
-  const inspected = await boundedImageCommand(["image", "inspect", "--format", "{{.Id}}", image]);
+async function dockerImageId(image, docker) {
+  const args = ["image", "inspect", "--format", "{{.Id}}", image];
+  const inspected = await boundedImageCommand(args, "The container engine", args, docker);
   const value = inspected.stdout.trim();
   const id = /^[a-f0-9]{64}$/i.test(value) ? `sha256:${value}` : value;
   assertDockerImageId(id, `Docker image ${image}`);
@@ -1821,15 +1822,21 @@ function assertDockerImageId(id, description) {
   }
 }
 
-async function ensureDockerSourceImage(state, image, envName) {
+async function ensureDockerSourceImage(
+  state,
+  image,
+  envName,
+  docker = process.env.OCC_DOCKER_BIN ?? "docker",
+) {
   if (stateOwnsImageTag(state, image)) {
-    await boundedImageCommand(["image", "inspect", image]);
-    return dockerImageId(image);
+    const args = ["image", "inspect", image];
+    await boundedImageCommand(args, "The container engine", args, docker);
+    return dockerImageId(image, docker);
   }
   assertImmutableImageReference(image, envName);
   try {
-    if (await dockerImageHasRepoDigest(image)) {
-      return await dockerImageId(image);
+    if (await dockerImageHasRepoDigest(image, docker)) {
+      return await dockerImageId(image, docker);
     }
   } catch (error) {
     // A locally built immutable image may have no reachable registry. Reuse
@@ -1838,11 +1845,27 @@ async function ensureDockerSourceImage(state, image, envName) {
       throw error;
     }
   }
-  await pullImage(image, { execFile, docker: process.env.OCC_DOCKER_BIN ?? "docker" });
-  if (!(await dockerImageHasRepoDigest(image))) {
+  await pullImage(image, { execFile, docker });
+  if (!(await dockerImageHasRepoDigest(image, docker))) {
     throw new Error(`${envName} pull did not materialize the requested registry digest.`);
   }
-  return dockerImageId(image);
+  return dockerImageId(image, docker);
+}
+
+// This deliberately unrelated release exercises the launcher's source-revision guard.
+// Registry images remain in the engine cache; preparation owns no tag or cluster.
+export const devUpUnrelatedImage =
+  "rancher/k3s:v1.36.4-k3s1@sha256:edad48e12bf81c3a09ac1c05c0c0ffaaa22145980b989d6fae84543a76b83657";
+
+export async function prepareDevUpImage(
+  docker = process.env.OCC_TEST_DEV_UP_CONTAINER_ENGINE || "docker",
+) {
+  await ensureDockerSourceImage(
+    { resources: [] },
+    devUpUnrelatedImage,
+    "Dev-up rejection image",
+    docker,
+  );
 }
 
 // containerd's CRI plugin answers `crictl inspecti` only from its in-memory image
@@ -3030,6 +3053,10 @@ async function prepareFileWithState({ name, relativeFile, resolvedStatePath, tem
   }
 
   applyLaneEnv(name, env);
+
+  if (name === "dev-up-k3d") {
+    await prepareDevUpImage(env.OCC_TEST_DEV_UP_CONTAINER_ENGINE);
+  }
 
   if (state) {
     await writeState(resolvedStatePath, effectiveState);
