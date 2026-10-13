@@ -926,13 +926,17 @@ function imageCacheExportArgs(role, buildArgs) {
   ];
 }
 
-// The warm job's limit for one image's cache export. Healthy exports took 25-65 s;
-// one stalled on a single layer upload for 17 minutes, past BuildKit's own
-// timeout=10m (finding 1219). Tests shorten it.
+// The warm job's limit for one image's cache export. Exports that reuse the
+// OpenClaw layers took 25-65 s. A change to those layers (an OpenClaw pin, patch
+// or install step) uploads them all again, one at a time: 513-817 s on the warm
+// runner. Those layers are not byte-reproducible, so a cut-off export's uploads
+// never help the next run, and a 5 min limit left the image lanes rebuilding
+// them on every run (finding 1275). One upload once stalled for 17 min (finding
+// 1219); this still bounds that. Tests shorten it.
 const imageCacheExportTimeoutMs =
   Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS) > 0
     ? Number(process.env.OPENCLAW_CI_IMAGE_CACHE_EXPORT_TIMEOUT_MS)
-    : 5 * 60_000;
+    : 20 * 60_000;
 
 function imageBuildArgs(state, role, localStore) {
   if (process.env.OCC_CI_IMAGE_CACHE === "1") {
