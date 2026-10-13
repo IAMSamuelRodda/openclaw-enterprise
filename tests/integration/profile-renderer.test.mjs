@@ -1389,6 +1389,69 @@ test("preflight rejects inputs that Helm would reject", () => {
   );
 });
 
+test("preflight rejects auth base URLs whose host percent-encodes an ASCII byte", () => {
+  const asciiEncoded = (authBaseUrl) =>
+    codexInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        authBaseUrl,
+        agentNativeAdminDomain: "agents.example.com",
+        sharedCookieDomain: "example.com",
+      },
+    });
+  const asciiRefusal =
+    "controlPlane.authBaseUrl host must not percent-encode an ASCII byte; the chart's URL parser rejects it.";
+  for (const authBaseUrl of ["https://ex%61mple.com", "https://example.com%2e"]) {
+    const error = renderError(() => render("codex", asciiEncoded(authBaseUrl)));
+    assert.equal(error.status, 1);
+    assert.match(error.profileRendererOutput, new RegExp(escapeRegExp(asciiRefusal)));
+    assert.doesNotMatch(
+      error.profileRendererOutput,
+      /must be an absolute HTTP\(S\) origin URL without a path, query, fragment, or user info/,
+    );
+    assert.equal(existsSync(join(error.profileRendererDirectory, "values.yaml")), false);
+    const preflight = JSON.parse(
+      readFileSync(join(error.profileRendererDirectory, "preflight.json"), "utf8"),
+    );
+    assert.equal(preflight.ok, false);
+    assert.deepEqual(
+      preflight.errors.filter((message) => message.includes("authBaseUrl")),
+      [asciiRefusal],
+    );
+  }
+
+  // A % that decodes to an IPv4 address stays on ipv4HostKept's existing origin refusal.
+  const rewrittenIpv4 = renderError(() =>
+    render(
+      "codex",
+      codexInput({
+        controlPlane: {
+          ...baseInput().controlPlane,
+          authBaseUrl: "https://192%2e168.1.1",
+        },
+      }),
+    ),
+  );
+  assert.match(
+    rewrittenIpv4.profileRendererOutput,
+    /controlPlane\.authBaseUrl must be an absolute HTTP\(S\) origin URL without a path, query, fragment, or user info\./,
+  );
+  assert.doesNotMatch(rewrittenIpv4.profileRendererOutput, /percent-encode an ASCII byte/);
+
+  const nonAscii = render(
+    "openclaw",
+    externalSignInInput({
+      trustedProxy: { preset: "ingress-nginx", cidrs: ["10.42.0.0/16"] },
+      authBaseUrl: "https://ex%C3%A4.com",
+    }),
+  );
+  assert.equal(nonAscii.summary.ok, true, nonAscii.preflight.errors.join("\n"));
+  assert.match(nonAscii.values, /baseUrl: "https:\/\/ex%C3%A4\.com"/);
+  if (!helmSkip) {
+    helmTemplate(nonAscii);
+  }
+});
+
 // The API lowercases both domains at startup, and the chart accepts only lowercase.
 test("native admin domains render lowercase for the chart", () => {
   const output = render(

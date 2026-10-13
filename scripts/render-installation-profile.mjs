@@ -256,11 +256,18 @@ function asString(source, path, diagnostics, { pattern, validate, description } 
     diagnostics.errors.push(`${path.join(".")} must be a nonempty string.`);
     return "";
   }
-  if (
-    (pattern !== undefined && !pattern.test(value)) ||
-    (validate !== undefined && !validate(value))
-  ) {
+  if (pattern !== undefined && !pattern.test(value)) {
     diagnostics.errors.push(`${path.join(".")} must be ${description}.`);
+    return value;
+  }
+  // A string is that field's own refusal. false keeps the shared description.
+  if (validate !== undefined) {
+    const accepted = validate(value);
+    if (typeof accepted === "string") {
+      diagnostics.errors.push(`${path.join(".")} ${accepted}`);
+    } else if (!accepted) {
+      diagnostics.errors.push(`${path.join(".")} must be ${description}.`);
+    }
   }
   return value;
 }
@@ -289,6 +296,11 @@ function stripUrlEdges(value) {
 // tables can be newer than Helm's, so a letter assigned since then passes here and fails in
 // the chart; no realistic host uses one. Like both, it refuses a bare ? or # (https://host?),
 // which parses to an empty query or fragment but would break the API's auth routes.
+// Sprig urlParse aborts when the written host percent-encodes an ASCII byte: a % whose first
+// hex digit is 0-7 (https://ex%61mple.com, https://example.com%2e). Node publishes the decoded
+// host instead. Escapes whose first hex digit is 8-F stay, because Helm decodes those and
+// then checks the host (https://ex%C3%A4.com). %25, a truncated %, and %GG already fail URL
+// parsing. An IPv4 host that contains % and decodes to an IPv4 address stays on ipv4HostKept.
 function httpOrigin(value) {
   const stripped = stripUrlEdges(value);
   if (
@@ -305,15 +317,23 @@ function httpOrigin(value) {
   } catch {
     return false;
   }
-  return (
-    (url.protocol === "http:" || url.protocol === "https:") &&
-    url.username.length === 0 &&
-    url.password.length === 0 &&
-    url.pathname === "/" &&
-    url.search.length === 0 &&
-    url.hash.length === 0 &&
-    ipv4HostKept(value, url)
-  );
+  if (
+    (url.protocol !== "http:" && url.protocol !== "https:") ||
+    url.username.length !== 0 ||
+    url.password.length !== 0 ||
+    url.pathname !== "/" ||
+    url.search.length !== 0 ||
+    url.hash.length !== 0 ||
+    !ipv4HostKept(value, url)
+  ) {
+    return false;
+  }
+  // Same written host as ipv4HostKept: C0 and space edges, then the origin's host group.
+  const writtenHost = /^[a-z][a-z\d+.-]*:\/\/(?:[^/?#@]*@)?([^/?#:]+)/i.exec(stripped)?.[1];
+  if (writtenHost !== undefined && /%[0-7][0-9A-Fa-f]/.test(writtenHost)) {
+    return "host must not percent-encode an ASCII byte; the chart's URL parser rejects it.";
+  }
+  return true;
 }
 
 // The same rule as the chart and OCC_AUTH_BASE_URL: a leading zero is octal, and
