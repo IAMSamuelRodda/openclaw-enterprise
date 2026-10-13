@@ -50,10 +50,32 @@ Agent that fails a check still reads; its next update must fix the pair.
 
 - an enabled `channels.<provider>` other than `slack` or `msteams`;
 - a non-empty `auth`;
-- an `env` or `env.vars` name starting `OPENAI_` or `ANTHROPIC_`, or
-  `CODEX_ACCESS_TOKEN`, `CODEX_CHATGPT_WORKSPACE_ID` or `CODEX_LOGIN_MODE`;
-- an `authorization`, `api-key` or `x-api-key` header on a selected model
-  provider or one of its models.
+- an `env` or `env.vars` name starting `OPENAI_` or `ANTHROPIC_` in any
+  case, or `CODEX_ACCESS_TOKEN`, `CODEX_CHATGPT_WORKSPACE_ID` or
+  `CODEX_LOGIN_MODE`;
+- on any `models.providers.<provider>`, whether or not a model setting
+  selects it: a credential header in `headers` (on the provider or one of
+  its models) or `request.headers`, a header name that is not a valid HTTP
+  field name, and a `request.auth` other than exactly
+  `{mode: "provider-default"}`. A credential header's last hyphen- or
+  underscore-separated word is `auth`, `authorization`, `token`, `secret`,
+  `password`, `cookie` or a key word such as `api-key` or
+  `subscription-key`; the
+  [rule](../../../packages/occ/src/model-provider-settings.ts) lists them.
+
+These close the credential slots in a provider's `headers` and `request`.
+The provider `apiKey` stays, checked against the Harness binding on selected
+providers only. The Configuration Driver accepts the `apiKey`, the credential
+headers, `request.auth.token` and `.value` and the TLS client keys only as
+references, and refuses a `request.proxy.url` with a user name or password.
+On Kubernetes a reference does not admit a credential header or a non-default
+`request.auth`: model credentials come only from the Agent's Harness
+authentication binding. Deployment runs `validateConfiguration` on the stored
+values before the Configuration Driver validates them, so a stored
+Configuration that predates a rule gets its save message.
+A credential under a header name the rule does not match, in
+`localService.env`, or as a literal in another `env` name that a reference
+reads, still passes: the binding cannot see what a name means.
 
 `validateHarnessAuth` applies these first, then names the Agent's
 `harnessAuth.method` when its topology cannot use it (embedded OpenClaw takes
