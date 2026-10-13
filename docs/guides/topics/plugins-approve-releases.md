@@ -12,8 +12,9 @@ defines each field and its limits.
   (`drivers.plugin.id: occ-plugin`), and you can edit its Installation
   configuration and restart the controller.
 - You have reviewed the plugin's source, publisher, and declared capabilities.
-  Approval lets every Agent that selects it run the package's code; OCE does not
-  check ClawHub's scan or moderation status for you.
+  Approval lets every Agent that selects it run the package's code, and it
+  accepts those capabilities on the plugin's behalf; OCE does not check ClawHub's
+  scan or moderation status for you.
 - A disposable OpenClaw environment with no credentials or Agent data, used only
   to read the release's identity.
 

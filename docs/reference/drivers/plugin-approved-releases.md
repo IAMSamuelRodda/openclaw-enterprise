@@ -67,6 +67,9 @@ Package downloads use the Agent's existing public HTTPS egress.
 - Approval is an Installation-wide trust decision to run the package's code in
   every Agent that selects it. OCE does not read ClawHub's scan or moderation
   status; review the release before approving it.
+- Approval is also the capability consent OpenClaw asks for: the Pod installs an
+  approved release with `--accept-capabilities`, accepting every capability the
+  release declares. Review those capabilities before approving.
 - Approved entries support the same embedded OpenClaw policy as Diffs:
   `provider_default` and `none`, tool enablement, and approvers. They add no
   per-call review.

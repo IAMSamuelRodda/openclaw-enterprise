@@ -170,11 +170,11 @@ manifest's admitted `releases` (`openClawRuntimeTranslator`), then policy.
 Grants enter nonempty `tools.allow`, otherwise `tools.alsoAllow`, preserving denies and profiles. A tool's `enabled`
 override precedes `toolDefaults.enabled`; disabled tools emit native denies.
 Master disable and operator denies prevail; `provider_default` and `none` add no
-Diffs review step. Revision-private configuration uses `--pin --force --no-enable`,
-preserving enablement and allow/deny lists. Startup first uninstalls every persisted install record
-(`removePersistedOpenClawInstallRecords`) and restores the configuration: OpenClaw's
-update path would load a staged package's Doctor contract before verification.
-Plugin CLI calls run without credential-named environment variables.
+Diffs review step. Revision-private configuration uses `--pin --force --no-enable`;
+approved releases add `--accept-capabilities`. Startup first uninstalls every persisted
+install record (`removePersistedOpenClawInstallRecords`) and restores configuration:
+OpenClaw's update path would load a staged package's Doctor contract before verification.
+Plugin CLI calls omit credential-named environment variables.
 Preparation refreshes the registry
 and verifies admitted configuration; the pinned runtime release lacks this flag.
 Native inspection verifies plugin ID, package name, runtime/install version,

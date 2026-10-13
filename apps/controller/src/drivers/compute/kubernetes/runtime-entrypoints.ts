@@ -1352,13 +1352,25 @@ function installOpenClawPlugins(runtime, failures = []) {
   const originalTools = readOpenClawConfig().tools;
   applyOpenClawPluginConfiguration(runtime, failed);
   removePersistedOpenClawInstallRecords(installs, failedIds);
+  // OpenClaw refuses a noninteractive install of a nonofficial plugin without explicit
+  // capability consent. The Installation administrator's approval of an exact release
+  // is that consent; bundled catalog entries are official and need none.
+  const approvedReleaseIds = new Set(Object.keys(runtime.manifest?.releases ?? {}));
   for (const plugin of installs) {
     if (failedIds.has(plugin.pluginId)) continue;
     const spec = openClawPluginPackageSpec(plugin);
     try {
       // OpenClaw accepts --pin only for npm specs; a ClawHub spec is already exact.
       runOpenClaw(
-        ["plugins", "install", spec, ...(plugin.source === "clawhub" ? [] : ["--pin"]), "--force", "--no-enable"],
+        [
+          "plugins",
+          "install",
+          spec,
+          ...(plugin.source === "clawhub" ? [] : ["--pin"]),
+          "--force",
+          "--no-enable",
+          ...(approvedReleaseIds.has(plugin.pluginId) ? ["--accept-capabilities"] : []),
+        ],
         "OpenClaw plugin install",
         pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
       );

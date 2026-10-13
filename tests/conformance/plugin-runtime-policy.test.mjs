@@ -152,6 +152,8 @@ test("OpenClaw runtime helper installs an admitted ClawHub release and verifies 
       "clawhub:@acme/openclaw-search@1.4.2",
       "--force",
       "--no-enable",
+      // The administrator's approval is the capability consent OpenClaw requires.
+      "--accept-capabilities",
     ],
     ["/app/openclaw.mjs", "plugins", "registry", "--refresh", "--json"],
     ["/app/openclaw.mjs", "plugins", "inspect", "acme-search", "--json"],
@@ -293,6 +295,7 @@ test("An approved npm release bound at admission installs and verifies in the Po
     "--pin",
     "--force",
     "--no-enable",
+    "--accept-capabilities",
   ]);
 });
 
