@@ -190,6 +190,12 @@ test(
     const policy = await fixture.readOpenClawPluginPolicy(agent, release.nativeId);
     assert.deepEqual(policy.plugins, { allow: allowedPlugins, enabled: true });
     assert.deepEqual(policy.tools.allow, ["read", release.nativeId]);
+    // The model key reaches the gateway only through its environment, which the Pod
+    // withholds from plugin CLI calls. No file the installer can read holds it.
+    assert.deepEqual(
+      await fixture.findGatewayFilesContainingEnvironmentValue(agent, "OPENAI_API_KEY"),
+      [],
+    );
 
     const sessionKey = `agent:main:clawhub-proof-${randomUUID()}`;
     const content = await fixture.normalGatewayTurn({
@@ -397,7 +403,7 @@ test(
 
 test(
   "a new revision starts with no install record retained from an earlier release",
-  realLane,
+  { ...realLane, timeout: 1_200_000 },
   async (context) => {
     const release = selectedRelease();
     const fixture = await createClawHubFixture(context, [release]);
@@ -418,7 +424,8 @@ test(
       enabled: true,
       toolDefaults: { approval: "none" },
     });
-    const next = await fixture.deployAndWait(agent);
+    // The first gateway drains in-flight work for up to the 330 s stop timeout first.
+    const next = await fixture.deployAndWait(agent, { timeoutMs: 600_000 });
     assert.equal(next.revision.plugins?.releases, undefined);
     assert.equal(
       await fixture.readOpenClawPersistedInstallRecord(agent, release.nativeId),

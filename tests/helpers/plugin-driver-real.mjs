@@ -417,15 +417,19 @@ function createImportedCodexServiceAccountDriverFactory(imported, compute) {
 
 async function waitForPluginProofWorkerSuccess(waitFor, events, revisionId, options) {
   const description = typeof options === "string" ? options : options.description;
+  const timeoutMs = typeof options === "string" ? undefined : options.timeoutMs;
   try {
-    await waitFor(description, () =>
-      events.find(
-        (event) =>
-          event.event === "worker.completed" &&
-          event.revisionId === revisionId &&
-          event.outcome === "success" &&
-          ["REVISION_ACTIVATED", "REVISION_ALREADY_ACTIVE"].includes(event.code),
-      ),
+    await waitFor(
+      description,
+      () =>
+        events.find(
+          (event) =>
+            event.event === "worker.completed" &&
+            event.revisionId === revisionId &&
+            event.outcome === "success" &&
+            ["REVISION_ACTIVATED", "REVISION_ALREADY_ACTIVE"].includes(event.code),
+        ),
+      timeoutMs,
     );
   } catch (error) {
     const diagnostics = typeof options === "string" ? [] : options.diagnostics();
@@ -967,6 +971,22 @@ export function createNativePluginAssertions({
     });
   }
 
+  // Files in the gateway container that contain the value of one of its environment
+  // variables, searched inside the container so the value never leaves it. Only
+  // paths are returned.
+  async function findGatewayFilesContainingEnvironmentValue(agent, variableName) {
+    return afterGatewayWarmUp("gateway Pod ready to search for a credential", async () => {
+      const execution = await execGateway(agent, [
+        "sh",
+        "-c",
+        'value=$(printenv "$1"); test -n "$value" || { echo "missing $1" >&2; exit 2; }; grep -rlsF -- "$value" /home/node /tmp /runtime-state /runtime-temporary /etc/openclaw || true',
+        "search",
+        variableName,
+      ]);
+      return execution.stdout.split("\n").filter(Boolean);
+    });
+  }
+
   // A just-activated gateway can briefly fail readiness while its post-ready
   // warm-up runs at the CPU limit; wait for it rather than fail on the first read.
   async function afterGatewayWarmUp(label, read) {
@@ -1500,6 +1520,7 @@ export function createNativePluginAssertions({
     readOpenClawPluginPolicy,
     readOpenClawPluginInstall,
     readOpenClawPersistedInstallRecord,
+    findGatewayFilesContainingEnvironmentValue,
     readSessionToolEvidence: sessionEvidence,
     listCodexNativeCatalog,
     codexNativePluginDetail,
@@ -1998,26 +2019,33 @@ export async function createPluginDriverRealFixture(
     return { deployed, gatewayPassword };
   }
 
-  async function deployAndWait(agent) {
+  // A revision that replaces a running gateway waits for that gateway to drain (up to
+  // the Compute stop timeout) before its own Pod starts; callers pass a longer timeout.
+  async function deployAndWait(agent, { timeoutMs } = {}) {
     const { deployed, gatewayPassword } = await requestDeployment(agent);
     assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
     try {
-      await waitFor(`revision ${deployed.data.id} activation`, async () => {
-        const observed = await request(
-          "GET",
-          `/namespaces/${createdNamespace.data.id}/agents/${agent.id}`,
-        );
-        assert.equal(observed.status, 200, JSON.stringify(observed.error));
-        const deployment = await getDeploymentStatus(agent.id, deployed.data.id);
-        assert.notEqual(deployment.status, "failed", JSON.stringify(deployment.error));
-        return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
-      });
+      await waitFor(
+        `revision ${deployed.data.id} activation`,
+        async () => {
+          const observed = await request(
+            "GET",
+            `/namespaces/${createdNamespace.data.id}/agents/${agent.id}`,
+          );
+          assert.equal(observed.status, 200, JSON.stringify(observed.error));
+          const deployment = await getDeploymentStatus(agent.id, deployed.data.id);
+          assert.notEqual(deployment.status, "failed", JSON.stringify(deployment.error));
+          return observed.data.activeRevisionId === deployed.data.id ? observed.data : undefined;
+        },
+        timeoutMs,
+      );
     } catch (error) {
       const diagnostics = await deploymentActivationDiagnostics(agent, deployed.data.id, events);
       assert.fail(`${error.message} Diagnostics: ${JSON.stringify(diagnostics)}`);
     }
     await waitForPluginProofWorkerSuccess(waitFor, events, deployed.data.id, {
       description: `worker completion of ${deployed.data.id}`,
+      timeoutMs,
       diagnostics: () => sanitizedPluginProofWorkerEvents(events, deployed.data.id),
     });
     const status = await getDeploymentStatus(agent.id, deployed.data.id);
@@ -2398,6 +2426,8 @@ export async function createPluginDriverRealFixture(
     readOpenClawPluginPolicy: nativeAssertions.readOpenClawPluginPolicy,
     readOpenClawPluginInstall: nativeAssertions.readOpenClawPluginInstall,
     readOpenClawPersistedInstallRecord: nativeAssertions.readOpenClawPersistedInstallRecord,
+    findGatewayFilesContainingEnvironmentValue:
+      nativeAssertions.findGatewayFilesContainingEnvironmentValue,
     readSessionToolEvidence: nativeAssertions.readSessionToolEvidence,
     listCodexNativeCatalog: nativeAssertions.listCodexNativeCatalog,
     codexNativePluginDetail: nativeAssertions.codexNativePluginDetail,
