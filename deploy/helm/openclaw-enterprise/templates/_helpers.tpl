@@ -480,6 +480,27 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- fail "gatewayRouting.envoyHttpsTargetPort must be an integer TCP port from 1 to 65535" -}}
 {{- end -}}
 {{- if not $routing.envoyGatewayPodLabels -}}{{- fail "gatewayRouting.envoyGatewayPodLabels must select the Envoy Gateway control-plane Pods for xDS egress" -}}{{- end -}}
+{{- /* Null matches main: an omitted list renders no remote-node peers. NetworkPolicy ipBlock does not apply Node trusted-proxy mapped-prefix rules. */ -}}
+{{- if kindIs "slice" $routing.remoteNodeCidrs -}}
+{{- range $cidr := $routing.remoteNodeCidrs -}}
+{{- $value := toString $cidr -}}
+{{- if regexMatch "^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/(?:0|[1-9]|[12][0-9]|3[0-2])$" $value -}}
+{{- else if regexMatch "^[0-9A-Fa-f:.]*:[0-9A-Fa-f:.]*/(?:0|[1-9]|[1-9][0-9]|1[01][0-9]|12[0-8])$" $value -}}
+{{- $addr := first (splitList "/" $value) -}}
+{{- $tail := regexFind ":(?:0|[1-9][0-9]{0,2})(?:\\.(?:0|[1-9][0-9]{0,2})){3}$" $addr -}}
+{{- range $octet := splitList "." (default ":0.0.0.0" $tail | trimPrefix ":") -}}
+{{- if gt (int $octet) 255 -}}{{- fail "gatewayRouting.remoteNodeCidrs contains an invalid IPv6 address" -}}{{- end -}}
+{{- end -}}
+{{- $hex := ternary (printf "%s:0:0" (trimSuffix $tail $addr)) $addr (ne $tail "") -}}
+{{- $groups := len (regexFindAll "[0-9A-Fa-f]+" $hex -1) -}}
+{{- if or (not (regexMatch "^(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?(?:::(?:[0-9A-Fa-f]{1,4}(?::[0-9A-Fa-f]{1,4})*)?)?$" $hex)) (ternary (gt $groups 7) (ne $groups 8) (contains "::" $hex)) -}}{{- fail "gatewayRouting.remoteNodeCidrs contains an invalid IPv6 address" -}}{{- end -}}
+{{- else -}}
+{{- fail "gatewayRouting.remoteNodeCidrs requires an IPv4 or IPv6 CIDR" -}}
+{{- end -}}
+{{- end -}}
+{{- else if not (kindIs "invalid" $routing.remoteNodeCidrs) -}}
+{{- fail "gatewayRouting.remoteNodeCidrs must be a list of IPv4 or IPv6 CIDR strings" -}}
+{{- end -}}
 {{- if $routing.sandbox.enabled -}}
 {{- if not (regexMatch "^[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?(?:\\.[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?)+$" $routing.sandbox.domain) -}}{{- fail "gatewayRouting.sandbox.domain must be a DNS hostname without wildcard, scheme, port or path" -}}{{- end -}}
 {{- /* Dedicated Agent routes use agent-<32 hex>.<domain>, which must fit the 253-character Gateway API hostname limit. */ -}}
