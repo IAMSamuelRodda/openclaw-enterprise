@@ -1,5 +1,18 @@
 {{- /* One IPv4 host. Go's ParseCIDR rejects an octet above 255 and a leading zero. */ -}}
 {{- define "openclaw.ipv4Host32" -}}^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/32${{- end -}}
+{{- /* IPv4 CIDR with prefix 1 through 32; rejects leading-zero octets the API and profile preflight refuse. */ -}}
+{{- define "openclaw.ipv4Cidr" -}}^(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])(?:\.(?:25[0-5]|2[0-4][0-9]|1[0-9]{2}|[1-9][0-9]|[0-9])){3}/([1-9]|[12][0-9]|3[0-2])${{- end -}}
+{{- /* An octet above 255 keeps the historical invalid-address diagnostic. Leading zeros fail the strict pattern instead. */ -}}
+{{- define "openclaw.requireIpv4Cidr" -}}
+{{- $cidr := toString .cidr -}}
+{{- $label := .label -}}
+{{- if regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" $cidr -}}
+{{- range $octet := splitList "." (first (splitList "/" $cidr)) -}}
+{{- if gt (int $octet) 255 -}}{{- fail (printf "%s contains an invalid IPv4 address" $label) -}}{{- end -}}
+{{- end -}}
+{{- end -}}
+{{- if not (regexMatch (include "openclaw.ipv4Cidr" .) $cidr) -}}{{- fail (printf "%s requires explicit IPv4 CIDRs with prefixes 1 through 32" $label) -}}{{- end -}}
+{{- end -}}
 {{- define "openclaw.validateSecretKey" -}}
 {{- if or (eq (toString .value) ".") (hasPrefix ".." (toString .value)) (gt (len (toString .value)) 253) (not (regexMatch "^[-._A-Za-z0-9]+$" (toString .value))) -}}
 {{- fail (printf "%s must be a Kubernetes Secret key of at most 253 characters" .label) -}}
@@ -115,10 +128,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.github requires agentNativeAdmin.enabled: false; GitHub sign-in supports host-only cookies only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $github.egressCidrs) (kindIs "slice" $github.egressCidrs)) -}}{{- fail "auth.github.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $github.egressCidrs -}}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.github.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
-{{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
-{{- if gt (int $octet) 255 -}}{{- fail "auth.github.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
-{{- end -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.github.egressCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
 {{- if and $google $google.enabled -}}
@@ -131,10 +141,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if .Values.agentNativeAdmin.enabled -}}{{- fail "auth.google requires agentNativeAdmin.enabled: false; Google sign-in supports host-only cookies only" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $google.egressCidrs) (kindIs "slice" $google.egressCidrs)) -}}{{- fail "auth.google.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $google.egressCidrs -}}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.google.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
-{{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
-{{- if gt (int $octet) 255 -}}{{- fail "auth.google.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
-{{- end -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.google.egressCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
 {{- if and $oidc $oidc.enabled -}}
@@ -160,10 +167,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if and $displayName (not (regexMatch "^[^\\p{C}\\p{Zl}\\p{Zp}]{1,40}$" $displayName)) -}}{{- fail "auth.oidc.displayName must be 1 to 40 printable characters" -}}{{- end -}}
 {{- if not (or (kindIs "invalid" $oidc.egressCidrs) (kindIs "slice" $oidc.egressCidrs)) -}}{{- fail "auth.oidc.egressCidrs must be a list of IPv4 CIDRs; leave it unset, or set [] in a values file or with --set-json, for HTTPS egress to any non-link-local address" -}}{{- end -}}
 {{- range $cidr := $oidc.egressCidrs -}}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" (toString $cidr)) -}}{{- fail "auth.oidc.egressCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}{{- end -}}
-{{- range $octet := splitList "." (first (splitList "/" (toString $cidr))) -}}
-{{- if gt (int $octet) 255 -}}{{- fail "auth.oidc.egressCidrs contains an invalid IPv4 address" -}}{{- end -}}
-{{- end -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "auth.oidc.egressCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
 {{- $proxy := default dict .Values.api.trustedProxy -}}
@@ -431,12 +435,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- end -}}
 {{- if not $credentials.upstreamCidrs -}}{{- fail "repositoryCredentials.upstreamCidrs must contain approved provider IPv4 CIDRs" -}}{{- end -}}
 {{- range $cidr := $credentials.upstreamCidrs -}}
-{{- if not (regexMatch "^([0-9]{1,3}\\.){3}[0-9]{1,3}/([1-9]|[12][0-9]|3[0-2])$" $cidr) -}}
-{{- fail "repositoryCredentials.upstreamCidrs requires explicit IPv4 CIDRs with prefixes 1 through 32" -}}
-{{- end -}}
-{{- range $octet := splitList "." (first (splitList "/" $cidr)) -}}
-{{- if gt (int $octet) 255 -}}{{- fail "repositoryCredentials.upstreamCidrs contains an invalid IPv4 address" -}}{{- end -}}
-{{- end -}}
+{{- include "openclaw.requireIpv4Cidr" (dict "label" "repositoryCredentials.upstreamCidrs" "cidr" $cidr) -}}
 {{- end -}}
 {{- end -}}
 {{- if and .Values.gatewayRouting.sandbox.enabled (not .Values.gatewayRouting.enabled) -}}{{- fail "gatewayRouting.sandbox requires gatewayRouting.enabled" -}}{{- end -}}
