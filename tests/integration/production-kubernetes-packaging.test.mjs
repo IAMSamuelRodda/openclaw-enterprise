@@ -525,6 +525,21 @@ test(
       render({ ...execution, "executionCluster.apiKubeconfigSecretName": "occ-auth" }),
       /executionCluster\.apiKubeconfigSecretName must name a dedicated Secret; occ-auth is also auth\.secretName/,
     );
+    for (const cidr of [
+      "not-a-cidr",
+      "10.1.1.1/33",
+      "0.0.0.0/0",
+      "12345::/64",
+      "::ffff:999.1.2.3/64",
+    ]) {
+      await assert.rejects(
+        render({ ...execution, "executionCluster.apiCidrs[0]": cidr }),
+        /executionCluster\.apiCidrs/,
+        cidr,
+      );
+    }
+    await render({ ...execution, "executionCluster.apiCidrs[0]": "10.1.1.0/28" });
+    await render({ ...execution, "executionCluster.apiCidrs[0]": "2001:db8::/64" });
     // Optional credential Secrets count once enabled (findings 1046, 1048): the ChatGPT admin,
     // sign-in, database CA and sandbox TLS Secrets, and the Gateway Secrets cert-manager writes.
     const gatewayRoot = `occ-gateway-${createHash("sha256").update("openclaw-system/oce-agent-gateways").digest("hex").slice(0, 12)}-root`;
