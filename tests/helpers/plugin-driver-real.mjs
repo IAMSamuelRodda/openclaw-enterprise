@@ -2223,6 +2223,19 @@ export async function createPluginDriverRealFixture(
     return { before, after };
   }
 
+  // The current log of the Agent's Ready gateway container.
+  async function readGatewayLog(agent) {
+    const pod = await gatewayPod(agent);
+    return kubectl(
+      "logs",
+      pod.metadata.name,
+      "--namespace",
+      pod.metadata.namespace,
+      "--container",
+      "gateway",
+    );
+  }
+
   // Watch the gateway Pod of a revision whose startup should refuse, until its
   // gateway container has exited at least once. Every observation records whether
   // any Pod of that revision was Ready, so the caller can prove it never was.
@@ -2418,6 +2431,7 @@ export async function createPluginDriverRealFixture(
     gatewayPodIdentity,
     replaceGatewayPod,
     observeGatewayStartupRefusal,
+    readGatewayLog,
     restartActiveCodexAgentPod,
     normalGatewayTurn: nativeAssertions.normalGatewayTurn,
     assertSessionToolCallEvidence: nativeAssertions.assertSessionToolCallEvidence,

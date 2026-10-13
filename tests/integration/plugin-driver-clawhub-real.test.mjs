@@ -440,23 +440,17 @@ test(
   },
 );
 
-// A community (non-official) ClawHub release. OpenClaw refuses a noninteractive install
-// of a non-official plugin unless the caller accepts its declared capabilities.
+// A community (non-official) ClawHub release that declares its tools for OpenClaw
+// 2026.9.8. OpenClaw refuses a noninteractive install of a non-official plugin unless
+// the caller accepts its declared capabilities.
 const communityRelease = {
-  nativeId: "notes",
-  name: "Notes",
+  nativeId: "stella-timeline-plugin",
+  name: "Stella Timeline",
   source: "clawhub",
-  packageName: "notes-plugin",
-  version: "0.1.0",
-  integrity: "sha256-AE9Ee3PeYchH+7sVFSAG+X+IA3cEMgnX26V3lmlJH7c=",
-  toolNames: [
-    "notes_append",
-    "notes_create",
-    "notes_delete",
-    "notes_get",
-    "notes_list",
-    "notes_update",
-  ],
+  packageName: "stella-timeline-plugin",
+  version: "2.8.10",
+  integrity: "sha256-yS6GoOKd5nOULL2fL11e/6lOc5Tyz8c3RbyQTKB2F1g=",
+  toolNames: ["timeline_resolve", "timeline_transition"],
 };
 
 test(
@@ -479,5 +473,10 @@ test(
     const policy = await fixture.readOpenClawPluginPolicy(agent, communityRelease.nativeId);
     assert.deepEqual(policy.plugins, { allow: allowedPlugins, enabled: true });
     assert.deepEqual(policy.tools.allow, ["read", communityRelease.nativeId]);
+    // The native gateway names the plugins it loaded when it starts serving.
+    const listening = proofLines(await fixture.readGatewayLog(agent)).find((line) =>
+      line.includes("http server listening"),
+    );
+    assert.match(listening ?? "", new RegExp(`plugins?: [^)]*\\b${communityRelease.nativeId}\\b`));
   },
 );
