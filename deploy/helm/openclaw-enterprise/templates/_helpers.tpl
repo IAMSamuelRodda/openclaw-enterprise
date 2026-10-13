@@ -363,6 +363,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (not $execution.apiCidrs) (not $execution.kubeconfigKey) -}}
 {{- fail "executionCluster requires explicit API CIDRs and kubeconfig key" -}}
 {{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "executionCluster.kubeconfigKey" "value" $execution.kubeconfigKey) -}}
 {{- end -}}
 {{- if .Values.slackProxy.enabled -}}
 {{- $proxy := .Values.slackProxy -}}
