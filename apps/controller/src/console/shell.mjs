@@ -98,6 +98,7 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   function publicPanel(title, description, actionLabel, action) {
+    menuControls = null;
     app.replaceChildren(
       element(
         "main",
@@ -116,6 +117,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
   }
 
   function accountMenu() {
+    // A page load can render the shell twice (a Loading or retained preview, then the
+    // fresh view). Keep the same menu so one opened in between stays open and clickable.
+    // reset(), publicPanel() and a session-less render drop it, so each navigation
+    // starts with a closed menu.
+    if (menuControls) {
+      return menuControls.account;
+    }
     const account = element("div", { className: "account" });
     const menu = element("div", {
       className: "menu",
@@ -248,6 +256,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
       namespaceAdmissionPending = true,
     } = state);
     namespaceSelect = null;
+    // Moving the retained menu into the new sidebar detaches it; give focus back afterwards.
+    const menuFocus = menuControls?.account.contains(document.activeElement)
+      ? document.activeElement
+      : null;
+    if (!session) {
+      menuControls = null;
+    }
     const nav = element("nav", { className: "nav", "aria-label": "Main navigation" });
     const icons = { agents: "◇", namespaces: "▤" };
     for (const name of ["agents", "namespaces"]) {
@@ -408,6 +423,13 @@ export function createShell({ app, pages, route, pageUrl, navigate, loadPage, lo
     );
     drawerControls = { shell, sidebar, close: closeDrawer, open: openDrawer };
     app.replaceChildren(shell);
+    if (menuFocus) {
+      menuFocus.focus({ preventScroll: true });
+      // A fresh render closes the mobile drawer; don't leave the menu open inside it.
+      if (document.activeElement !== menuFocus) {
+        menuControls?.close();
+      }
+    }
     return { view, refresh, diagnostics };
   }
 
