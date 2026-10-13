@@ -3913,6 +3913,11 @@ test(
         "invalid database CA key",
         { "database.caSecretName": "occ-rds-ca", "database.caKey": "../ca.pem" },
       ],
+      [
+        "overlong database CA key",
+        { "database.caSecretName": "occ-rds-ca", "database.caKey": "a".repeat(254) },
+        /database\.caKey must be a Kubernetes Secret key/,
+      ],
       ["invalid application database Secret key", { "database.appUrlKey": "bad/key" }],
       ["reserved application database Secret key", { "database.appUrlKey": "." }],
       ["overlong application database Secret key", { "database.appUrlKey": "a".repeat(254) }],

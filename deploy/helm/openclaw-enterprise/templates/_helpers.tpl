@@ -333,6 +333,7 @@ an allowlist without its provider is refused: the API treats it as a startup err
 {{- if or (eq .Values.database.caKey ".") (eq .Values.database.caKey "..") (not (regexMatch "^[A-Za-z0-9._-]+$" .Values.database.caKey)) -}}
 {{- fail "database.caKey must be a simple basename" -}}
 {{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "database.caKey" "value" .Values.database.caKey) -}}
 {{- /* The CA is mounted in API, worker, migration and bootstrap. Kubernetes requires each container's mount paths to be unique. */ -}}
 {{- $reservedCaMounts := list "/etc/openclaw/installation" "/run/openclaw-worker" (toString .Values.bootstrap.password.mountPath) -}}
 {{- if .Values.executionCluster.enabled -}}
