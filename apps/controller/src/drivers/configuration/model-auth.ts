@@ -27,6 +27,56 @@ const urlCredentialMessage = (path: string): string =>
 // `NO_PROXY` lists hosts, not a proxy.
 const PROXY_ENVIRONMENT = /^(?!no_proxy$)(?:\w*_)?proxy$/i;
 
+// git reads `GIT_CONFIG_VALUE_<n>` as the value of the config key `GIT_CONFIG_KEY_<n>` names.
+const GIT_CONFIG_SLOT = /^GIT_CONFIG_(KEY|VALUE)_(\d+)$/i;
+// The git config sections whose `proxy` key git and curl read as a proxy URL (`http.proxy`,
+// `http.<url>.proxy`, `remote.<name>.proxy`), and `https.`, which git ignores but users write.
+// `core.gitProxy` names a command, not a URL.
+const GIT_PROXY_SECTIONS = ["http.", "https.", "remote."];
+
+/**
+ * Whether the git config key `key` can name a proxy, in any case, where each `\0` stands for text
+ * a variable or reference may fill: it starts with a proxy section and ends in `.proxy`. Text a
+ * variable fills can complete both ends.
+ */
+function namesGitProxy(key: string): boolean {
+  const text = key.toLowerCase();
+  const pieces = text.split("\0");
+  if (pieces.length === 1) {
+    return GIT_PROXY_SECTIONS.some(
+      (section) =>
+        text.startsWith(section) && text.endsWith(".proxy") && text.length >= section.length + 5,
+    );
+  }
+  const first = pieces[0] ?? "";
+  const last = pieces.at(-1) ?? "";
+  return (
+    (last.endsWith(".proxy") || ".proxy".endsWith(last)) &&
+    GIT_PROXY_SECTIONS.some((section) => first.startsWith(section) || section.startsWith(first))
+  );
+}
+
+// One shell-quoted word of `GIT_CONFIG_PARAMETERS`, where `'\''` and `'\!'` quote `'` and `!`.
+const QUOTED = String.raw`'((?:[^']|'\\[!']')*)'`;
+// Its `'key'='value'` and `'key=value'` pairs, as `git -c` writes them.
+const GIT_CONFIG_PARAMETER = new RegExp(`${QUOTED}(?:=${QUOTED})?`, "g");
+const unquote = (word: string): string => word.replaceAll(/'\\([!'])'/g, "$1");
+
+/** The `[key, value]` pairs of `GIT_CONFIG_PARAMETERS` text. */
+function gitConfigParameters(text: string): [string, string][] {
+  return [...text.matchAll(GIT_CONFIG_PARAMETER)].map(([, word = "", value]) => {
+    if (value !== undefined) {
+      return [unquote(word), unquote(value)];
+    }
+    const pair = unquote(word);
+    const equals = pair.indexOf("=");
+    return equals === -1 ? [pair, ""] : [pair.slice(0, equals), pair.slice(equals + 1)];
+  });
+}
+
+const mcpHeaderMessage = (path: string): string =>
+  `Configuration field ${path} holds a credential value inline, where a reference is required. Make the header value a \${NAME} reference, or Bearer \${NAME} for an Authorization header.`;
+
 const urlCostMessage = (path: string): string =>
   `Configuration field ${path}, with the URLs and environment values before it, holds too many URLs or \${NAME} references to check for a user name or password. Shorten these values, or make each whole value a \${NAME} reference.`;
 
@@ -181,7 +231,8 @@ const STORED_CREDENTIAL_HEADER = /^(?:authorization|api-key|x-api-key)$/i;
  * waits on a variable is found as on Kubernetes Compute (`isCredentialHeaderName`). Writes also
  * refuse a user name or password in a native URL (`urlHoldsUserinfo`): model and proxy URLs,
  * channel proxies, MCP server URLs, a URL in any environment value of any environment map, Codex's
- * network proxy and speech and Talk provider proxies.
+ * network proxy and speech and Talk provider proxies. MCP server credential headers hold references
+ * too (writes only).
  */
 export function validateModelCredentialReferences(
   values: OpenClawConfigurationDocument,
@@ -190,7 +241,12 @@ export function validateModelCredentialReferences(
     ...options
   }: { readonly stored?: boolean } & ConfigurationValidationOptions = {},
 ): void {
-  const validateReference = (value: unknown, path: string, authorizationHeader = false): void => {
+  const validateReference = (
+    value: unknown,
+    path: string,
+    authorizationHeader = false,
+    message?: (path: string) => string,
+  ): void => {
     if (value === undefined || value === null) {
       return;
     }
@@ -212,7 +268,25 @@ export function validateModelCredentialReferences(
     ) {
       return;
     }
-    throw new ModelCredentialValueError(path);
+    throw new ModelCredentialValueError(path, message);
+  };
+  // Whether a header named `name` in the headers object at `headersPath` carries a credential, and
+  // whether it may hold `Bearer ${NAME}`: some gateways carry the bearer token in an
+  // Authentication header. On a Preset save, the text around a name's variables is matched too,
+  // as for the credential rule.
+  const credentialHeader = (
+    headersPath: readonly (string | number)[],
+    name: string,
+  ): { readonly authorization: boolean } | undefined => {
+    if (!isCredentialHeaderName(name, options, headersPath)) {
+      return undefined;
+    }
+    const literal = options.unresolved?.([...headersPath, name], true)?.join("");
+    return {
+      authorization: [name, literal].some(
+        (text) => text !== undefined && /auth(?:entication|orization)(?:[-_.]v?\d+)?$/i.test(text),
+      ),
+    };
   };
   // The work the userinfo checks have done on this document: each URL field and environment value
   // is charged before it is checked, and one past the budget is refused as too costly to check.
@@ -240,6 +314,20 @@ export function validateModelCredentialReferences(
       urlHoldsUserinfo(value, [head, ...tail]) ||
       (withScheme !== undefined && urlHoldsUserinfo(value, withScheme))
     ) {
+      throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
+    }
+  };
+  // A proxy URL in part of an environment value, `text`, where `\0` stands for each unfilled
+  // variable, read without a scheme as http.
+  const refuseProxyUserinfo = (path: SettingPath, value: string, text: string): void => {
+    const literals = (
+      /^[\0- ]*[A-Za-z][A-Za-z0-9+.-]*:\/\//.test(text) ? text : `http://${text}`
+    ).split("\0");
+    spent.work += userinfoWork(literals);
+    if (spent.work > URL_CHECK_BUDGET) {
+      throw new ModelCredentialValueError(pointer(...path), urlCostMessage);
+    }
+    if (urlHoldsUserinfo(value, literals)) {
       throw new ModelCredentialValueError(pointer(...path), urlCredentialMessage);
     }
   };
@@ -308,18 +396,9 @@ export function validateModelCredentialReferences(
         [[...path, "request", "headers"], request?.headers],
       ] as const) {
         for (const [name, value] of Object.entries(asRecord(headers) ?? {})) {
-          if (isCredentialHeaderName(name, options, headersPath)) {
-            // Some gateways carry the bearer token in an Authentication header. On a Preset save,
-            // the text around a name's variables is matched too, as for the credential rule.
-            const literal = options.unresolved?.([...headersPath, name], true)?.join("");
-            validateReference(
-              value,
-              pointer(...headersPath, name),
-              [name, literal].some(
-                (text) =>
-                  text !== undefined && /auth(?:entication|orization)(?:[-_.]v?\d+)?$/i.test(text),
-              ),
-            );
+          const credential = credentialHeader(headersPath, name);
+          if (credential) {
+            validateReference(value, pointer(...headersPath, name), credential.authorization);
           }
         }
       }
@@ -376,6 +455,20 @@ export function validateModelCredentialReferences(
       );
       for (const [server, settings] of Object.entries(asRecord(mcp?.servers) ?? {})) {
         refuseUrlUserinfo([...at, "servers", server, "url"], asRecord(settings)?.url);
+        // An MCP server's credential headers hold references, as a model provider's do (finding
+        // 1278): OpenClaw marks these headers sensitive.
+        const headersPath = [...at, "servers", server, "headers"];
+        for (const [name, value] of Object.entries(asRecord(asRecord(settings)?.headers) ?? {})) {
+          const credential = credentialHeader(headersPath, name);
+          if (credential) {
+            validateReference(
+              value,
+              pointer(...headersPath, name),
+              credential.authorization,
+              mcpHeaderMessage,
+            );
+          }
+        }
         environments.push([[...at, "servers", server, "env"], asRecord(asRecord(settings)?.env)]);
       }
     }
@@ -451,14 +544,103 @@ export function validateModelCredentialReferences(
     ]) {
       environments.push([path, at(values, path)]);
     }
-    for (const [prefix, settings] of environments) {
-      for (const [name, value] of Object.entries(settings ?? {})) {
+    // A `GIT_CONFIG_VALUE_<n>` whose `GIT_CONFIG_KEY_<n>` names a proxy is a proxy too, read
+    // without a scheme as http: git and curl send its userinfo as Proxy-Authorization (finding
+    // 1276). Keys pair across the maps OpenClaw merges into one environment: `env`, `env.vars` and
+    // every skill's (the Gateway's process), and the Docker sandbox defaults' with each Agent's.
+    // On a Preset save, a key or name that waits on a variable is matched as the text around it
+    // (`namesGitProxy`), and a name that waits on one pairs with every index; so does a key's
+    // `${VAR}` reference, which may render any text.
+    const merged = (prefix: SettingPath): "process" | "defaults" | "agent" | undefined =>
+      prefix[0] === "env" || prefix[0] === "skills"
+        ? "process"
+        : prefix[0] === "agents" && prefix.includes("docker")
+          ? prefix[1] === "defaults"
+            ? "defaults"
+            : "agent"
+          : undefined;
+    const slots = environments.map(([prefix, settings]) =>
+      Object.entries(settings ?? {}).map(([name, value]) => {
         const literal = options.unresolved?.([...prefix, name], true)?.join("");
-        refuseEnvironmentUserinfo(
-          [...prefix, name],
-          value,
-          [name, literal].some((text) => text !== undefined && PROXY_ENVIRONMENT.test(text)),
+        const proxy = [name, literal].some(
+          (text) => text !== undefined && PROXY_ENVIRONMENT.test(text.trim()),
         );
+        // OpenClaw trims a variable's name. A name that waits on a variable has no known index,
+        // and no known kind unless the text around it names one.
+        const [, kind = "", index] = GIT_CONFIG_SLOT.exec(name.trim()) ?? [];
+        const text = literal?.trim().toUpperCase();
+        const unknown = text?.startsWith("GIT_CONFIG") === true;
+        const key = kind.toUpperCase() === "KEY" || (unknown && !text.includes("VALUE"));
+        return {
+          name,
+          value,
+          proxy,
+          index: literal === undefined ? index : undefined,
+          key,
+          gitValue: kind.toUpperCase() === "VALUE" || (unknown && !text.includes("KEY")),
+          parameters: literal === undefined && /^GIT_CONFIG_PARAMETERS$/i.test(name.trim()),
+        };
+      }),
+    );
+    // The indices of each map's keys that name a proxy (`undefined` for any index).
+    const proxyKeys = environments.map(([prefix], position) => {
+      const keys = new Set<string | undefined>();
+      for (const { name, value, index, key } of slots[position] ?? []) {
+        if (!key || typeof value !== "string") {
+          continue;
+        }
+        const text = (options.unresolved?.([...prefix, name]) ?? [value])
+          .join("\0")
+          .replaceAll(environmentReference, (reference: string, escaped?: string) =>
+            escaped === undefined ? "\0" : reference.slice(1),
+          );
+        if (namesGitProxy(text)) {
+          keys.add(index);
+        }
+      }
+      return keys;
+    });
+    const union = (...groups: string[]) =>
+      new Set(
+        environments.flatMap(([prefix], position) =>
+          groups.includes(merged(prefix) ?? "") ? [...(proxyKeys[position] ?? [])] : [],
+        ),
+      );
+    const gateway = union("process");
+    const defaults = union("defaults");
+    const sandbox = union("defaults", "agent");
+    for (const [position, [prefix]] of environments.entries()) {
+      const own = proxyKeys[position] ?? new Set();
+      const group = merged(prefix);
+      const paired =
+        group === "process"
+          ? [gateway]
+          : group === "defaults"
+            ? [sandbox]
+            : group === "agent"
+              ? [defaults, own]
+              : [own];
+      for (const { name, value, proxy, index, gitValue, parameters } of slots[position] ?? []) {
+        const path = [...prefix, name];
+        refuseEnvironmentUserinfo(
+          path,
+          value,
+          proxy ||
+            (gitValue &&
+              paired.some(
+                (keys) =>
+                  keys.has(undefined) || (index === undefined ? keys.size > 0 : keys.has(index)),
+              )),
+        );
+        // `git -c` pairs: each value whose key names a proxy.
+        if (parameters && typeof value === "string") {
+          const text = (options.unresolved?.(path) ?? [value]).join("\0");
+          for (const [key, setting] of gitConfigParameters(text)) {
+            if (namesGitProxy(key.replaceAll(environmentReference, "\0"))) {
+              refuseProxyUserinfo(path, value, setting);
+            }
+          }
+        }
       }
     }
   }
