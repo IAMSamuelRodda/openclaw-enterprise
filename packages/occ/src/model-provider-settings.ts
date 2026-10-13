@@ -37,29 +37,29 @@ const pointer = (...segments: readonly (string | number)[]): string =>
 // names) before it validates its configuration, so a value that holds one is left to it.
 const environmentReference = /\$\{[A-Z_][A-Z0-9_]*(?::-[^${}]*)?\}/;
 
+// A value its writer fills in later: a runtime environment reference, or what `unresolved`
+// names (an unfilled Preset variable).
+type Unresolved = (text: string) => boolean;
+
 function validateSettings(
   settings: Record<string, unknown>,
   path: readonly (string | number)[],
   provider: boolean,
+  unresolved: Unresolved,
 ) {
   const { baseUrl, api } = settings;
+  const pending = (value: unknown) =>
+    typeof value === "string" && (environmentReference.test(value) || unresolved(value));
   // On a provider, the runtime treats a blank baseUrl as unset and uses a built-in
   // provider's default endpoint; a model's baseUrl must be a nonempty URL.
   const unsetBaseUrl = provider && typeof baseUrl === "string" && baseUrl.trim() === "";
-  if (
-    Object.hasOwn(settings, "baseUrl") &&
-    !unsetBaseUrl &&
-    !(typeof baseUrl === "string" && environmentReference.test(baseUrl))
-  ) {
+  if (Object.hasOwn(settings, "baseUrl") && !unsetBaseUrl && !pending(baseUrl)) {
     const url = typeof baseUrl === "string" && URL.canParse(baseUrl) ? new URL(baseUrl) : undefined;
     if (url?.protocol !== "http:" && url?.protocol !== "https:") {
       throw new ModelProviderSettingError(pointer(...path, "baseUrl"), "baseUrl");
     }
   }
-  if (
-    Object.hasOwn(settings, "api") &&
-    !(typeof api === "string" && environmentReference.test(api))
-  ) {
+  if (Object.hasOwn(settings, "api") && !pending(api)) {
     if (typeof api !== "string" || !RUNTIME_MODEL_APIS.includes(api)) {
       throw new ModelProviderSettingError(pointer(...path, "api"), "api");
     }
@@ -88,9 +88,14 @@ export function providerModelsListError(key: string): ConfigurationHarnessError 
  * A saved model provider `baseUrl` or `api` that the runtime cannot use otherwise fails
  * only at deployment, as an unexplained startup model check failure. Configuration writes
  * check both on each provider and on each of its models, and refuse a `models` that is not
- * a list (`providerModelsListError`); other provider settings stay the runtime's to validate.
+ * a list (`providerModelsListError`), and header names that are not HTTP field names; other
+ * provider settings stay the runtime's to validate. Preset saves pass `unresolved` for their
+ * unfilled variables, which the Configuration a Preset creates is checked with.
  */
-export function validateModelProviderSettings(values: OpenClawConfigurationDocument): void {
+export function validateModelProviderSettings(
+  values: OpenClawConfigurationDocument,
+  { unresolved = () => false }: { readonly unresolved?: Unresolved } = {},
+): void {
   const providers = asRecord(asRecord(values.models)?.providers);
   for (const [providerName, provider] of Object.entries(providers ?? {})) {
     const settings = asRecord(provider);
@@ -98,19 +103,47 @@ export function validateModelProviderSettings(values: OpenClawConfigurationDocum
       continue;
     }
     const path = ["models", "providers", providerName] as const;
-    validateSettings(settings, path, true);
+    const setting = keyedSettingPath("models.providers", providerName);
+    validateSettings(settings, path, true, unresolved);
     const models = settings.models;
-    if (models === undefined) {
-      continue;
-    }
-    if (!Array.isArray(models)) {
+    // The list first, as the Kubernetes rule does, so both name the same setting.
+    if (models !== undefined && !Array.isArray(models)) {
       throw providerModelsListError(providerName);
     }
-    for (const [index, model] of models.entries()) {
+    validateHeaderNames(settings, setting, unresolved);
+    for (const [index, model] of (Array.isArray(models) ? models : []).entries()) {
       const modelSettings = asRecord(model);
       if (modelSettings !== undefined) {
-        validateSettings(modelSettings, [...path, "models", index], false);
+        validateSettings(modelSettings, [...path, "models", index], false, unresolved);
+        validateHeaderNames(modelSettings, `${setting}.models.${index}`, unresolved);
       }
+    }
+  }
+}
+
+/** The requirement for a model provider header name that is not an HTTP field name. */
+export const INVALID_HEADER_NAME = "must use valid HTTP header names";
+
+// Every Compute refuses a header name no HTTP client sends (`"x-api-key "`, a lookalike), so a
+// literal under it is never stored where the credential rules would not recognize it. The
+// Kubernetes rule refuses it with the same message.
+function validateHeaderNames(
+  settings: Record<string, unknown>,
+  setting: string,
+  unresolved: Unresolved,
+): void {
+  for (const [headersSetting, headers] of [
+    [`${setting}.headers`, settings.headers],
+    [`${setting}.request.headers`, asRecord(settings.request)?.headers],
+  ] as const) {
+    if (
+      !Object.keys(asRecord(headers) ?? {}).every(
+        (name) => isHttpFieldName(name) || unresolved(name),
+      )
+    ) {
+      throw new ConfigurationHarnessError(
+        configurationSettingMessage(headersSetting, INVALID_HEADER_NAME),
+      );
     }
   }
 }
@@ -124,20 +157,25 @@ export function isHttpFieldName(name: string): boolean {
   return HTTP_FIELD_NAME.test(name);
 }
 
-// A header whose last hyphen- or underscore-separated word names a credential: Authorization,
-// Proxy-Authorization, x-auth-token, cookie, x-client-secret, x-credentials, x-passphrase,
-// x-signature, x-bearer and the like, singular or plural. Vendors and gateways each pick their
-// own credential header, so a fixed list would miss the next one; matching the last word keeps
-// names such as x-token-id or x-auth-mode, which carry no credential, out. A trailing number
-// word, as in x-hub-signature-256, is skipped.
+// A header whose last hyphen-, underscore- or dot-separated word names a credential:
+// Authorization, Authentication, Proxy-Authorization, x-auth-token, cookie, x-client-secret,
+// x-credentials, x-passphrase, x-signature, x-bearer, X-JWT-Assertion, x-otp, x-pin, x-pwd and
+// the like, in the singular or the plurals listed. Vendors and gateways each pick their own
+// credential header, so a fixed list would miss the next one; matching the whole last word
+// keeps names such as x-token-id, x-auth-mode, X-Passthrough or X-Pinned-Version, which carry
+// no credential, out.
+// A trailing version word, as in x-hub-signature-256 or x-api-key-v2, is skipped.
 const CREDENTIAL_HEADER_WORD =
-  /(?:^|[-_])(?:auth|authorization|bearer|cookies?|credentials?|passcode|passphrase|passwords?|secrets?|signatures?|tokens?)(?:[-_]\d+)?$/i;
+  /(?:^|[-_.])(?:assertions?|auths?|authentications?|authorizations?|bearers?|cookies?|credentials?|hmacs?|jwts?|licen[cs]es?|otps?|pass|passcode|passphrase|passwords?|pin|pwd|secrets?|signatures?|tokens?)(?:[-_.]v?\d+)?$/i;
 // Any name ending in `key` or `keys` is a credential too (x-api-key, apikey, x-auth-key,
 // dd-application-key, x-portkey-virtual-key, a bare key): vendors name keys too freely to
 // list. A key's id or name (x-api-key-id) ends in another word.
-const CREDENTIAL_HEADER_KEY = /keys?(?:[-_]\d+)?$/i;
-// Keys that name no credential: an idempotency key and a cache key.
-const NON_CREDENTIAL_KEY = /(?:^|[-_])(?:cache|idempoten(?:cy|t))[-_]?keys?(?:[-_]\d+)?$/i;
+const CREDENTIAL_HEADER_KEY = /keys?(?:[-_.]v?\d+)?$/i;
+// Keys that name no credential: idempotency, cache, deduplication, partition, shard and sort
+// keys. A request or routing key can be a credential (an events API routing key is), so it is
+// refused like any other key.
+const NON_CREDENTIAL_KEY =
+  /(?:^|[-_.])(?:cache|dedup(?:e|lication)?|idempoten(?:cy|t)|partition|shard|sort)[-_.]?keys?(?:[-_.]v?\d+)?$/i;
 
 /** Whether a model provider header with this name carries a credential. */
 export function isCredentialHeaderName(name: string): boolean {
