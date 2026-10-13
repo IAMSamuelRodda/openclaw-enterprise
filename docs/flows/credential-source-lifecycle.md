@@ -1,7 +1,7 @@
 ---
 created: "2026-09-26"
-updated: 2026-10-09
-last_updated_session: 01a0e5ec-d802-7800-9eb6-8022c1ac0d06
+updated: 2026-10-12
+last_updated_session: 850fdf4a-7ef8-425c-9c44-942ac1aee05f
 ---
 
 # Credential source lifecycle Flow
@@ -101,7 +101,7 @@ the gateway's Driver ID, and state `registering`, plus one
 name derives from that ID, so the record identifies any copy the gateway stores.
 OCC asks Compute's `resolveSandboxNamespace` for the Namespace's runtime
 placement (the paired Sandbox's name) and calls `registerSource`
-with a 30-second timeout. The OpenShell Driver ensures the Workspace's provider
+with a 30-second timeout. The OpenShell Driver ensures the source's own provider
 profile and creates an OCC-labeled provider whose `profile_workspace` is that
 Workspace; a retried create adopts only a provider with matching labels.
 
@@ -191,7 +191,7 @@ withdrawal work holds it, or `503` if another driver registered it. Only
 then does it move a `registering` or `ready` record to `deleting`; triggers
 prevent leaving `deleting` and returning to `registering`. Outside the
 transaction, OCC calls `removeSource`. The OpenShell Driver deletes and confirms
-the owned provider, then the profile once no provider of its type remains. A
+the owned provider, then the source's profile. A
 gateway failure returns `503` and leaves the record `deleting` for a retry.
 Until `CREDENTIAL_REGISTRATION_FENCE_MS` (70 seconds) after `createdAt`, OCC
 keeps the record and returns `503` even after a successful removal: an aborted
@@ -315,6 +315,7 @@ Driver detaches the provider again only if `SandboxSpec.providers` lists it.
 
 ## Changelog
 
+- 2026-10-12 14:00: Every source, including `openai`, owns its OpenShell profile; no profile is shared by type. (claude-code/session_014fi7Uq1LyofgqwLrLoQ3yY - e0bb26d84)
 - 2026-10-09 08:30: Replays take over withdrawal work. (fix-892-894)
 - 2026-10-09 06:00: Exhausted withdrawals retry later without Compute maintenance. (fix-887)
 - 2026-10-08 20:30: Maintenance leaves denied withdrawals for a replay. (fix-853)

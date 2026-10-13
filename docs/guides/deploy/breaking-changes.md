@@ -4,7 +4,8 @@ OpenClaw Enterprise (OCE) is pre-alpha and has no stable release, so a newer
 main can refuse or break an Installation that an older build created. Each
 change like that gets an entry here: what breaks, who is affected, how to tell,
 and the steps. Before an upgrade, read every entry dated after the source commit
-you run now, here, in the [earlier notices](breaking-changes-archive.md) and in the
+you run now, here, in the [earlier notices](breaking-changes-archive.md), in the
+[notices before 2026-10-11](breaking-changes-before-2026-10-11.md) and in the
 [notices before 2026-10-10](breaking-changes-before-2026-10-10.md),
 then follow the [upgrade checklist](upgrade-checklist.md) and
 [production image upgrades](production-upgrade.md).
@@ -253,79 +254,40 @@ the duplicate or reserved policy.
 policy called `workspace-node-enrollment`. Keep each policy's binaries and
 endpoints. _untested_ against a live Installation.
 
-## 2026-10-12: model credentials in provider headers and request auth
+## 2026-10-13: OpenShell `openai` credential sources need replacing
 
-**What breaks.** On Kubernetes Compute, Configuration create and update,
-provisioning, Preset saves, Agent create and update, and deployment answer
-`400` naming the setting for any `models.providers.<provider>`, even one no
-model setting selects, that has:
+**What breaks.** Each OpenShell credential source now owns its provider profile.
+An `openai` source registered by an earlier build points its provider at the
+shared `oce-openai` profile, so OCC no longer treats that provider as the
+source's. A deployment that lists the source fails. Deleting the source through
+OCC leaves it `deleting` until its provider is removed by hand.
 
-- a credential header in `headers` (on the provider or one of its `models`)
-  or `request.headers`: a name whose last hyphen- or underscore-separated
-  word, after any trailing number, is `auth`, `authorization`, `bearer`,
-  `cookie`, `credential`, `passcode`, `passphrase`, `password`, `secret`,
-  `signature` or `token` (or a plural), or that ends in `key` or `keys` except
-  an idempotency or cache key, such as `Proxy-Authorization`, `x-goog-api-key`,
-  `X-Auth-Key`, `x-auth-token` or `Cookie` (widened on 2026-10-13, below);
-- a header name that is not a valid HTTP field name (spaces, zero-width or
-  non-ASCII characters);
-- a `request.auth` other than exactly `{mode: "provider-default"}`.
+**Who is affected.** Installations with OpenShell `openai` credential sources.
+`bearer-token` and OAuth2 sources already owned their profiles and are
+unaffected.
 
-Every Configuration Driver, on every Compute, also answers `400` for a literal
-where a reference is required: those headers (on models too),
-`request.auth.token` and `request.auth.value`, and the `cert`, `key` and
-`passphrase` of `request.tls` and `request.proxy.tls`. It refuses a
-`request.proxy.url` with a user name or password. Preset saves run the
-Kubernetes rules before the Configuration Driver's, so a literal gets the
-Kubernetes message.
+**How to tell.** The source's `status` is `failed`, with "The OpenShell
+provider is not owned by this source."
 
-**Who is affected.** Configurations that carry such headers, `request.auth`,
-TLS client keys or proxy credentials. A stored Configuration still reads and
-an edit can replace it; saving it unchanged and deployment refuse it with the
-same message.
+**Steps.** After upgrading, replace each such source, _untested_:
 
-**How to tell.** Kubernetes Compute's `400` names
-`models.providers.<provider>.headers`, `.request.headers` or `.request.auth`.
-The Configuration Driver's names a JSON pointer, such as
-`/models/providers/<provider>/request/auth/token holds a credential value inline`.
+1. Register a replacement `openai` source from the same Secret. It gets its own
+   profile.
+2. For each Agent bound to the old source:
+   - Grant the Agent's service principal `operate` on the replacement.
+   - Update the Agent so that `credentialSources` lists the replacement instead
+     of the old source, and `harnessAuth.sourceId` names the replacement.
+   - Deploy it, and wait until the new revision is active.
 
-**Steps.** Read the Configuration, then save it without the refused setting.
-The Agent's Harness authentication is the only supported path for model
-credentials; select the credential there after that save, since an Agent save
-that names the Configuration is refused with the same message until then.
+   OCC refuses to delete a source with `409` while an Agent, its active
+   revision, or a pending deployment still references it.
 
-- On Kubernetes Compute, remove every credential header and any `request.auth`
-  other than `{mode: "provider-default"}`. A `${NAME}` reference is refused
-  there too.
-- On other Compute, the Configuration Driver accepts a `${NAME}` reference in
-  those slots instead of a literal.
-- For TLS client keys and proxy credentials, on any Compute, store the value
-  as a Secret and write a `${NAME}` reference.
-
-## 2026-10-12: repository credential images follow the control-plane image rule
-
-**What breaks.** The chart (since #2221) and now profile preflight refuse a
-`repositoryCredentials.image` or `repository.image` that does not start with a
-letter or digit or that holds a character other than letters, digits, `.`,
-`_`, `:`, `/` or `-` before the `@sha256:` digest, as for the controller image.
-
-**Who is affected.** Hand-written values or profile inputs with such a
-reference. Registry references rarely use such names.
-
-**How to tell.** Rendering fails with `repositoryCredentials.image must be an
-approved immutable SHA-256 image reference`; preflight names `repository.image`.
-
-**Steps.** Use the image's registry reference with its digest.
-
-## 2026-10-12: SSH Compute names its Harness authentication rule
-
-**What breaks.** On SSH Compute, an embedded OpenClaw Agent whose
-`harnessAuth.method` is not `runtime` gets `400` naming `harnessAuth.method`,
-where it got a fixed `409`: at deployment, and at Agent create and update when
-they check the binding. Nothing new is refused.
-
-**Who is affected.** Clients that branch on the `409`.
-
-**How to tell.** The `400` says the method must be `runtime`.
-
-**Steps.** Set `harnessAuth` to `{ "method": "runtime" }`.
+3. In the Namespace's OpenShell Workspace, delete each old source's provider:
+   the one labeled `openclaw.dev/credential-source-id` with the source's ID.
+   OpenShell refuses while a Sandbox still lists it, so the old revision's
+   Sandbox must be gone. Then delete the old source through OCC. A `404` while
+   `GET` shows `deleting` means the provider remains; a
+   `409 CREDENTIAL_WITHDRAWAL_IN_PROGRESS` means retry after withdrawal work
+   finishes.
+4. Once no old `openai` provider remains, delete the `oce-openai` profile.
+   OpenShell refuses while a provider still uses it.
