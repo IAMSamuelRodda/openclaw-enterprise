@@ -94,6 +94,19 @@ approved immutable SHA-256 image reference`; preflight names `repository.image`.
 
 **Steps.** Use the image's registry reference with its digest.
 
+## 2026-10-12: SSH Compute names its Harness authentication rule
+
+**What breaks.** On SSH Compute, an embedded OpenClaw Agent whose
+`harnessAuth.method` is not `runtime` gets `400` naming `harnessAuth.method`,
+where it got a fixed `409`: at deployment, and at Agent create and update when
+they check the binding. Nothing new is refused.
+
+**Who is affected.** Clients that branch on the `409`.
+
+**How to tell.** The `400` says the method must be `runtime`.
+
+**Steps.** Set `harnessAuth` to `{ "method": "runtime" }`.
+
 ## 2026-10-12: demo NetworkPolicy ports must be canonical decimals
 
 **What breaks.** `helm upgrade` of the observability demo fails when
