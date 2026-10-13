@@ -1015,6 +1015,7 @@ export class PluginPolicyValidationError extends Error {
       | "tools[id].reviewer"
       | "approvers"
       | "aliasedPlugin"
+      | "onePlugin"
       | "unknownPlugin",
     driverId?: string,
     pluginId?: string,
@@ -1033,6 +1034,8 @@ export class PluginPolicyValidationError extends Error {
     } else if (field === "aliasedPlugin") {
       message =
         'Two plugin selections name the same plugin (a native ID and its driver-prefixed ID, such as "diffs" and "occ-plugin:diffs"). Keep one selection per plugin.';
+    } else if (field === "onePlugin") {
+      message = "This Plugin Driver installs one plugin for each Agent. Keep one plugin selection.";
     } else if (field === "approvers") {
       message =
         "This Plugin Driver does not support plugin or tool approvers. Omit approvers from plugin selections and set Agent-wide pluginApprovers instead.";

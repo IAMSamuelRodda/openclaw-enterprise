@@ -190,15 +190,22 @@ test("OpenClaw Plugin Driver offers approved releases and binds exactly the sele
     },
   ]);
   const selections = {
-    "occ-plugin:diffs": { enabled: true },
     "occ-plugin:acme-search": { enabled: true, tools: { acme_search: { approval: "none" } } },
   };
   driver.validatePolicies(selections);
-  // Diffs is compiled into every runtime; only the operator-approved release is recorded.
+  // Diffs is a bundled catalog entry; only the operator-approved release is recorded.
   assert.deepEqual(driver.bindReleases(selections), {
     "occ-plugin:acme-search": approvedClawHubPlugin,
   });
   assert.equal(driver.bindReleases({ "occ-plugin:diffs": { enabled: true } }), undefined);
+
+  // A second selection would install a second package in one gateway startup. OpenClaw
+  // would then treat an archive that declares the first plugin's ID as an update and run
+  // its Doctor migration before Compute verifies it, so admission refuses the pair.
+  assert.throws(
+    () => driver.validatePolicies({ ...selections, "occ-plugin:diffs": { enabled: true } }),
+    /installs one plugin for each Agent/,
+  );
 
   // An Installation without the approval no longer offers or admits it.
   assert.throws(

@@ -211,6 +211,9 @@ marker. The other cases use the same path without a model turn:
 - **Retained records.** The test runs the approved release, then deploys a
   revision that selects Diffs instead. Once that revision runs, the earlier
   release's install record must be gone and Diffs must be installed fresh.
+- **Community release.** The test approves the non-official ClawHub release
+  `notes-plugin` 0.1.0. OpenClaw installs a non-official plugin only with capability
+  consent, so the deployment must succeed with a matching install record.
 
 The lane needs `OPENAI_API_KEY` and an immutable `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`.
 The default release is `@openclaw/lobster` 2026.9.7, compatible with the pinned

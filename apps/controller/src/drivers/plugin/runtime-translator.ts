@@ -453,6 +453,23 @@ export function createPluginRuntimeTranslator(
         }
       }
     }
+    // TODO: Remove this limit when OpenClaw refuses an install whose package is unverified
+    // before it updates an existing install record. With OpenClaw 2026.9.8, a second install
+    // in one startup whose archive declares the first plugin's ID runs that archive's Doctor
+    // migration before Compute can verify it; one install per startup has no such record.
+    // Aliased keys for one plugin fall through to the clearer aliased-selection refusal.
+    const nativeIds = new Set(
+      selectionEntries(selections).map(([pluginId]) =>
+        pluginId.startsWith(OCC_DRIVER_ID + ":")
+          ? pluginId.slice(OCC_DRIVER_ID.length + 1)
+          : pluginId,
+      ),
+    );
+    if (kind === "openclaw" && nativeIds.size > 1) {
+      throw Object.assign(new Error("An OpenClaw Agent can select one plugin."), {
+        policyField: "onePlugin",
+      });
+    }
   }
 
   function codexApproval(approval: unknown): unknown {

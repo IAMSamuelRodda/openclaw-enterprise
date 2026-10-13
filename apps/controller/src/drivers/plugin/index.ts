@@ -377,7 +377,9 @@ class BundledPluginDriverBase {
         throw new PluginPolicyValidationError("unknownPlugin", this.id, pluginId);
       }
       throw new PluginPolicyValidationError(
-        field === "toolDefaults.reviewer" || field === "tools[id].reviewer" ? field : undefined,
+        field === "toolDefaults.reviewer" || field === "tools[id].reviewer" || field === "onePlugin"
+          ? field
+          : undefined,
       );
     }
     // Admission-only, like the Codex approvers check: revisions admitted before this

@@ -439,3 +439,45 @@ test(
     );
   },
 );
+
+// A community (non-official) ClawHub release. OpenClaw refuses a noninteractive install
+// of a non-official plugin unless the caller accepts its declared capabilities.
+const communityRelease = {
+  nativeId: "notes",
+  name: "Notes",
+  source: "clawhub",
+  packageName: "notes-plugin",
+  version: "0.1.0",
+  integrity: "sha256-AE9Ee3PeYchH+7sVFSAG+X+IA3cEMgnX26V3lmlJH7c=",
+  toolNames: [
+    "notes_append",
+    "notes_create",
+    "notes_delete",
+    "notes_get",
+    "notes_list",
+    "notes_update",
+  ],
+};
+
+test(
+  "an Installation-approved community ClawHub release installs with the administrator's capability consent",
+  realLane,
+  async (context) => {
+    const pluginId = `occ-plugin:${communityRelease.nativeId}`;
+    const fixture = await createClawHubFixture(context, [communityRelease]);
+    const { agent, allowedPlugins } = await createAgentSelecting(fixture, communityRelease);
+
+    // The deployment succeeds only if the Pod passed OpenClaw's capability consent for
+    // this non-official release and the install record matches the approval.
+    const deployed = await fixture.deployAndWait(agent);
+    assert.deepEqual(deployed.revision.plugins?.releases, { [pluginId]: communityRelease });
+    assert.deepEqual(deployed.status.warnings, []);
+    assert.deepEqual(
+      await fixture.readOpenClawPluginInstall(agent, communityRelease.nativeId),
+      installRecordFor(communityRelease),
+    );
+    const policy = await fixture.readOpenClawPluginPolicy(agent, communityRelease.nativeId);
+    assert.deepEqual(policy.plugins, { allow: allowedPlugins, enabled: true });
+    assert.deepEqual(policy.tools.allow, ["read", communityRelease.nativeId]);
+  },
+);

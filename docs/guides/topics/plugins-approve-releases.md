@@ -75,7 +75,8 @@ is invalid, for example a version range or a missing integrity.
 ## Select and deploy it
 
 Follow [Configure Agent plugins](plugins-configure.md), using the selection ID
-`occ-plugin:acme-search` in place of `occ-plugin:diffs`. The deployment returns
+`occ-plugin:acme-search` in place of `occ-plugin:diffs`. An OpenClaw Agent can
+select one plugin, so remove Diffs from the Agent first. The deployment returns
 an AgentRevision whose `plugins.releases` records the approved entry. A
 `succeeded` deployment without a `PLUGIN_INSTALL_FAILED` warning means the Agent
 installed that exact release and its record matched.

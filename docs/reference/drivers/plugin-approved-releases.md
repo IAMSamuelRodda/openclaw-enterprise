@@ -58,11 +58,20 @@ package (`clawhubPackage` for ClawHub, `resolvedName` for npm), version, and
 integrity to match the admitted release. A mismatch keeps the gateway unready.
 Each start installs fresh: the gateway's state volume keeps OpenClaw's install
 records, so startup first removes every persisted record and restores the
-configuration that removal edits. Plugin installation and inspection run without
-the container's credential-named environment variables, such as the model key.
+configuration that removal edits. The one install then runs with no record that
+a substituted archive could claim, so OpenClaw loads none of its code. Plugin
+installation and inspection run without the container's credential-named
+environment variables, such as the model key.
 Package downloads use the Agent's existing public HTTPS egress.
 
 ## Limits
+
+- An OpenClaw Agent can select one plugin: Diffs or one approved release. Saves,
+  updates, and deployments refuse a second selection. With two installs in one
+  start, OpenClaw would treat a second archive that declares the first plugin's
+  ID as an update and run that archive's Doctor migration before verification.
+  The limit can lift when OpenClaw refuses an unverified package before it
+  updates an existing install.
 
 - Approval is an Installation-wide trust decision to run the package's code in
   every Agent that selects it. OCE does not read ClawHub's scan or moderation
@@ -86,7 +95,9 @@ Package downloads use the Agent's existing public HTTPS egress.
   expected digest, so the Pod downloads and unpacks the archive and installs its
   npm dependencies (lifecycle scripts disabled, versions resolved at install time)
   before comparing digests. It loads no plugin code before the comparison, and a
-  mismatch stops before the native gateway starts. The pin does not cover those
+  mismatch stops before the native gateway starts. Withholding credential-named
+  variables keeps them out of the CLI's environment; it does not stop code that
+  runs as the same user from reading the container's process environment. The pin does not cover those
   dependencies or the registry origin.
 
 ## Source and verification

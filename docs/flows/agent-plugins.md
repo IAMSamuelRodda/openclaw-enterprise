@@ -171,12 +171,11 @@ Grants enter nonempty `tools.allow`, otherwise `tools.alsoAllow`, preserving den
 override precedes `toolDefaults.enabled`; disabled tools emit native denies.
 Master disable and operator denies prevail; `provider_default` and `none` add no
 Diffs review step. Revision-private configuration uses `--pin --force --no-enable`;
-approved releases add `--accept-capabilities`. Startup first uninstalls every persisted
-install record (`removePersistedOpenClawInstallRecords`) and restores configuration:
-OpenClaw's update path would load a staged package's Doctor contract before verification.
-Plugin CLI calls omit credential-named environment variables.
-Preparation refreshes the registry
-and verifies admitted configuration; the pinned runtime release lacks this flag.
+approved releases add `--accept-capabilities`. Admission allows one OpenClaw plugin per
+Agent; startup uninstalls every persisted install record
+(`removePersistedOpenClawInstallRecords`) and restores configuration, so no record lets
+OpenClaw's update path load a staged Doctor contract before verification. Plugin CLI calls omit credential-named environment variables.
+Preparation refreshes the registry and verifies admitted configuration.
 Native inspection verifies plugin ID, package name, runtime/install version,
 recorded integrity, and the runtime source's containment in the install path.
 A ClawHub release installs as `clawhub:<package>@<version>`; its record must

@@ -3566,6 +3566,23 @@ test("Deployment binds an Installation-approved ClawHub plugin release into the 
   assert.equal(unapproved.body.error.code, "INVALID_REQUEST");
   assert.match(unapproved.body.error.message, /does not offer: occ-plugin:other-search/);
 
+  // Adding Diffs beside the release would install two packages in one gateway startup.
+  // OpenClaw would treat a second archive that declares the first plugin's ID as an update
+  // and run that unverified archive's Doctor migration, so the update is refused at save.
+  const pair = await controller.request(
+    "PATCH",
+    `/namespaces/${namespace.id}/agents/${created.data.id}`,
+    {
+      body: {
+        configurationId: configuration.id,
+        plugins: { ...plugins, "occ-plugin:diffs": pluginPolicy() },
+      },
+    },
+  );
+  assert.equal(pair.status, 400);
+  assert.equal(pair.body.error.code, "INVALID_REQUEST");
+  assert.match(pair.body.error.message, /installs one plugin for each Agent/);
+
   await controller.fixture.controller.handleNamespaceLifecycle(
     controller.fixture.principal.id,
     namespace.id,
