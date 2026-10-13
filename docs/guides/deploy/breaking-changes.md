@@ -112,18 +112,26 @@ variables follow. A later change finds a user name or password in a `baseUrl`
 or `request.proxy.url` whose host or port is a variable or `${VAR}` (or in its
 `:-` fallback), refuses a variable as the whole user name, and names an invalid
 first header character by code point: `not one that starts with U+007B`. A
-Preset saved with one still reads but cannot launch: edit it.
+Preset saved with one still reads but cannot launch: edit it. A later change
+refuses one in `proxy.proxyUrl`, a channel or channel account `proxy`, an MCP
+server `url`, and `env` proxy variables such as `HTTPS_PROXY` in any case; a
+`baseUrl` with an empty host (`https:///v1`, as an empty variable leaves it);
+and a number or boolean variable as the whole `baseUrl` or `api`.
 
-**Who is affected.** Configurations with such a header, a `baseUrl` with a
+**Who is affected.** Configurations with such a header, such a URL with a
 user name or password, or a `models` record, `null` or string on any provider.
+A stored Configuration with such a user name or password does not deploy until
+it is edited.
 
 **How to tell.** The 2026-10-12 messages,
 `Configuration setting models.providers.<provider>.models must be an array of model entries.`,
-or `Configuration field /models/providers/<provider>/baseUrl carries a user name or password in the URL.`
+`Configuration field <field> carries a user name or password in the URL.`,
+or `... must be an absolute http or https URL.`
 
 **Steps.** Follow the 2026-10-12 steps for the header. Write `models` as a
 list of model objects, or remove it. Remove the user name and password from
-`baseUrl`, or make the whole URL a `${NAME}` reference.
+the URL, or make the whole URL a `${NAME}` reference. Give a `baseUrl` its host,
+and use a string variable for a whole `baseUrl` or `api`.
 
 ## 2026-10-13: sign-in and repository CIDRs must be canonical decimals
 
@@ -316,23 +324,3 @@ they check the binding. Nothing new is refused.
 **How to tell.** The `400` says the method must be `runtime`.
 
 **Steps.** Set `harnessAuth` to `{ "method": "runtime" }`.
-
-## 2026-10-12: demo NetworkPolicy ports must be canonical decimals
-
-**What breaks.** `helm upgrade` of the observability demo fails when
-`cluster.port` or `occ.metricsPort` is not a decimal integer from 1 through
-65535 with no leading zero. A saved string `"010"` used to install, and
-Kubernetes applied port 8. The upgrade now stops before it writes that policy.
-
-**Who is affected.** Demo releases whose saved values use a leading zero or a
-port outside that range. Defaults 443 and 9464, and an ordinary decimal such as
-6443, upgrade unchanged.
-
-**How to tell.** Helm stops in `prometheus.yaml` with
-`cluster.port must be an integer TCP port from 1 to 65535`, or the same
-sentence for `occ.metricsPort`.
-
-**Steps.** Set the field to the decimal Kubernetes already applied (`8` for a
-saved `"010"`) and upgrade again. The NetworkPolicy port stays that decimal.
-The [demo install](../observability/demo.md#install-private-backends) states the
-same contract.
