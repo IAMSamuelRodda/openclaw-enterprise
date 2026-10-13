@@ -120,10 +120,10 @@ refuses peer maps Kubernetes rejects, preserving null/empty semantics and accept
 
 The hook keeps the release name and bounds its suffix to 63 characters. Both
 containers optionally mount the CA. Helm validates distinct application and
-migration Secret keys against Kubernetes syntax before use.
-`executionCluster.kubeconfigKey` must be a Secret key of at most 253 characters,
-not `.` or a `..` prefix. Bootstrap
-receives auth, administrator, Installation and output settings.
+migration Secret keys against Kubernetes syntax before use. `installation.key`
+and `executionCluster.kubeconfigKey` must be Secret keys at most 253 characters,
+not `.` or a `..` prefix.
+Bootstrap receives auth, administrator, Installation and output settings.
 
 `scripts/migrate-production.mjs:1`, `scripts/migration-history.mjs:migrateWithHistory`
 

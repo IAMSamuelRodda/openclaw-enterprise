@@ -3952,6 +3952,16 @@ test(
       ["reserved migration database Secret key", { "database.migrationUrlKey": "..credentials" }],
       ["overlong migration database Secret key", { "database.migrationUrlKey": "a".repeat(254) }],
       [
+        "invalid installation startup Secret key",
+        { "installation.key": "bad/key" },
+        /installation\.key must be a Kubernetes Secret key/,
+      ],
+      [
+        "reserved installation startup Secret key",
+        { "installation.key": "." },
+        /installation\.key must be a Kubernetes Secret key/,
+      ],
+      [
         "invalid execution kubeconfig Secret key",
         {
           "executionCluster.enabled": "true",

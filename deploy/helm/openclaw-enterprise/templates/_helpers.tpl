@@ -82,6 +82,7 @@
 {{- end -}}
 {{- end -}}
 {{- if not .Values.installation.secretName -}}{{- fail "installation.secretName must name the operator-created installation startup Secret" -}}{{- end -}}
+{{- include "openclaw.validateSecretKey" (dict "label" "installation.key" "value" .Values.installation.key) -}}
 {{- if not .Values.database.secretName -}}{{- fail "database.secretName must name the operator-created database URL Secret" -}}{{- end -}}
 {{- if or (not .Values.auth.secretName) (not .Values.auth.secretKey) -}}{{- fail "auth must reference an operator-created Better Auth signing Secret" -}}{{- end -}}
 {{- include "openclaw.validateSecretKey" (dict "label" "auth.secretKey" "value" .Values.auth.secretKey) -}}
