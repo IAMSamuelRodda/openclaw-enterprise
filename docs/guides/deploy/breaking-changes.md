@@ -79,6 +79,21 @@ that names the Configuration is refused with the same message until then.
 - For TLS client keys and proxy credentials, on any Compute, store the value
   as a Secret and write a `${NAME}` reference.
 
+## 2026-10-12: repository credential images follow the control-plane image rule
+
+**What breaks.** The chart (since #2221) and now profile preflight refuse a
+`repositoryCredentials.image` or `repository.image` that does not start with a
+letter or digit or that holds a character other than letters, digits, `.`,
+`_`, `:`, `/` or `-` before the `@sha256:` digest, as for the controller image.
+
+**Who is affected.** Hand-written values or profile inputs with such a
+reference. Registry references rarely use such names.
+
+**How to tell.** Rendering fails with `repositoryCredentials.image must be an
+approved immutable SHA-256 image reference`; preflight names `repository.image`.
+
+**Steps.** Use the image's registry reference with its digest.
+
 ## 2026-10-12: demo NetworkPolicy ports must be canonical decimals
 
 **What breaks.** `helm upgrade` of the observability demo fails when
@@ -335,17 +350,3 @@ OpenShell restart any Harness whose process exits. A Sandbox created before
 #2084 keeps restart policy `NEVER`, which OpenShell cannot change in place, so
 deploy every OpenShell Agent whose Sandbox predates #2084 again too
 ([An OpenShell Agent stops answering](../topics/agent-troubleshoot.md#an-openshell-agent-stops-answering)).
-
-## 2026-10-10: Gateway listener settings are checked before deployment
-
-**What breaks.** Provisioning and deployment answer `409` for a `gateway.bind`
-other than `auto`, `lan` or `custom`, `custom` unless `customBindHost` is
-`0.0.0.0`, or Tailscale exposure. These never served routed traffic.
-
-**Who is affected.** Such Configurations on Kubernetes or Docker Compute.
-Kubernetes renders an omitted or `auto` bind as `lan` from the next deployment.
-
-**How to tell.** The `409` names the setting.
-
-**Steps.** Fix the named setting and deploy again. On containerd with cgroup v2,
-also redeploy Agents whose bind is omitted or `auto`.

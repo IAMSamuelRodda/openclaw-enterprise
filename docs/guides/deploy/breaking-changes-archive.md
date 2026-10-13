@@ -5,6 +5,20 @@ on that page. They still apply when you upgrade from a source commit older than
 their date. Entries are newest first. Steps marked _untested_ have not been run
 against a real Installation.
 
+## 2026-10-10: Gateway listener settings are checked before deployment
+
+**What breaks.** Provisioning and deployment answer `409` for a `gateway.bind`
+other than `auto`, `lan` or `custom`, `custom` unless `customBindHost` is
+`0.0.0.0`, or Tailscale exposure. These never served routed traffic.
+
+**Who is affected.** Such Configurations on Kubernetes or Docker Compute.
+Kubernetes renders an omitted or `auto` bind as `lan` from the next deployment.
+
+**How to tell.** The `409` names the setting.
+
+**Steps.** Fix the named setting and deploy again. On containerd with cgroup v2,
+also redeploy Agents whose bind is omitted or `auto`.
+
 ## 2026-10-10: controller-only releases can restart Agent Pods once
 
 **What breaks.** After a controller-only release, the first time the new worker
