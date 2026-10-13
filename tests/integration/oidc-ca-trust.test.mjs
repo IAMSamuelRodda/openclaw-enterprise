@@ -628,9 +628,9 @@ test(
       await refused(connection(query));
     }
     await refused("malformed synthetic-user synthetic-secret %");
-    // pg sends no TLS servername for an IP host, so Node checks the certificate against
-    // "localhost": a CA-signed DNS:localhost leaf would pass verify-full for any IP. The
-    // guard refuses IP hosts, including a host parameter override and a Unix socket.
+    // pg sends no TLS servername for an IP host, so plain pg checks the certificate against
+    // "localhost"; the shared pool checks the IP instead. The guard still refuses IP hosts,
+    // including a host parameter override and a Unix socket, before any handshake.
     let ipHandshakes = 0;
     const ipServer = createTlsServer(
       { key: database["leaf.key"], cert: database["leaf.pem"] },
@@ -664,15 +664,15 @@ test(
       await refused(url);
     }
     assert.equal(ipHandshakes, 0, "an IP database host must not reach a TLS handshake");
-    // Without the guard the pinned client accepts that substitution: the same URL
-    // completes a verified handshake with the DNS:localhost certificate.
+    // Without the guard the shared pool still refuses that substitution: it checks the
+    // certificate against the IP, which the DNS:localhost certificate does not carry.
     const unguarded = await execute(
       process.execPath,
       ["tests/fixtures/oidc-ca-postgres-consumer.mjs"],
       { env: { OCC_DATABASE_URL: ipConnection(selected) }, timeout: 10000 },
     );
-    assert.match(unguarded.stdout, /^entrypoint\n/);
-    assert.equal(ipHandshakes, 1, "the unguarded client trusts an IP host as localhost");
+    assert.match(unguarded.stdout, /^entrypoint\n\{"code":"ERR_TLS_CERT_ALTNAME_INVALID"\}\n$/);
+    assert.equal(ipHandshakes, 0, "the unguarded client must not trust an IP host as localhost");
     for (const material of [
       "",
       "not a certificate",
