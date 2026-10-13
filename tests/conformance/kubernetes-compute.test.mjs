@@ -4804,7 +4804,12 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
   };
   assert.doesNotThrow(() => createKubernetesComputeDriver(options({ runtime })));
 
-  for (const proxyUrl of ["http://10.42.0.15:3128", "https://[2001:db8::15]:8443"]) {
+  for (const proxyUrl of [
+    "http://10.42.0.15:3128",
+    "http://127.0.0.1:8080",
+    " http://192.0.2.10:8080 ",
+    "https://[2001:db8::15]:8443",
+  ]) {
     const channels = { proxyUrl };
     assert.doesNotThrow(() =>
       createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
@@ -4851,6 +4856,22 @@ test("the canonical Kubernetes runtime validates channel proxy configuration", (
     assert.throws(
       () => createKubernetesComputeDriver(options({ runtime: { ...runtime, channels } })),
       /HTTP\(S\) IP endpoint/i,
+    );
+  }
+  for (const proxyUrl of [
+    "http://0177.0.0.1:8080",
+    "http://192.168.1:8080",
+    "http://2130706433:8080",
+    "http://127.1:8080",
+    "http://10.42.0.015:3128",
+  ]) {
+    assert.throws(
+      () =>
+        createKubernetesComputeDriver(options({ runtime: { ...runtime, channels: { proxyUrl } } })),
+      {
+        message:
+          "Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+      },
     );
   }
   for (const channels of [

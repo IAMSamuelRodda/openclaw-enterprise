@@ -12,6 +12,22 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-13: channel proxy IPv4 hosts must be four decimal octets
+
+**What breaks.** Startup refuses a channel proxy IPv4 host that is not four
+decimal octets from 0 to 255 with no leading zeros. Shorthand, a single
+integer, hex, and leading zeros used to allow egress to a different address.
+
+**Who is affected.** Installations whose `channels.proxyUrl` uses one of those
+spellings. Canonical decimals, IPv6 literals, and a managed Service proxy URL
+still start.
+
+**How to tell.** Startup fails with
+`Channel proxy URL IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.`
+
+**Steps.** Write the host as four decimal octets (`127.0.0.1` for
+`0177.0.0.1`) and restart.
+
 ## 2026-10-13: IP database hosts are verified against the certificate
 
 **What breaks.** A PostgreSQL URL whose host is an IP literal and whose TLS
