@@ -656,6 +656,11 @@ test("the chart refuses an API port the server does not bind", tooling, async ()
   for (const port of ["0", "010", "65536", "9.5"]) {
     await assert.rejects(render({ "api.port": port }), /api\.port must be an integer TCP port/);
   }
+  // --set parses this as a float. --set-string keeps the digits, which used to pass Sprig int overflow.
+  await assert.rejects(
+    render({}, { strings: { "api.port": "99999999999999999999" } }),
+    /api\.port must be an integer TCP port/,
+  );
   const objects = await resources((await render({ "api.port": "8081" })).stdout);
   const container = objects.find(
     (item) => item.kind === "Deployment" && item.metadata.name === "openclaw-enterprise-api",
