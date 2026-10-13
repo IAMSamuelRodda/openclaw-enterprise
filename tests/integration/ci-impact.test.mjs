@@ -1129,6 +1129,54 @@ test("Static Checks runs every check the CI lanes skip", () => {
   assert.ok(workflow.jobs["ci-required"].needs.includes("static-checks"));
 });
 
+test("lane lists outside the lane table name every lane they must", async () => {
+  const suiteIndex = JSON.parse(read("scripts/ci/test-suites.json"));
+  // The lane action exposes the cache credentials and sets OCC_CI_IMAGE_CACHE for
+  // exactly the lanes prepare.mjs restores the BuildKit cache for. A lane missing
+  // from either condition builds its images cold, and nothing fails.
+  const action = loadYaml(".github/actions/run-ci-lane/action.yml");
+  const lanesIn = (expression) =>
+    [...String(expression).matchAll(/inputs\.lane == '([a-z0-9-]+)'/g)]
+      .map((match) => match[1])
+      .sort();
+  const { imageCacheLanes } = await import(
+    pathToFileURL(join(repositoryRoot, "scripts/ci/prepare.mjs")).href
+  );
+  const cached = [...imageCacheLanes.keys()].sort();
+  const exposeStep = action.runs.steps.find((step) => step.id === "image-cache");
+  const prepareStep = action.runs.steps.find((step) => step.name === "Prepare lane");
+  assert.deepEqual(lanesIn(exposeStep.if), cached);
+  assert.deepEqual(lanesIn(prepareStep.env.OCC_CI_IMAGE_CACHE), cached);
+  for (const lane of Object.keys(suiteIndex.lanes).filter((name) => name.startsWith("images-"))) {
+    assert.ok(cached.includes(lane), `${lane} restores the image cache`);
+  }
+
+  // A full-integration "all" run reports every same-SHA matrix lane, and with the
+  // jobs it reads directly covers the whole full group. A lane missing here fails
+  // only a manual full run, as "missing".
+  const fullIntegration = loadYaml(".github/workflows/full-integration.yml");
+  const aggregate = fullIntegration.jobs["full-aggregate"];
+  const script = aggregate.steps.find((step) => step.name === "Write selected job state").run;
+  const lists = [...script.matchAll(/for \(const name of (\[[^\]]*\])\)/g)].map((match) =>
+    JSON.parse(match[1]),
+  );
+  assert.equal(lists.length, 2, "full-aggregate names the same-SHA lanes and its own jobs");
+  const [sameSha, ownJobs] = lists;
+  assert.deepEqual(
+    [...sameSha].sort(),
+    fullIntegration.jobs["pr-safe-same-sha"].strategy.matrix.include
+      .map((entry) => entry.lane)
+      .sort(),
+  );
+  for (const job of ["pr-safe-same-sha", "runtime-image-fixture", ...ownJobs]) {
+    assert.ok(aggregate.needs.includes(job), `full-aggregate needs ${job}`);
+  }
+  assert.deepEqual(
+    ["runtime-image-fixture", ...sameSha, ...ownJobs].sort(),
+    [...suiteIndex.groups.full].sort(),
+  );
+});
+
 // Runs impact-gate.mjs on a needs object, writing needs.json in `root`.
 function runGate(root, needs, mode, lanes) {
   const raw = join(root, "raw-needs.json");
