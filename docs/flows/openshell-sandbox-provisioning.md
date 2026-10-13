@@ -190,16 +190,17 @@ selected Driver. It serializes Kubernetes, filesystem, process, and
 binary-scoped network policy against the exact `v0.1.3-pre.2` wire contract.
 Landlock is a hard requirement; unsupported enum spellings, inherited object
 keys, the old `passthrough` TLS spelling, or policies without executable paths
-fail before launch.
+fail before launch. Gateway readiness requires positive `timeoutMs`. Startup
+logs `startup-error` code `STARTUP_FAILED`, does not name that field, and stops
+before Kubernetes calls. The Installation loader reports that the timeout must
+be a positive safe integer.
 
 Kubernetes Compute invokes `provisionHarness` only after the workspace-node
-setup Secret exists. The Driver creates or adopts the runtime provider with the
-final node envelope on first mutation, never an empty placeholder.
-If Compute later renews an expired setup, the same call version-fences an
-OpenShell `UpdateProvider` that changes only `node_setup_json`.
-When configured, a bounded post-create delay keeps Compute from consuming the
-exposed route before the canonical process listens. Compute then rolls the
-Gateway to that endpoint and waits for the exact Deployment before observing
+setup Secret exists. The Driver creates or adopts the runtime provider with the final node
+envelope, never an empty placeholder.
+A later renewal version-fences `UpdateProvider` to `node_setup_json` only.
+A configured post-create delay waits until the canonical process listens.
+Compute then rolls the Gateway and waits for that Deployment before observing
 workspace-node enrollment.
 
 Dedicated Codex requires one lowercase `APP_TOKEN_SHA`, no `APP_SERVER_TOKEN`,

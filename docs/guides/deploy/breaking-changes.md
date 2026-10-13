@@ -142,6 +142,22 @@ such as `10.43.0.1/32` upgrades unchanged.
 becomes `10.0.0.1/32`) and upgrade again. The scrape policy then uses that
 `/32`.
 
+## 2026-10-13: OpenShell gateway readiness requires timeoutMs
+
+**What breaks.** Controller startup fails when `gateway.readiness` is set and
+`timeoutMs` is omitted. That configuration starts today. The field must be a
+positive safe integer. Omitted readiness is unchanged.
+
+**Who is affected.** Installations, and the real k3d helper, that set
+`gateway.readiness` with only `serviceName` and `podSelector`.
+
+**How to tell.** Startup logs `startup-error` with code `STARTUP_FAILED`. The
+Installation loader reports `OpenShell gateway readiness timeout must be a
+positive safe integer.` The message does not name `timeoutMs`.
+
+**Steps.** Set `gateway.readiness.timeoutMs` to a positive millisecond window.
+The real helper uses 120000. Then start again.
+
 ## 2026-10-12: cluster and execution API ports must be canonical decimals
 
 **What breaks.** Helm now refuses `cluster.port` and `executionCluster.apiPort`
