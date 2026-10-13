@@ -57,8 +57,9 @@ Preparation installs a ClawHub entry as `clawhub:<packageName>@<version>` with
 package (`clawhubPackage` for ClawHub, `resolvedName` for npm), version, and
 integrity to match the admitted release. A mismatch keeps the gateway unready.
 Each start installs fresh: the gateway's state volume keeps OpenClaw's install
-records, so startup first removes the record of each plugin it will install and
-restores the configuration that removal edits.
+records, so startup first removes every persisted record and restores the
+configuration that removal edits. Plugin installation and inspection run without
+the container's credential-named environment variables, such as the model key.
 Package downloads use the Agent's existing public HTTPS egress.
 
 ## Limits

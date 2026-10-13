@@ -208,6 +208,9 @@ marker. The other cases use the same path without a model turn:
   Agent whose state volume already holds the release's install record. The Pod
   must stop before the native gateway spawns: the gateway log names the integrity
   refusal, the Pod is never Ready, and the deployment never succeeds.
+- **Retained records.** The test runs the approved release, then deploys a
+  revision that selects Diffs instead. Once that revision runs, the earlier
+  release's install record must be gone and Diffs must be installed fresh.
 
 The lane needs `OPENAI_API_KEY` and an immutable `OCC_TEST_KUBERNETES_GATEWAY_IMAGE`.
 The default release is `@openclaw/lobster` 2026.9.7, compatible with the pinned

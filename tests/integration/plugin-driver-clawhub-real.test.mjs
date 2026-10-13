@@ -89,14 +89,14 @@ function createClawHubFixture(context, approvedPlugins) {
 
 // An embedded Agent with a model key whose Agent editor selects the plugin by ID only;
 // package, version, source and digest come from the Installation's approval.
-async function createAgentSelecting(fixture, release) {
+async function createAgentSelecting(fixture, release, { alsoAllow = [] } = {}) {
   const agent = await fixture.createAgent({
     harnessId: "openclaw",
     executionMode: "embedded",
     name: `openclaw-clawhub-${randomUUID()}`,
   });
   const modelSecret = await fixture.bindOpenAIModelSecret(agent.id);
-  const allowedPlugins = ["openai", release.nativeId];
+  const allowedPlugins = ["openai", release.nativeId, ...alsoAllow];
   const configurationPath = `/namespaces/${fixture.namespaceId}/configurations/${agent.configurationId}`;
   const configuration = await fixture.request("GET", configurationPath);
   assert.equal(configuration.status, 200, JSON.stringify(configuration.error));
@@ -392,5 +392,43 @@ test(
     assert.equal(deployed.status, 202, JSON.stringify(deployed.error));
     assert.deepEqual(deployed.data.plugins?.releases, { [pluginId]: mismatched });
     await assertStartupRefused(fixture, agent, deployed.data.id, modelSecret);
+  },
+);
+
+test(
+  "a new revision starts with no install record retained from an earlier release",
+  realLane,
+  async (context) => {
+    const release = selectedRelease();
+    const fixture = await createClawHubFixture(context, [release]);
+    const { agent } = await createAgentSelecting(fixture, release, { alsoAllow: ["diffs"] });
+    await fixture.deployAndWait(agent);
+    assert.deepEqual(
+      (await fixture.readOpenClawPersistedInstallRecord(agent, release.nativeId))?.integrity,
+      release.integrity,
+    );
+
+    // The next revision drops the approved release and selects bundled Diffs. Its Pod
+    // mounts the same state volume, which still holds the earlier release's record.
+    // OpenClaw picks a record by the staged manifest's plugin ID, so startup must drop
+    // every retained record, not only those of plugins it installs now.
+    await fixture.removePluginSelection(agent.id, `occ-plugin:${release.nativeId}`);
+    await fixture.selectPlugin(agent.id, {
+      pluginId: "occ-plugin:diffs",
+      enabled: true,
+      toolDefaults: { approval: "none" },
+    });
+    const next = await fixture.deployAndWait(agent);
+    assert.equal(next.revision.plugins?.releases, undefined);
+    assert.equal(
+      await fixture.readOpenClawPersistedInstallRecord(agent, release.nativeId),
+      null,
+      "the earlier release's install record must be gone once the new revision runs.",
+    );
+    assert.equal(
+      (await fixture.readOpenClawPersistedInstallRecord(agent, "diffs"))?.source,
+      "npm",
+      "the new revision installed Diffs fresh.",
+    );
   },
 );

@@ -163,17 +163,24 @@ test("OpenClaw runtime helper installs an admitted ClawHub release and verifies 
 
 // The gateway's state volume keeps OpenClaw's install records across restarts. An
 // install over a record is an update, whose migration loads the staged package's
-// Doctor contract module before the helper can verify it, so the helper drops the
-// record first. OpenClaw 2026.9.8 uninstall (src/plugins/uninstall-package-config.ts)
-// also strips the plugin from plugins.allow and writes entries.<id>.enabled false;
-// the helper must restore the admitted configuration.
-test("OpenClaw runtime helper drops a persisted install record before reinstalling a release", () => {
+// Doctor contract module before the helper can verify it. OpenClaw picks the record
+// by the staged manifest's plugin ID, so a substituted package could declare any
+// retained ID: the helper drops every record, not only the admitted one. OpenClaw
+// 2026.9.8 uninstall (src/plugins/uninstall-package-config.ts) also strips the plugin
+// from plugins.allow and writes entries.<id>.enabled false; the helper restores the
+// admitted configuration.
+test("OpenClaw runtime helper drops every persisted install record before installing a release", () => {
   const configPath = "/home/node/.openclaw/openclaw.json";
   const { calls, files } = runOpenClawRuntimeHelper(
     approvedClawHubRuntime(),
-    [{ status: 0, stdout: "", stderr: "" }, ...clawHubInstallResponses()],
+    [
+      { status: 0, stdout: "", stderr: "" },
+      { status: 0, stdout: "", stderr: "" },
+      ...clawHubInstallResponses(),
+    ],
     {
       baseConfig: { plugins: { allow: ["openai", "acme-search"] } },
+      env: { OPENAI_API_KEY: "model-credential-value" },
       pluginRegistryResponse: {
         status: 0,
         stdout: JSON.stringify({
@@ -181,6 +188,8 @@ test("OpenClaw runtime helper drops a persisted install record before reinstalli
           persisted: {
             installRecords: {
               "acme-search": { source: "clawhub", clawhubPackage: "@acme/openclaw-search" },
+              // Left by an earlier revision of this Agent; not selected now.
+              "acme-notes": { source: "npm", resolvedName: "@acme/openclaw-notes" },
             },
           },
         }),
@@ -189,7 +198,7 @@ test("OpenClaw runtime helper drops a persisted install record before reinstalli
       beforeSpawn(command, args, sandbox) {
         if (args[1] === "plugins" && args[2] === "uninstall") {
           const config = JSON.parse(sandbox.files.get(configPath));
-          config.plugins.allow = config.plugins.allow.filter((id) => id !== args[3]);
+          config.plugins.allow = (config.plugins.allow ?? []).filter((id) => id !== args[3]);
           config.plugins.entries = { ...config.plugins.entries, [args[3]]: { enabled: false } };
           sandbox.files.set(configPath, JSON.stringify(config));
         }
@@ -200,11 +209,21 @@ test("OpenClaw runtime helper drops a persisted install record before reinstalli
   assert.deepEqual(JSON.parse(JSON.stringify(calls.map((call) => call.args.slice(1, 4)))), [
     ["plugins", "registry", "--json"],
     ["plugins", "uninstall", "acme-search"],
+    ["plugins", "uninstall", "acme-notes"],
     ["plugins", "install", "clawhub:@acme/openclaw-search@1.4.2"],
     ["plugins", "registry", "--refresh"],
     ["plugins", "inspect", "acme-search"],
   ]);
-  assert.ok(calls[1].args.includes("--force"));
+  assert.ok(
+    calls
+      .filter((call) => call.args[2] === "uninstall")
+      .every((call) => call.args.includes("--force")),
+  );
+  // No plugin-management subprocess receives the workload's model credential.
+  for (const call of calls) {
+    assert.equal(call.options.env.OPENAI_API_KEY, undefined, call.args.join(" "));
+    assert.equal(call.options.env.OPENCLAW_CONFIG_PATH, "/home/node/.openclaw/openclaw.json");
+  }
   const effective = JSON.parse(files.get(configPath));
   assert.deepEqual(effective.plugins.allow, ["openai", "acme-search"]);
   assert.deepEqual(effective.plugins.entries, { "acme-search": { enabled: true } });

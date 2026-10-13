@@ -1232,10 +1232,22 @@ function openClawPluginPackageSpec(plugin) {
   return (plugin.source === "clawhub" ? "clawhub:" : "") + packageName + "@" + version;
 }
 
+// Plugin management needs no workload credentials. Withhold credential-shaped
+// variables (model keys, tokens, passwords) so package code that runs during an
+// install cannot read them from its environment.
+const PLUGIN_CLI_WITHHELD_ENV = /(?:^|_)(?:API_KEY|KEY|TOKEN|SECRET|PASSWORD|PASSWD|CREDENTIALS?)(?:_|$)/i;
+
+function pluginCliEnvironment() {
+  return Object.fromEntries(
+    Object.entries(process.env).filter(([name]) => !PLUGIN_CLI_WITHHELD_ENV.test(name)),
+  );
+}
+
 function runOpenClaw(args, description, diagnostic) {
   const result = pluginSpawnSync("node", ["/app/openclaw.mjs", ...args], {
     encoding: "utf8",
     stdio: ["ignore", "pipe", "pipe"],
+    env: pluginCliEnvironment(),
   });
   if (result.error !== undefined || typeof result.status !== "number") {
     throw new Error(description + " failed.");
@@ -1308,37 +1320,22 @@ function verifyOpenClawPluginInstall(plugin) {
 }
 
 // OpenClaw treats an install over a persisted install record as an update, and its
-// update migration loads the staged package's Doctor contract module before the
-// install returns, so before this helper verifies the admitted release. The
-// gateway's state volume keeps install records across restarts and revisions.
-// Uninstall drops a record without loading plugin code; the configuration it edits
-// is restored, so every admitted plugin installs as a fresh install.
-function removePersistedOpenClawInstallRecords(installs, failed, failedIds) {
-  const pending = installs.filter((plugin) => !failedIds.has(plugin.pluginId));
-  if (pending.length === 0) return;
+// update migration loads the Doctor contract module of the package it just staged,
+// before this helper verifies the admitted release. The record is chosen by the
+// staged manifest's plugin ID, so any retained record could be reused. The gateway's
+// state volume keeps records across restarts and revisions: drop every one before
+// installing (uninstall loads no plugin code), then restore the configuration that
+// uninstall edits, so each install is a fresh install.
+function removePersistedOpenClawInstallRecords(installs, failedIds) {
+  if (installs.every((plugin) => failedIds.has(plugin.pluginId))) return;
   const registry = runOpenClawJson(["plugins", "registry", "--json"], "OpenClaw plugin registry read");
   const records = registry?.persisted === null && registry.state === "missing" ? {} : registry?.persisted?.installRecords;
   if (!isPlainObject(records)) {
     throw new Error("OpenClaw plugin install records are unreadable.");
   }
   const config = readOpenClawConfig();
-  for (const plugin of pending) {
-    if (records[plugin.nativeId] === undefined) continue;
-    try {
-      runOpenClaw(
-        ["plugins", "uninstall", plugin.nativeId, "--force"],
-        "OpenClaw plugin uninstall",
-        pluginDiagnostic(plugin.pluginId, "PLUGIN_INSTALL_FAILED"),
-      );
-    } catch (error) {
-      if (isPluginTerminalDiagnosticError(error)) {
-        if (!pluginBestEffortEnabled()) throw error;
-        failed.push(error.diagnostic);
-        failedIds.add(error.diagnostic.pluginId);
-        continue;
-      }
-      throw error;
-    }
+  for (const recordId of Object.keys(records)) {
+    runOpenClaw(["plugins", "uninstall", recordId, "--force"], "OpenClaw plugin uninstall");
   }
   writeOpenClawConfig(config);
 }
@@ -1354,7 +1351,7 @@ function installOpenClawPlugins(runtime, failures = []) {
   const failedIds = pluginFailureIds(failed);
   const originalTools = readOpenClawConfig().tools;
   applyOpenClawPluginConfiguration(runtime, failed);
-  removePersistedOpenClawInstallRecords(installs, failed, failedIds);
+  removePersistedOpenClawInstallRecords(installs, failedIds);
   for (const plugin of installs) {
     if (failedIds.has(plugin.pluginId)) continue;
     const spec = openClawPluginPackageSpec(plugin);

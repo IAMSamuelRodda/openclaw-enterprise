@@ -26,7 +26,8 @@
         "an Installation-approved ClawHub release installs at its admitted identity and runs in a normal Agent turn",
         "an admitted ClawHub release replays after its approval changes or is removed and the controllers restart, while new admissions follow the current approval",
         "a ClawHub archive that does not match its admitted digest is refused before the gateway starts",
-        "a mismatched digest is refused before the gateway starts when the Pod reinstalls over a persisted record"
+        "a mismatched digest is refused before the gateway starts when the Pod reinstalls over a persisted record",
+        "a new revision starts with no install record retained from an earlier release"
       ]
     }
   ]
