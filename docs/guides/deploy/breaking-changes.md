@@ -12,6 +12,26 @@ then follow the [upgrade checklist](upgrade-checklist.md) and
 Entries are newest first. Steps marked _untested_ have not been run against a
 real Installation.
 
+## 2026-10-13: more model credential header names and provider models lists
+
+**What breaks.** The 2026-10-12 model credential rules (below)
+match more header names: every name ending in `key` or `keys` except an
+idempotency or cache key, a last word of `bearer`, `credential`, `passcode`,
+`passphrase` or `signature`, and plurals, such as `X-Auth-Key`,
+`DD-APPLICATION-KEY` or `X-Hub-Signature-256`. Configuration create and update
+and provisioning, and on Kubernetes Compute also Preset saves, Agent saves and
+deployment, answer `400` for a `models.providers.<provider>.models` that is
+not a list, which OpenClaw refused only when the Gateway started.
+
+**Who is affected.** Configurations with such a header, or with a `models`
+record, `null` or string on any provider.
+
+**How to tell.** The 2026-10-12 messages, or
+`Configuration setting models.providers.<provider>.models must be an array of model entries.`
+
+**Steps.** Follow the 2026-10-12 steps for the header. Write `models` as a
+list of model objects, or remove it.
+
 ## 2026-10-13: sign-in and repository CIDRs must be canonical decimals
 
 **What breaks.** `helm upgrade` fails when a saved `auth.github.egressCidrs`,
@@ -62,10 +82,11 @@ model setting selects, that has:
 
 - a credential header in `headers` (on the provider or one of its `models`)
   or `request.headers`: a name whose last hyphen- or underscore-separated
-  word is `auth`, `authorization`, `token`, `secret`, `password` or
-  `cookie`, or `key` joined by `-`, `_` or nothing to `api`, `access`,
-  `functions`, `license`, `master`, `rapidapi`, `secret` or `subscription`,
-  such as `Proxy-Authorization`, `x-goog-api-key`, `x-auth-token` or `Cookie`;
+  word, after any trailing number, is `auth`, `authorization`, `bearer`,
+  `cookie`, `credential`, `passcode`, `passphrase`, `password`, `secret`,
+  `signature` or `token` (or a plural), or that ends in `key` or `keys` except
+  an idempotency or cache key, such as `Proxy-Authorization`, `x-goog-api-key`,
+  `X-Auth-Key`, `x-auth-token` or `Cookie` (widened on 2026-10-13, below);
 - a header name that is not a valid HTTP field name (spaces, zero-width or
   non-ASCII characters);
 - a `request.auth` other than exactly `{mode: "provider-default"}`.
