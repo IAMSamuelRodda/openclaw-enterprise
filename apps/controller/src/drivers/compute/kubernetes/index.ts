@@ -111,6 +111,7 @@ import {
   imageReferenceProblem,
   keyedSettingPath,
   requireOpenClawRoster,
+  resolveConfiguredHarnessId,
   ResourceConflictError,
   RuntimeCredentialsForbiddenByClusterError,
   RuntimeLogsForbiddenByClusterError,
@@ -2154,6 +2155,124 @@ function harnessModels(configuration: OpenClawConfigurationDocument): readonly s
   return [...new Set(models as string[])];
 }
 
+// Every provider is checked, selected or not: a bare model name or a `/model` switch can still
+// reach one (finding 1291), as the credential header rule assumes. Dedicated Codex makes no
+// model request from its Gateway, so it refuses every apiKey; OpenClaw accepts one only on the
+// binding's provider, referencing the binding's environment.
+function requireProviderApiKeys(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+  openclaw: boolean,
+  authentication: { readonly providerId: string; readonly environmentName: string },
+  referencesOnly = false,
+): void {
+  const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
+  for (const [provider, value] of Object.entries(providers)) {
+    const config = asRecord(value);
+    if (
+      config?.apiKey === undefined ||
+      (referencesOnly && config.apiKey !== null && !isCredentialReference(config.apiKey))
+    ) {
+      continue;
+    }
+    const setting = `${keyedSettingPath("models.providers", provider)}.apiKey`;
+    if (!openclaw) {
+      throw callerSettingError(
+        setting,
+        "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
+      );
+    }
+    if (provider !== authentication.providerId) {
+      throw callerSettingError(
+        setting,
+        `must be unset: the Agent's Harness authentication binding serves only ${authentication.providerId} models`,
+      );
+    }
+    if (config.apiKey === `\${${authentication.environmentName}}`) {
+      continue;
+    }
+    const ref = asRecord(config.apiKey);
+    const secrets = asRecord(configuration.secrets);
+    const source =
+      typeof ref?.provider === "string"
+        ? asRecord(asRecord(secrets?.providers)?.[ref.provider])
+        : undefined;
+    // OpenClaw reads an env ref on its default env provider alias (secrets.defaults.env, else
+    // "default") from the process environment, unless that name is configured as an env provider
+    // (isBuiltInDefaultSecretProviderRef), so such a ref needs no secrets.providers entry.
+    const defaultEnv = asRecord(secrets?.defaults)?.env;
+    const builtInEnv =
+      source?.source !== "env" &&
+      ref?.provider ===
+        (typeof defaultEnv === "string" && defaultEnv.trim() !== ""
+          ? defaultEnv.trim()
+          : "default");
+    if (
+      !ref ||
+      Object.keys(ref).length !== 3 ||
+      ref.source !== "env" ||
+      ref.id !== authentication.environmentName ||
+      !(
+        builtInEnv ||
+        (source?.source === "env" &&
+          (source.allowlist === undefined ||
+            (Array.isArray(source.allowlist) &&
+              source.allowlist.includes(authentication.environmentName))))
+      )
+    ) {
+      throw callerSettingError(
+        setting,
+        `must be \${${authentication.environmentName}} or an env SecretRef to ${authentication.environmentName}, which the Agent's Harness authentication binding supplies`,
+      );
+    }
+  }
+}
+
+// A `${NAME}` or SecretRef-shaped value, as the Configuration Driver admits in a credential field
+// (model-auth.ts); it refuses anything else but null as an inline credential, with its own message.
+function isCredentialReference(value: unknown): boolean {
+  if (typeof value === "string") {
+    return /^\$\{[A-Za-z_][A-Za-z0-9_]*\}$/.test(value);
+  }
+  const reference = asRecord(value);
+  return (
+    reference !== undefined &&
+    Object.keys(reference).length === 3 &&
+    [reference.source, reference.provider, reference.id].every(isNonEmptyString)
+  );
+}
+
+/**
+ * The model provider rules of finding 1291 depend only on the Configuration: the provider is
+ * its primary model's (harnessModelAuthentication), and the Harness, Dedicated Codex or
+ * OpenClaw, is the one its model policy selects. Every deployment applies them, so Configuration
+ * save does too (finding 1299). A draft whose model policy selects no Harness (or no model), or
+ * whose primary provider Kubernetes Compute does not support, is left to deployment, which
+ * refuses it first; OCC's requireFallbackProviders still names a fallback on another provider.
+ */
+function requireConfiguredModelProviders(
+  configuration: Readonly<OpenClawConfigurationDocument>,
+): void {
+  let harnessId: string;
+  let authentication: ReturnType<typeof harnessModelAuthentication>;
+  try {
+    harnessId = resolveConfiguredHarnessId(configuration);
+    authentication = harnessModelAuthentication(configuration);
+  } catch (error) {
+    if (error instanceof ConfigurationHarnessError || error instanceof ConfigurationFailure) {
+      return;
+    }
+    throw error;
+  }
+  requireSelectedModelProvider(
+    configuration,
+    authentication.providerId,
+    harnessId === "codex",
+    callerSettingError,
+  );
+  // An inline key is left to the Configuration Driver, whose message says to use a Secret.
+  requireProviderApiKeys(configuration, harnessId === "openclaw", authentication, true);
+}
+
 // The error contract caps the message a ConfigurationHarnessError becomes.
 const HARNESS_MESSAGE_CAP = 256;
 
@@ -3432,7 +3551,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
     // Only dedicated execution serves main, so that rule stays here, at deployment.
     requireOpenClawRoster(configuration);
     // The same rules as Configuration save, with its messages, for a row stored before them.
-    this.validateConfiguration(configuration);
+    this.validateConfigurationContent(configuration);
     if (native || codex) {
       requireDedicatedMainAgentDefault(
         configuration,
@@ -3548,53 +3667,7 @@ export class KubernetesComputeDriver implements ComputeDriver {
       },
       callerSettingError,
     );
-    // Every provider is checked, selected or not: a bare model name or a `/model` switch can
-    // still reach one (finding 1291), as the credential header rule assumes. Dedicated Codex
-    // makes no model request from its Gateway, so it refuses every apiKey; OpenClaw accepts
-    // one only on the binding's provider, referencing the binding's environment.
-    const providers = asRecord(asRecord(configuration.models)?.providers) ?? {};
-    for (const [provider, value] of Object.entries(providers)) {
-      const config = asRecord(value);
-      if (config?.apiKey === undefined) {
-        continue;
-      }
-      const setting = `${keyedSettingPath("models.providers", provider)}.apiKey`;
-      if (!openclaw) {
-        throw callerSettingError(
-          setting,
-          "must be unset: Dedicated Codex receives model credentials from the Agent's Harness authentication binding",
-        );
-      }
-      if (provider !== authentication.providerId) {
-        throw callerSettingError(
-          setting,
-          `must be unset: the Agent's Harness authentication binding serves only ${authentication.providerId} models`,
-        );
-      }
-      if (config.apiKey === `\${${authentication.environmentName}}`) {
-        continue;
-      }
-      const ref = asRecord(config.apiKey);
-      const source =
-        typeof ref?.provider === "string"
-          ? asRecord(asRecord(asRecord(configuration.secrets)?.providers)?.[ref.provider])
-          : undefined;
-      if (
-        !ref ||
-        Object.keys(ref).length !== 3 ||
-        ref.source !== "env" ||
-        ref.id !== authentication.environmentName ||
-        source?.source !== "env" ||
-        (source.allowlist !== undefined &&
-          (!Array.isArray(source.allowlist) ||
-            !source.allowlist.includes(authentication.environmentName)))
-      ) {
-        throw callerSettingError(
-          setting,
-          `must be \${${authentication.environmentName}} or an env SecretRef to ${authentication.environmentName}, which the Agent's Harness authentication binding supplies`,
-        );
-      }
-    }
+    requireProviderApiKeys(configuration, openclaw, authentication);
     if (!agentSave) {
       this.validateChannelSecretBindings(configuration, secretBindings);
     }
@@ -3620,9 +3693,23 @@ export class KubernetesComputeDriver implements ComputeDriver {
   /**
    * Configuration rules every Kubernetes topology applies, so Configuration save, provisioning
    * and Preset defaults refuse the content where it is written: supported channel providers,
-   * and model credentials only through the Harness authentication binding.
+   * model credentials only through the Harness authentication binding, and (not for Preset
+   * defaults) model selections and provider apiKeys on the primary model's provider.
    */
   validateConfiguration(
+    configuration: Readonly<OpenClawConfigurationDocument>,
+    options?: ConfigurationValidationOptions,
+  ): void {
+    this.validateConfigurationContent(configuration, options);
+    // Preset defaults can leave a model reference waiting on a variable; the Configuration a
+    // launch creates is checked here.
+    if (options?.unresolved === undefined) {
+      requireConfiguredModelProviders(configuration);
+    }
+  }
+
+  // validateHarnessAuth runs these first and the model provider rules in its own order.
+  private validateConfigurationContent(
     configuration: Readonly<OpenClawConfigurationDocument>,
     options?: ConfigurationValidationOptions,
   ): void {
