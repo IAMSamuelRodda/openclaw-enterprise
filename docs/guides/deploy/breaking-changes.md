@@ -34,6 +34,18 @@ references`, or `models.providers.<name>.apiKey must be unset`.
 **Steps.** Select only the primary model's provider and remove the other
 provider's `apiKey`, then save and deploy again.
 
+## 2026-10-14: OpenShell gateway IPv4 hosts must be four decimal octets
+
+**What breaks.** Startup and both gateway clients refuse an OpenShell
+`endpoint` whose IPv4 host is not four decimal octets with no leading zeros.
+
+**Who is affected.** Backends whose `configuration.endpoint` uses one of those
+spellings.
+
+**How to tell.** The report says `IPv4 host must be four decimal octets`.
+
+**Steps.** Write those four octets, then restart.
+
 ## 2026-10-14: model endpoint URLs refuse rewritten spellings and IP hosts
 
 **What breaks.** Creating an OpenShell `openai` credential source refuses a
