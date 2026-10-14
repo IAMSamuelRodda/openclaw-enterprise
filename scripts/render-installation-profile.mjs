@@ -1559,15 +1559,35 @@ function buildRendered(profile, parsed, diagnostics) {
       : undefined;
   const rewrittenObservabilityIpv4 =
     parsedObservability !== undefined && !ipv4HostKept(rawObservabilityUrl, parsedObservability);
-  const observabilityUrl = rewrittenObservabilityIpv4
-    ? undefined
-    : optionalString(controlPlane, ["controlPlane", "observabilityUrl"], diagnostics, {
-        validate: observabilityDestination,
-        description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
-      });
+  // A tab or newline is deleted. A backslash before the query becomes a slash. A backslash
+  // in the query does not change the host. Userinfo already has its own message, including
+  // when a tab sits in `http:\t//@host`.
+  const observabilityQueryAt =
+    typeof rawObservabilityUrl === "string" ? rawObservabilityUrl.search(/[?#]/) : -1;
+  const observabilityBeforeQuery =
+    typeof rawObservabilityUrl === "string" && observabilityQueryAt !== -1
+      ? rawObservabilityUrl.slice(0, observabilityQueryAt)
+      : rawObservabilityUrl;
+  const observabilityHostChars =
+    typeof rawObservabilityUrl === "string" &&
+    (/[\t\n\r]/.test(rawObservabilityUrl) || observabilityBeforeQuery.includes("\\")) &&
+    !writtenUserinfo(rawObservabilityUrl) &&
+    !rewrittenObservabilityIpv4;
+  const observabilityUrl =
+    rewrittenObservabilityIpv4 || observabilityHostChars
+      ? undefined
+      : optionalString(controlPlane, ["controlPlane", "observabilityUrl"], diagnostics, {
+          validate: observabilityDestination,
+          description: "an absolute HTTP or HTTPS URL without credentials or a fragment",
+        });
   if (rewrittenObservabilityIpv4) {
     diagnostics.errors.push(
       "controlPlane.observabilityUrl IPv4 host must be four decimal octets from 0 to 255 with no leading zeros; other spellings parse as a different address.",
+    );
+  }
+  if (observabilityHostChars) {
+    diagnostics.errors.push(
+      "controlPlane.observabilityUrl must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host.",
     );
   }
 

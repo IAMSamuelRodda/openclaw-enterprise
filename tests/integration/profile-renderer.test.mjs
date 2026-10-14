@@ -1796,6 +1796,26 @@ test("profiles pass an optional observability URL to Installation startup YAML",
   ]) {
     assertObservabilityPreflight(shorthand, rewrittenIpv4ObservabilityUrl, genericObservabilityUrl);
   }
+  const rewrittenHostChars =
+    /controlPlane\.observabilityUrl must not contain a tab or newline, or a backslash before the query; the URL parser drops or rewrites them into a different host\./;
+  for (const raw of [
+    "http://good.example\tevil.com/x",
+    "http://evil.com\\.good.example/path",
+    "http://good.example\nevil.com/x",
+    "http://good.example\revil.com/x",
+  ]) {
+    assertObservabilityPreflight(raw, rewrittenHostChars, genericObservabilityUrl);
+  }
+  const queryBackslash = render(
+    "openclaw",
+    baseInput({
+      controlPlane: {
+        ...baseInput().controlPlane,
+        observabilityUrl: "https://grafana.example.test/d/operations?var-pattern=\\d+",
+      },
+    }),
+  );
+  assert.equal(queryBackslash.summary.ok, true);
 
   // URL parsing trims C0 controls and spaces and lowercases the scheme, so this is the
   // written address 192.0.2.10. Preflight and the startup parser must both accept it.

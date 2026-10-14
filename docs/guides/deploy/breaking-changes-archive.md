@@ -8,6 +8,20 @@ newest first. Steps marked _untested_ have not been run against a real
 Installation. When this page nears the word limit, its oldest notices move to a
 new page named for the date they precede.
 
+## 2026-10-13: demo cluster CIDRs must be one canonical IPv4 host
+
+**What breaks.** The observability demo `helm upgrade` fails when
+`cluster.cidrs` is not one canonical IPv4 `/32`.
+
+**Who is affected.** Demo releases whose saved `cluster.cidrs` are not that
+form.
+
+**How to tell.** Helm stops in `prometheus.yaml` with `cluster.cidrs requires
+exact IPv4 /32 endpoints`.
+
+**Steps.** Write the canonical spelling (`010.0.0.1/32` becomes `10.0.0.1/32`)
+and upgrade again.
+
 ## 2026-10-13: OpenShell network policy names must be unique
 
 **What breaks.** Controller startup refuses an Installation whose
